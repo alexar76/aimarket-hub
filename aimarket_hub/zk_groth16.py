@@ -30,9 +30,12 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -91,6 +94,63 @@ def encode_to_field(data: bytes) -> int:
     return int.from_bytes(h[:31], "big")
 
 
+# ── Nullifier store ───────────────────────────────────────────────────────
+
+
+class _NullifierStore:
+    """Persistent set of consumed nullifiers — survives hub restart.
+
+    SQLite single-table store keyed by AIMARKET_ZK_NULLIFIER_DB (default:
+    `data/zk_nullifiers.db` next to the hub data dir). Uses an exclusive
+    transaction on insert so multi-process hubs all see the same view.
+    """
+
+    def __init__(self, db_path: Path):
+        self._path = db_path
+        self._lock = threading.Lock()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._conn() as cx:
+            cx.execute(
+                "CREATE TABLE IF NOT EXISTS used_nullifiers ("
+                "  nullifier TEXT PRIMARY KEY,"
+                "  used_at   INTEGER NOT NULL"
+                ")"
+            )
+
+    @contextmanager
+    def _conn(self):
+        cx = sqlite3.connect(str(self._path), timeout=10, isolation_level=None)
+        try:
+            cx.execute("PRAGMA journal_mode=WAL")
+            yield cx
+        finally:
+            cx.close()
+
+    def contains(self, nullifier: str) -> bool:
+        with self._lock, self._conn() as cx:
+            row = cx.execute(
+                "SELECT 1 FROM used_nullifiers WHERE nullifier=? LIMIT 1",
+                (nullifier,),
+            ).fetchone()
+            return row is not None
+
+    def add(self, nullifier: str) -> bool:
+        """Atomically insert; return True if new, False if already used."""
+        with self._lock, self._conn() as cx:
+            try:
+                cx.execute(
+                    "INSERT INTO used_nullifiers (nullifier, used_at) VALUES (?, ?)",
+                    (nullifier, int(time.time())),
+                )
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def count(self) -> int:
+        with self._conn() as cx:
+            return cx.execute("SELECT COUNT(*) FROM used_nullifiers").fetchone()[0]
+
+
 # ── Proof types ───────────────────────────────────────────────────────────
 
 
@@ -136,6 +196,7 @@ class Groth16Prover:
         wasm_path: Path | str | None = None,
         zkey_path: Path | str | None = None,
         vkey_path: Path | str | None = None,
+        nullifier_db: Path | str | None = None,
         signer: Signer | None = None,
     ):
         self.wasm = Path(wasm_path) if wasm_path else _require_path("AIMARKET_ZK_WASM")
@@ -143,13 +204,14 @@ class Groth16Prover:
         self.vkey = Path(vkey_path) if vkey_path else _require_path("AIMARKET_ZK_VKEY_JSON")
         self.signer = signer or Signer()
         self._snarkjs = _snarkjs()
-        # Nullifiers we've already accepted as valid — replay guard.
-        # Production deploys should persist this to durable storage; in-memory
-        # set is enough for single-process hubs.
-        self._used_nullifiers: set[str] = set()
+        # Persistent nullifier store — replay protection MUST survive restart.
+        # Path resolution: explicit arg → AIMARKET_ZK_NULLIFIER_DB → default.
+        db_env = os.environ.get("AIMARKET_ZK_NULLIFIER_DB", "").strip()
+        db_path = Path(nullifier_db or db_env or "data/zk_nullifiers.db")
+        self._nullifiers = _NullifierStore(db_path.resolve())
         logger.info(
-            "Groth16Prover initialized — wasm=%s zkey=%s",
-            self.wasm.name, self.zkey.name,
+            "Groth16Prover initialized — wasm=%s zkey=%s nullifier_db=%s",
+            self.wasm.name, self.zkey.name, db_path,
         )
 
     # ── Prove ────────────────────────────────────────────────────
@@ -175,14 +237,15 @@ class Groth16Prover:
 
         # Schema hash (public) — domain separator for the nullifier.
         schema_blob = json.dumps(input_schema or {}, sort_keys=True).encode()
-        schema_hash = encode_to_field(schema_blob)
+        schema_field = encode_to_field(schema_blob)
 
-        # Capability binding — mix into the schema-hash domain so nullifiers
-        # from different capabilities don't collide even with the same input.
-        schema_hash = (
-            schema_hash
-            ^ encode_to_field(b"capability:" + capability_id.encode())
-        ) % _BN254_R
+        # Capability binding — Poseidon-hash schema with capability so nullifiers
+        # from different capabilities can't collide even with the same input.
+        # Plain XOR on field elements is mathematically meaningless (XOR is a
+        # ring-of-integers op, not a BN254 group op); Poseidon is the right tool.
+        cap_field = encode_to_field(b"capability:" + capability_id.encode())
+        from poseidon_py.poseidon_hash import poseidon_hash  # local import, optional dep
+        schema_hash = poseidon_hash([schema_field, cap_field]) % _BN254_R
 
         # Public outputs derived inside the circuit; here we precompute them
         # so the input.json is consistent with what the circuit will assert.
@@ -285,9 +348,14 @@ class Groth16Prover:
         self,
         proof: Groth16Proof | dict[str, Any],
         expected_capability_id: str,
-        prover_public_key: str = "",
+        prover_public_key: str,
     ) -> dict[str, Any]:
         """Run `snarkjs groth16 verify` and check replay/binding.
+
+        `prover_public_key` is REQUIRED — pass the Ed25519 public key of the
+        hub that signed the proof envelope. Without it the proof signature
+        check is meaningless. Pass empty string only to explicitly opt out
+        (testing), and the verifier will refuse the proof.
 
         Returns dict matching the simulated-prover shape: keys `valid`,
         `reason`, `simulated: False`, `backend: "groth16"`.
@@ -295,17 +363,21 @@ class Groth16Prover:
         if isinstance(proof, dict):
             proof = self._from_dict(proof)
 
-        # 1. Hub signature over canonical (binds proof to capability + hub).
-        if prover_public_key:
-            if not self.signer.verify(prover_public_key, proof.signature, proof.canonical()):
-                return self._mark({"valid": False, "reason": "Invalid hub signature on proof envelope"})
+        # 1. Hub signature is mandatory — refuse proofs with no caller-supplied key.
+        if not prover_public_key:
+            return self._mark({
+                "valid": False,
+                "reason": "prover_public_key is required to verify proof envelope signature",
+            })
+        if not self.signer.verify(prover_public_key, proof.signature, proof.canonical()):
+            return self._mark({"valid": False, "reason": "Invalid hub signature on proof envelope"})
 
         # 2. Capability ID must match what caller expects.
         if proof.capability_id != expected_capability_id:
             return self._mark({"valid": False, "reason": "Capability ID mismatch"})
 
-        # 3. Replay protection — nullifier must be fresh.
-        if proof.nullifier in self._used_nullifiers:
+        # 3. Replay protection — nullifier must be fresh (durable store).
+        if self._nullifiers.contains(proof.nullifier):
             return self._mark({"valid": False, "reason": "Nullifier already used (replay)"})
 
         # 4. Actual Groth16 verification via snarkjs.
@@ -336,9 +408,10 @@ class Groth16Prover:
                     "detail": result.stderr[:200] + result.stdout[:200],
                 })
 
-        # 5. Mark used only after Groth16 passes — prevents DoS via flooding
-        #    with bad proofs that still get nullifier slots.
-        self._used_nullifiers.add(proof.nullifier)
+        # 5. Atomically claim the nullifier; race with a concurrent verifier
+        #    on the same proof is resolved here — only one wins.
+        if not self._nullifiers.add(proof.nullifier):
+            return self._mark({"valid": False, "reason": "Nullifier already used (replay)"})
         return self._mark({"valid": True, "reason": "Groth16 proof verified"})
 
     @staticmethod
@@ -366,7 +439,7 @@ class Groth16Prover:
     def stats(self) -> dict[str, Any]:
         return self._mark({
             "backend": "groth16",
-            "nullifiers_used": len(self._used_nullifiers),
+            "nullifiers_used": self._nullifiers.count(),
             "wasm": str(self.wasm),
             "zkey": str(self.zkey),
             "vkey": str(self.vkey),

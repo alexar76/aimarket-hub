@@ -35,6 +35,13 @@ RUN for d in /tmp/plugins/*/; do pip install --no-cache-dir "$d" 2>/dev/null || 
 # ── Data dir ──────────────────────────────────────────────────
 RUN mkdir -p /app/data
 
+# ── Non-root runtime user ─────────────────────────────────────
+RUN groupadd --system --gid 10001 hub \
+    && useradd --system --uid 10001 --gid hub --shell /usr/sbin/nologin --home-dir /app hub \
+    && chown -R hub:hub /app
+
+USER hub:hub
+
 ENV AIMARKET_DB_PATH=/app/data/hub.db
 ENV AIMARKET_SIGNING_KEY_PATH=/app/data/hub_signing_key
 ENV AIMARKET_HUB_URL=http://0.0.0.0:9080
