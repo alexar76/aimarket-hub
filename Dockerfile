@@ -27,10 +27,19 @@ COPY aimarket-protocol/schemas/ /app/aimarket-protocol/schemas/
 # ── Widget static files (served by hub at /widget/) ───────────
 COPY aimarket-widget/ /app/aimarket-widget/
 
-# ── All 14 plugins ────────────────────────────────────────────
+# ── All 14 plugins (top-level shims that re-export from hub-core) ─────
 COPY plugins/ /tmp/plugins/
 RUN for d in /tmp/plugins/*/; do pip install --no-cache-dir "$d" 2>/dev/null || true; done \
     && rm -rf /tmp/plugins
+
+# ── In-hub canonical plugin (provenance) ──────────────────────
+# Per docs/repository-canonical-policy.md, `aimarket-hub/plugins/aimarket-provenance/`
+# is the canonical implementation (not a shim like the 14 above). It registers via
+# the `aimarket.plugins` entry-point and hub-core (api.py) expects its receipts.
+# Without this install, `_provenance_receipt` is always None and the
+# `provenance_receipts` table stays empty in production.
+COPY aimarket-hub/plugins/aimarket-provenance/ /tmp/provenance/
+RUN pip install --no-cache-dir /tmp/provenance && rm -rf /tmp/provenance
 
 # ── Data dir ──────────────────────────────────────────────────
 RUN mkdir -p /app/data
