@@ -307,10 +307,84 @@ class OnChainNFTRegistry:
             address=self.contract_address,
             abi=_CAPABILITY_NFT_ABI,
         )
+
+        # Long-string→bytes32 hashing isn't reversible. Track originals
+        # so get_nft() can return the actual capability_id strings.
+        # NOTE: Operator-local cache; on a fresh process, long-string
+        # capability_ids will be returned as their hex hash prefix.
+        self._cap_str_cache: dict[bytes, str] = {}
+        self._prod_str_cache: dict[bytes, str] = {}
+
+        # Tx lock prevents nonce races on concurrent mint/consume calls.
+        # The async invoke path may submit multiple tx from one process.
+        import threading
+
+        self._tx_lock = threading.Lock()
+        # Cached "next nonce to use" — incremented locally after each send,
+        # rebased to chain pending count on lock acquisition.
+        self._next_nonce: int | None = None
+        self._tx_timeout_sec = int(os.environ.get("AIMARKET_NFT_TX_TIMEOUT_SEC", "180"))
+
         logger.info(
-            "OnChainNFTRegistry initialized — contract=%s chain=%s owner=%s",
-            self.contract_address, chain, self._owner_address,
+            "OnChainNFTRegistry initialized — contract=%s chain=%s owner=%s timeout=%ds",
+            self.contract_address, chain, self._owner_address, self._tx_timeout_sec,
         )
+
+    # ── Tx helpers ──────────────────────────────────────────────
+
+    def _gas_strategy(self) -> dict[str, int]:
+        """Return EIP-1559 fee params with legacy fallback.
+
+        Chains that don't support EIP-1559 (rare today) will reject the
+        maxFeePerGas params; we catch and fall back to gasPrice.
+        """
+        try:
+            block = self.w3.eth.get_block("latest")
+            base = block.get("baseFeePerGas")
+            if base is None:
+                raise KeyError("no baseFeePerGas")
+            priority = self.w3.eth.max_priority_fee
+            return {
+                "maxFeePerGas": int(base * 2 + priority),
+                "maxPriorityFeePerGas": int(priority),
+            }
+        except Exception:
+            return {"gasPrice": int(self.w3.eth.gas_price)}
+
+    def _build_and_send(self, fn) -> "TxReceipt":  # type: ignore[name-defined]
+        """Estimate gas, build EIP-1559 tx, sign, send, wait.
+
+        Holds self._tx_lock so concurrent callers don't collide on nonce.
+        Rebases the local nonce from chain `pending` count on each entry
+        to recover from out-of-band sends.
+        """
+        with self._tx_lock:
+            pending = self.w3.eth.get_transaction_count(self._owner_address, "pending")
+            if self._next_nonce is None or self._next_nonce < pending:
+                self._next_nonce = pending
+            nonce = self._next_nonce
+
+            base_tx: dict = {
+                "from": self._owner_address,
+                "nonce": nonce,
+                **self._gas_strategy(),
+            }
+
+            try:
+                gas_estimate = fn.estimate_gas({"from": self._owner_address})
+            except Exception:
+                gas_estimate = 300_000
+            base_tx["gas"] = int(gas_estimate * 1.25) + 10_000
+
+            tx = fn.build_transaction(base_tx)
+            signed = self._owner_account.sign_transaction(tx)
+            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+            self._next_nonce = nonce + 1
+
+        receipt = self.w3.eth.wait_for_transaction_receipt(
+            tx_hash, timeout=self._tx_timeout_sec
+        )
+        return receipt
 
     # ── Write paths (require gas) ───────────────────────────────
 
@@ -324,20 +398,19 @@ class OnChainNFTRegistry:
     ) -> CapabilityNFT:
         cap_bytes32 = self._to_bytes32(capability_id)
         prod_bytes32 = self._to_bytes32(product_id)
+        # Cache originals so get_nft() can return human-readable strings
+        # for cap/prod IDs that exceed 32 bytes (and therefore had to be
+        # hashed; the hash is not reversible).
+        self._cap_str_cache[cap_bytes32] = capability_id
+        self._prod_str_cache[prod_bytes32] = product_id
+
         price_usd6 = int(round(price_per_call_usd * 1_000_000))
         owner_cs = self._Web3.to_checksum_address(owner_address)
 
-        tx = self.contract.functions.mint(
+        fn = self.contract.functions.mint(
             owner_cs, cap_bytes32, prod_bytes32, total_calls, price_usd6
-        ).build_transaction({
-            "from": self._owner_address,
-            "nonce": self.w3.eth.get_transaction_count(self._owner_address),
-            "gas": 300_000,
-            "gasPrice": self.w3.eth.gas_price,
-        })
-        signed = self._owner_account.sign_transaction(tx)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+        )
+        receipt = self._build_and_send(fn)
 
         # Parse EntitlementMinted event for tokenId
         token_id = self._parse_minted_event(receipt)
@@ -357,21 +430,17 @@ class OnChainNFTRegistry:
     def consume_call(self, token_id: str) -> dict[str, Any]:
         """Submit consumeCall as the contract-authorized hub.
 
-        Note: the calling address (self._owner_address used here) must have
-        been authorized via setAuthorizedHub. In a real setup, each hub
-        would use its OWN private key, not the contract owner's.
+        Uses _build_and_send so concurrent invokes don't collide on nonce.
+        The signing key must have been authorized via setAuthorizedHub.
+        In production each hub typically uses its own key, not the contract
+        owner's — that's an operator deployment choice handled by passing
+        the hub key as AIMARKET_NFT_OWNER_KEY (misnamed for that role).
         """
         tid = int(token_id)
         try:
-            tx = self.contract.functions.consumeCall(tid).build_transaction({
-                "from": self._owner_address,
-                "nonce": self.w3.eth.get_transaction_count(self._owner_address),
-                "gas": 100_000,
-                "gasPrice": self.w3.eth.gas_price,
-            })
-            signed = self._owner_account.sign_transaction(tx)
-            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-            self.w3.eth.wait_for_transaction_receipt(tx_hash)
+            fn = self.contract.functions.consumeCall(tid)
+            receipt = self._build_and_send(fn)
+            tx_hash = receipt["transactionHash"]
         except Exception as exc:
             return {"error": str(exc), "token_id": token_id}
 
@@ -380,7 +449,7 @@ class OnChainNFTRegistry:
             "token_id": token_id,
             "consumed": True,
             "remaining_calls": remaining,
-            "tx_hash": tx_hash.hex(),
+            "tx_hash": tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash),
         }
 
     def transfer(
@@ -419,8 +488,8 @@ class OnChainNFTRegistry:
         cap_id_bytes, prod_id_bytes, total, remaining, price_usd6, minted_at, xfer_count = e
         return CapabilityNFT(
             token_id=str(tid),
-            capability_id=self._from_bytes32(cap_id_bytes),
-            product_id=self._from_bytes32(prod_id_bytes),
+            capability_id=self._from_bytes32_cap(cap_id_bytes),
+            product_id=self._from_bytes32_prod(prod_id_bytes),
             total_calls=total,
             remaining_calls=remaining,
             price_per_call_usd=price_usd6 / 1_000_000,
@@ -463,13 +532,38 @@ class OnChainNFTRegistry:
     def _to_bytes32(s: str) -> bytes:
         b = s.encode("utf-8")
         if len(b) > 32:
-            # Hash long strings deterministically
+            # Hash long strings deterministically.
+            # The original string is cached in _cap_str_cache / _prod_str_cache
+            # so get_nft() can return it; the hash is not reversible alone.
             return hashlib.sha256(b).digest()
         return b.ljust(32, b"\x00")
 
+    def _from_bytes32_cap(self, b: bytes) -> str:
+        if b in self._cap_str_cache:
+            return self._cap_str_cache[b]
+        return self._decode_or_hex_prefix(b)
+
+    def _from_bytes32_prod(self, b: bytes) -> str:
+        if b in self._prod_str_cache:
+            return self._prod_str_cache[b]
+        return self._decode_or_hex_prefix(b)
+
     @staticmethod
-    def _from_bytes32(b: bytes) -> str:
-        return b.rstrip(b"\x00").decode("utf-8", errors="replace")
+    def _decode_or_hex_prefix(b: bytes) -> str:
+        """Try utf-8 strip-padding; fall back to a 0x-prefixed hex digest.
+
+        Avoids returning garbage from a SHA-256 hash decoded as utf-8 with
+        replace errors. Operators using long IDs should keep the cache warm
+        (mint+get_nft in same process) or query the on-chain event log.
+        """
+        stripped = b.rstrip(b"\x00")
+        # Heuristic: if it's a plausible utf-8 string, return decoded.
+        if all(0x20 <= c < 0x7F for c in stripped) and stripped:
+            try:
+                return stripped.decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+        return "0x" + b.hex()
 
     def _parse_minted_event(self, receipt) -> int:
         # EntitlementMinted(uint256 indexed tokenId, address indexed to, ...)
@@ -491,11 +585,16 @@ def make_nft_registry(signer: Signer | None = None) -> NFTRegistryProtocol:
 
     If AIMARKET_NFT_CONTRACT is set → OnChainNFTRegistry (production).
     Otherwise → InMemoryNFTRegistry (development, with loud warning).
+
+    In production mode (AIFACTORY_PROD=1), partial NFT config is a hard
+    error — silently falling back to in-memory NFTs would lose user
+    entitlements on every restart.
     """
     contract = os.environ.get("AIMARKET_NFT_CONTRACT", "").strip()
     rpc = os.environ.get("AIMARKET_NFT_CHAIN_RPC", "").strip()
     key = os.environ.get("AIMARKET_NFT_OWNER_KEY", "").strip()
     chain = os.environ.get("AIMARKET_NFT_CHAIN", "base").strip()
+    is_prod = os.environ.get("AIFACTORY_PROD", "").strip() == "1"
 
     if contract and rpc and key:
         return OnChainNFTRegistry(
@@ -506,10 +605,23 @@ def make_nft_registry(signer: Signer | None = None) -> NFTRegistryProtocol:
             signer=signer,
         )
     if contract or rpc or key:
-        logger.warning(
+        msg = (
             "Partial on-chain NFT config detected. Need all of: "
-            "AIMARKET_NFT_CONTRACT, AIMARKET_NFT_CHAIN_RPC, AIMARKET_NFT_OWNER_KEY. "
-            "Falling back to in-memory registry."
+            "AIMARKET_NFT_CONTRACT, AIMARKET_NFT_CHAIN_RPC, AIMARKET_NFT_OWNER_KEY."
+        )
+        if is_prod:
+            raise RuntimeError(
+                f"{msg} AIFACTORY_PROD=1 — refusing to fall back to in-memory NFTs "
+                "(would silently lose entitlements on restart)."
+            )
+        logger.warning("%s Falling back to in-memory registry.", msg)
+    elif is_prod:
+        # No NFT config AND prod mode — also warn loudly. The plugin may
+        # not be in use, so don't raise; just make the silence visible.
+        logger.warning(
+            "AIFACTORY_PROD=1 but no AIMARKET_NFT_* env vars are set. "
+            "NFT registry will run in-memory (NFTs lose state on restart). "
+            "If NFT entitlements are unused, this is fine."
         )
     return InMemoryNFTRegistry(signer=signer)
 

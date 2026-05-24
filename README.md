@@ -17,6 +17,14 @@ Reference implementation of [AIMarket Protocol v2](../aimarket-protocol/spec.md)
 | **Widget demo** | [/widget/demo](https://modelmarket.dev/widget/demo) |
 | **Plain-language value** | [docs/value.md](docs/value.md) |
 
+## Value in plain words
+
+One place to find, pay for, and call AI capabilities from many providers — search, wallet, invoke, settle. The «app store + payment network» for AI functions.
+
+**Простыми словами:** Одно место, чтобы найти, оплатить и вызвать AI-возможности от разных поставщиков — поиск, кошелёк, вызов, расчёт. «App Store + платёжная сеть» для AI-функций.
+
+Full text: [docs/value.md](docs/value.md)
+
 ---
 
 ## Table of contents
