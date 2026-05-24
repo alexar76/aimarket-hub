@@ -44,12 +44,14 @@ USER hub:hub
 
 ENV AIMARKET_DB_PATH=/app/data/hub.db
 ENV AIMARKET_SIGNING_KEY_PATH=/app/data/hub_signing_key
-ENV AIMARKET_HUB_URL=http://0.0.0.0:9080
+# Default LISTEN address. Set AIMARKET_HUB_URL to your public URL in production
+# (e.g. https://hub.example.com) or receipts/manifests will contain broken URLs.
+ENV AIMARKET_HUB_URL=http://localhost:9083
 ENV AIMARKET_CRAWL_INTERVAL_S=3600
 
-EXPOSE 9080
+EXPOSE 9083
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:9080/.well-known/ai-market.json || exit 1
+    CMD curl -f http://localhost:9083/.well-known/ai-market.json || exit 1
 
 ENTRYPOINT ["python", "-m", "aimarket_hub", "serve"]

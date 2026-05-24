@@ -1,3 +1,10 @@
+<!-- aicom-mirror-notice -->
+> **Mirror — read-only.**
+> The canonical source for `aimarket-hub` lives in the AI-Factory monorepo.
+> Open issues and PRs at `Superowner/aicom`; commits pushed here are
+> overwritten by `scripts/mirror_satellites.sh` on the next sync run.
+> See `docs/repository-canonical-policy.md` for the policy.
+
 # AIMarket Hub
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
@@ -196,22 +203,22 @@ aimarket-hub/
 ```bash
 pip install aimarket-hub
 aimarket serve
-# → http://localhost:9080
+# → http://localhost:9083
 ```
 
 Verify discovery and search:
 
 ```bash
-curl -s http://localhost:9080/.well-known/ai-market.json | jq .
-curl -s "http://localhost:9080/ai-market/v2/search?intent=translate&budget=1" | jq .
-curl -s http://localhost:9080/ai-market/v2/plugins | jq '.plugins | length'
+curl -s http://localhost:9083/.well-known/ai-market.json | jq .
+curl -s "http://localhost:9083/ai-market/v2/search?intent=translate&budget=1" | jq .
+curl -s http://localhost:9083/ai-market/v2/plugins | jq '.plugins | length'
 ```
 
 ### Docker
 
 ```bash
 docker build -f aimarket-hub/Dockerfile -t modelmarket-hub .
-docker run -p 9080:9080 \
+docker run -p 9083:9083 \
   -e AIMARKET_HUB_NAME="My Hub" \
   -e AIMARKET_HUB_URL="https://my-hub.example.com" \
   -e AIMARKET_PAYMENT_RECIPIENT="0xYourWallet" \
@@ -378,7 +385,7 @@ Protocol principle: **no custody** — channels are on-chain constructs; hub hol
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AIMARKET_HUB_NAME` | AIMarket Hub | Display name in manifests |
-| `AIMARKET_HUB_URL` | `http://localhost:9080` | Public URL (receipts, well-known) |
+| `AIMARKET_HUB_URL` | `http://localhost:9083` | Public URL (receipts, well-known) |
 | `AIMARKET_PAYMENT_CHAIN` | `base` | Settlement chain |
 | `AIMARKET_PAYMENT_TOKEN` | `USDT` | Settlement token |
 | `AIMARKET_PAYMENT_RECIPIENT` | — | **Required in production** |

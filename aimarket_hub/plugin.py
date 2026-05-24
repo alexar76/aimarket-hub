@@ -138,12 +138,7 @@ class PluginRegistry:
             if whitelist_raw else None
         )
 
-        # entry_points(group=...) is Python 3.10+. On 3.9 the function returns
-        # a dict-like grouped object.
-        try:
-            eps = entry_points(group="aimarket.plugins")
-        except TypeError:
-            eps = entry_points().get("aimarket.plugins", [])  # type: ignore[attr-defined]
+        eps = entry_points(group="aimarket.plugins")
 
         count = 0
         for ep in eps:

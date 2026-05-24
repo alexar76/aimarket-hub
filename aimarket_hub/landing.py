@@ -165,7 +165,7 @@ pip install aimarket-mcp-packager
 }</pre></div>
 
 <div class="section"><h2>5. Deploy Your Own Hub</h2>
-<pre>docker run -p 9080:9080 \
+<pre>docker run -p 9083:9083 \
   -e AIMARKET_HUB_NAME=<span class="s">"My Hub"</span> \
   -e AIMARKET_HUB_URL=<span class="s">"https://my-hub.example.com"</span> \
   -e AIMARKET_SEED_LIST=<span class="s">"https://modelmarket.dev/.well-known/ai-market.json"</span> \

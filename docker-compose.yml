@@ -6,10 +6,10 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "9080:9080"
+      - "9083:9083"
     environment:
       - AIMARKET_HUB_NAME=AI-Factory Federation Hub
-      - AIMARKET_HUB_URL=http://0.0.0.0:9080
+      - AIMARKET_HUB_URL=http://localhost:9083
       - AIMARKET_DB_PATH=/app/data/hub.db
       - AIMARKET_SIGNING_KEY_PATH=/app/data/hub_signing_key
       - AIMARKET_SEED_LIST=
@@ -22,7 +22,7 @@ services:
       - hub_data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9080/.well-known/ai-market.json"]
+      test: ["CMD", "curl", "-f", "http://localhost:9083/.well-known/ai-market.json"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -17,12 +17,12 @@ pip install -e .
 
 ```bash
 aimarket serve
-# → Hub running on http://localhost:9080
+# → Hub running on http://localhost:9083
 ```
 
 Verify:
 ```bash
-curl http://localhost:9080/.well-known/ai-market.json
+curl http://localhost:9083/.well-known/ai-market.json
 ```
 
 ### 3. Crawl other hubs
@@ -55,7 +55,7 @@ aimarket invoke prod-xxx/translate.multi@v2 --input '{"text":"hello"}'
 
 ```bash
 docker build -t aimarket-hub .
-docker run -p 9080:9080 \
+docker run -p 9083:9083 \
   -e AIMARKET_HUB_NAME="My Hub" \
   -e AIMARKET_HUB_URL="https://my-hub.example.com" \
   -e AIMARKET_SEED_LIST="https://hub.modelmarket.dev/.well-known/ai-market.json" \
@@ -174,7 +174,7 @@ export_dataset(db)
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AIMARKET_HUB_NAME` | AIMarket Hub | Display name |
-| `AIMARKET_HUB_URL` | http://localhost:9080 | Public URL |
+| `AIMARKET_HUB_URL` | http://localhost:9083 | Public URL |
 | `AIMARKET_DB_PATH` | data/hub.db | SQLite database |
 | `AIMARKET_SEED_LIST` | (empty) | Comma-separated seed URLs |
 | `AIMARKET_CRAWL_INTERVAL_S` | 3600 | Crawl interval (seconds) |

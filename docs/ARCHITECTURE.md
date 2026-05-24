@@ -347,7 +347,7 @@ graph TB
 
     subgraph VPS["🖥️ VPS / Cloud"]
         subgraph Docker["🐳 Docker Compose"]
-            HUB["🔄 aimarket-hub<br/>:9080"]
+            HUB["🔄 aimarket-hub<br/>:9083"]
             DB["🗄️ SQLite<br/>(/app/data/hub.db)"]
         end
         NGINX["🔀 Nginx<br/>(reverse proxy, TLS)"]

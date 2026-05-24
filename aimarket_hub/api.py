@@ -34,7 +34,7 @@ from aimarket_hub.api_models import (
 from aimarket_hub.channels import close_channel, debit_channel, open_channel
 from aimarket_hub.config import HubConfig
 from aimarket_hub.database import HubDatabase
-from aimarket_hub.demo_seeder import seed_demo_capabilities
+from aimarket_hub.demo_seeder import seed_capabilities
 from aimarket_hub.models import InvocationStat, Peer
 from aimarket_hub.plugin import PluginRegistry
 from aimarket_hub.safety_gate import SafetyGate, default_safety_gate
@@ -69,12 +69,12 @@ def create_app(
     trust_scorer = trust_scorer or TrustScorer(db)
     builtin_safety = default_safety_gate()  # Built-in fallback
 
-    # Seed demo capabilities only when explicitly allowed (off in production stacks)
-    if os.environ.get("AIMARKET_SKIP_DEMO_SEED", "").strip().lower() not in ("1", "true", "yes"):
-        seeded = seed_demo_capabilities(db)
+    # Seed marketplace with initial capability catalog on first start
+    if os.environ.get("AIMARKET_SKIP_SEED", "").strip().lower() not in ("1", "true", "yes"):
+        seeded = seed_capabilities(db)
         if seeded:
             import logging
-            logging.getLogger(__name__).info("Seeded %d demo capabilities", seeded)
+            logging.getLogger(__name__).info("Seeded %d marketplace capabilities", seeded)
 
     # Import real products from AI-Factory if bridge is available
     try:
@@ -175,9 +175,6 @@ def create_app(
             },
             "peers": peers,
             "plugins_loaded": plugins.count(),
-            "demo_mode": db.count_capabilities("local") > 0 and all(
-                "[DEMO]" in (c.description or "") for c in db.list_capabilities("local", limit=100)
-            ),
         }
 
         # Merge plugin manifest extensions
@@ -345,31 +342,38 @@ def create_app(
 
             # ── Execute ─────────────────────────────────────────
             t0 = time.time()
-            # Try real factory backend first, fall back to demo stub
             factory_url = os.environ.get("AIFACTORY_PUBLIC_URL", "")
-            cap = db.get_capability(body.product_id, body.capability_id)
-            is_demo = bool(cap and "[DEMO]" in (cap.description or ""))
 
-            if factory_url and not is_demo:
-                # Validate product_id/capability_id to prevent path traversal
-                if not _is_safe_path(body.product_id) or not _is_safe_path(body.capability_id):
-                    raise HTTPException(status_code=400, detail="Invalid product or capability ID")
-                try:
-                    async with httpx.AsyncClient(timeout=30) as fc:
-                        fr = await fc.post(
-                            f"{factory_url}/capabilities/{body.product_id}/{body.capability_id}/invoke",
-                            json={"input": body.input},
-                            headers={"X-Payment-Channel": x_payment_channel or ""},
+            if not factory_url:
+                raise HTTPException(
+                    status_code=503,
+                    detail="No execution backend configured. Set AIFACTORY_PUBLIC_URL "
+                           "to the factory API address (e.g. http://127.0.0.1:8081)."
+                )
+
+            # Validate product_id/capability_id to prevent path traversal
+            if not _is_safe_path(body.product_id) or not _is_safe_path(body.capability_id):
+                raise HTTPException(status_code=400, detail="Invalid product or capability ID")
+
+            try:
+                async with httpx.AsyncClient(timeout=30) as fc:
+                    fr = await fc.post(
+                        f"{factory_url}/capabilities/{body.product_id}/{body.capability_id}/invoke",
+                        json={"input": body.input},
+                        headers={"X-Payment-Channel": x_payment_channel or ""},
+                    )
+                    if fr.status_code == 200:
+                        result = fr.json()
+                    else:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Factory returned {fr.status_code}: {fr.text[:200]}"
                         )
-                        if fr.status_code == 200:
-                            result = fr.json()
-                        else:
-                            result = {"output": f"Factory returned {fr.status_code}: {fr.text[:200]}"}
-                except Exception:
-                    result = {"output": f"[DEMO] Executed {body.capability_id} (factory unreachable)"}
-            else:
-                demo_note = " [DEMO]" if is_demo else ""
-                result = {"output": f"[DEMO] Executed {body.capability_id} locally{demo_note}"}
+            except httpx.RequestError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Factory unreachable at {factory_url}: {exc}"
+                )
             elapsed_ms = int((time.time() - t0) * 1000)
 
             # ── Post-check: plugins first, then built-in ────────
@@ -399,6 +403,7 @@ def create_app(
                 })
 
             # ── Payment: debit channel if one is provided ──────────
+            cap = db.get_capability(body.product_id, body.capability_id)
             if cap is None:
                 raise HTTPException(status_code=404, detail=f"Unknown capability: {body.capability_id}")
 
@@ -406,15 +411,7 @@ def create_app(
             nonce = f"rcpt_{secrets.token_hex(16)}"
 
             if x_payment_channel:
-                # Only debit if this is a real (non-demo) execution with a reachable factory.
-                # Never skip debit silently — demo flag should only be set for intentional
-                # [DEMO] capabilities, not for missing factory_url.
-                if is_demo:
-                    debit_result = {"success": True, "demo": True}
-                elif not factory_url:
-                    debit_result = debit_channel(x_payment_channel, price, receipt_id=nonce)
-                else:
-                    debit_result = debit_channel(x_payment_channel, price, receipt_id=nonce)
+                debit_result = debit_channel(x_payment_channel, price, receipt_id=nonce)
                 if debit_result.get("error"):
                     return JSONResponse(status_code=402, content={
                         "success": False,
@@ -498,9 +495,20 @@ def create_app(
                     consumer_hub=config.hub_url,
                 )
                 db.record_invocation(stat)
-                # FIXME: routing fee is advertised but not collected from the
-                # channel. The routing hub should debit its fee from the payment
-                # channel before forwarding the request to the provider.
+
+                # Collect routing fee from the payment channel
+                price = result_data.get("price_usd", 0)
+                routing_fee = round(price * config.routing_fee_bps / 10000, 6)
+                if x_payment_channel and routing_fee > 0:
+                    fee_result = debit_channel(x_payment_channel, routing_fee,
+                                               receipt_id=f"route_{secrets.token_hex(8)}")
+                    if fee_result.get("error"):
+                        logger.warning("routing_fee: could not debit %s from channel %s: %s",
+                                       routing_fee, x_payment_channel, fee_result.get("error"))
+                    else:
+                        logger.info("routing_fee: collected $%.6f (%d bps) from channel %s",
+                                    routing_fee, config.routing_fee_bps, x_payment_channel)
+
                 result_data["routed_via"] = config.hub_url
                 result_data["routing_fee_bps"] = config.routing_fee_bps
                 return result_data

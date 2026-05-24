@@ -86,13 +86,28 @@ def main() -> int:
 
 
 def _cmd_serve() -> int:
+    import os
     import uvicorn
 
     config = HubConfig()
     db = HubDatabase(config.db_path)
     app = create_app(config=config, db=db)
-    print(f"{GREEN}Hub API starting on http://0.0.0.0:9080{RESET}")
-    uvicorn.run(app, host="0.0.0.0", port=9080, log_level="info")
+
+    # Warn about active stub/dev flags at startup
+    stub_flags = []
+    if os.environ.get("AIMARKET_ZK_SIMULATED", "").strip() == "1":
+        stub_flags.append("AIMARKET_ZK_SIMULATED=1 (ZK proofs are simulated — no cryptographic privacy)")
+    if os.environ.get("AIFACTORY_PAYMENT_VERIFY_STUB", "").strip() == "1":
+        stub_flags.append("AIFACTORY_PAYMENT_VERIFY_STUB=1 (all tx hashes accepted without on-chain check)")
+    if os.environ.get("AIFACTORY_PAYMENT_TESTNET", "").strip() == "1":
+        stub_flags.append("AIFACTORY_PAYMENT_TESTNET=1 (testnet mode — demo tx hashes accepted)")
+    if os.environ.get("AIFACTORY_PROD", "").strip() == "1":
+        stub_flags.append("AIFACTORY_PROD=1 (production mode — stub flags will HARD-BLOCK startup)")
+    for flag in stub_flags:
+        print(f"{_YELLOW}[stub]{_RESET} {flag}")
+
+    print(f"{GREEN}Hub API starting on http://0.0.0.0:9083{RESET}")
+    uvicorn.run(app, host="0.0.0.0", port=9083, log_level="info")
     return 0
 
 

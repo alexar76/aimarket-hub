@@ -13,7 +13,7 @@ class HubConfig:
 
     # Identity
     hub_name: str = field(default_factory=lambda: os.getenv("AIMARKET_HUB_NAME", "AIMarket Hub"))
-    hub_url: str = field(default_factory=lambda: os.getenv("AIMARKET_HUB_URL", "http://localhost:9080"))
+    hub_url: str = field(default_factory=lambda: os.getenv("AIMARKET_HUB_URL", "http://localhost:9083"))
     hub_version: str = "2.0.0"
 
     # Database (SQLite path or PostgreSQL URL)
@@ -47,10 +47,21 @@ class HubConfig:
     escrow_evm_address: str = field(default_factory=lambda: os.getenv("AIMARKET_ESCROW_EVM_ADDRESS", ""))
     escrow_solana_program_id: str = field(default_factory=lambda: os.getenv("AIMARKET_ESCROW_SOLANA_PROGRAM_ID", "9BcJEAQCeFrPunKQ16itbaAzpw9A4zMHYPQxNxEAZUXR"))
 
-    # Hub bond
+    # Hub bond — **declarative / experimental** for the v2 reference impl.
+    #
+    # These fields advertise the operator's economic stake in the federation
+    # `.well-known/ai-market.json` payload (peer hubs use them to weight trust
+    # score). They are NOT yet enforced on-chain: there is no escrow contract
+    # that holds the bond, and `setHubAuthorization` does not require a
+    # deposit before flipping the flag. The slashing path is roadmap, not
+    # protocol-mandatory, so do NOT treat the presence of these values as
+    # "this hub has stake at risk".
+    #
+    # See spec.md §5.3 (Bond Requirement) for the future enforcement model.
     hub_bond_usd: float = field(default_factory=lambda: float(os.getenv("AIMARKET_HUB_BOND_USD", "100")))
     hub_bond_token: str = field(default_factory=lambda: os.getenv("AIMARKET_HUB_BOND_TOKEN", "USDT"))
     hub_bond_chain: str = field(default_factory=lambda: os.getenv("AIMARKET_HUB_BOND_CHAIN", "base"))
+    hub_bond_enforced: bool = field(default_factory=lambda: os.getenv("AIMARKET_HUB_BOND_ENFORCED", "0") == "1")
 
     # Factory seed (demo mode)
     factory_seed_usd: float = field(default_factory=lambda: float(os.getenv("AIMARKET_FACTORY_SEED_USD", "0")))
