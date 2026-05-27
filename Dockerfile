@@ -21,6 +21,9 @@ COPY aimarket-hub/aimarket_hub/ ./aimarket_hub/
 COPY aimarket-hub/plugins-demo.html /app/plugins-demo.html
 RUN pip install --no-cache-dir -e . && pip install --no-cache-dir uvicorn
 
+# ── ACEX (capital pricing for Pulse Terminal) ─────────────────
+COPY acex/ /app/acex/
+
 # ── Protocol schemas (for JSON Schema validation) ─────────────
 COPY aimarket-protocol/schemas/ /app/aimarket-protocol/schemas/
 

@@ -5,8 +5,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# acex/integrations lives at repo root (sibling of aimarket-hub).
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+# acex/ lives at monorepo root (sibling of aimarket-hub) or at /app/acex in Hub image.
+def _repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for base in (here.parents[2], here.parents[1]):
+        if (base / "acex").is_dir():
+            return base
+    return here.parents[2]
+
+
+_REPO_ROOT = _repo_root()
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
