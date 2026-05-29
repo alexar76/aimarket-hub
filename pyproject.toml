@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aimarket-hub"
-version = "3.0.0"
+version = "0.1.0"
 description = "AI Market Federation Hub — crawl, index, search, and route AI capabilities across the network"
 license = {text = "Apache-2.0"}
 readme = "README.md"

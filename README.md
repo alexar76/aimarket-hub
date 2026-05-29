@@ -7,7 +7,10 @@
 
 # AIMarket Hub
 
-> **Ecosystem:** [AICOM overview & live demos](https://alexar76.github.io/aicom/)
+[![CI](https://github.com/alexar76/aimarket-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/alexar76/aimarket-hub/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/alexar76/aimarket-hub?include_prereleases&label=release)](https://github.com/alexar76/aimarket-hub/releases)
+
+> **Ecosystem:** [AICOM overview & live demos](https://alexar76.github.io/aicom/) · **Package version:** `0.1.0` (pyproject)
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -25,13 +28,6 @@ Reference implementation of [AIMarket Protocol v2](../aimarket-protocol/spec.md)
 | **Plugin demo** | [/plugins/demo](https://modelmarket.dev/plugins/demo) |
 | **Widget demo** | [/widget/demo](https://modelmarket.dev/widget/demo) |
 | **Plain-language value** | [docs/value.md](docs/value.md) |
-
-## Value in plain words
-
-One place to find, pay for, and call AI capabilities from many providers — search, wallet, invoke, settle. The «app store + payment network» for AI functions.
-
-Full text: [docs/value.md](docs/value.md)
-
 
 ---
 
@@ -69,7 +65,6 @@ AIMarket Hub sits between **capability providers** (factory-shipped products, pe
 | Compliance & audit | **Provenance** receipts on every invoke (Ed25519 + W3C VC) |
 | Unsafe prompts | **Safety** pre-check with signed rejection + refund |
 
-**Value in plain words:** One place to find, pay for, and call AI capabilities from many providers — search, wallet, invoke, settle. [Full text →](docs/value.md)
 
 ### Killer feature — Zero-Trust Agent Discovery
 

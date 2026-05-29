@@ -10,7 +10,7 @@ We acknowledge within 48 hours and share a fix timeline.
 
 ## Scope
 
-- AIMarket Hub core API, plugins loader, payment channels, federation
+- `aimarket-hub`
 
 ## Out of Scope
 
@@ -28,3 +28,4 @@ We acknowledge within 48 hours and share a fix timeline.
 ## Disclosure
 
 Coordinated disclosure preferred. We credit researchers in release notes when permitted.
+
