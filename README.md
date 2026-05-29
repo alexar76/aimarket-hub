@@ -30,9 +30,8 @@ Reference implementation of [AIMarket Protocol v2](../aimarket-protocol/spec.md)
 
 One place to find, pay for, and call AI capabilities from many providers — search, wallet, invoke, settle. The «app store + payment network» for AI functions.
 
-**Простыми словами:** Одно место, чтобы найти, оплатить и вызвать AI-возможности от разных поставщиков — поиск, кошелёк, вызов, расчёт. «App Store + платёжная сеть» для AI-функций.
-
 Full text: [docs/value.md](docs/value.md)
+
 
 ---
 
@@ -70,8 +69,7 @@ AIMarket Hub sits between **capability providers** (factory-shipped products, pe
 | Compliance & audit | **Provenance** receipts on every invoke (Ed25519 + W3C VC) |
 | Unsafe prompts | **Safety** pre-check with signed rejection + refund |
 
-**Value in plain words:** One place to find, pay for, and call AI capabilities from many providers — search, wallet, invoke, settle.  
-**Простыми словами:** «App Store + платёжная сеть» для AI-функций. [Full text →](docs/value.md)
+**Value in plain words:** One place to find, pay for, and call AI capabilities from many providers — search, wallet, invoke, settle. [Full text →](docs/value.md)
 
 ### Killer feature — Zero-Trust Agent Discovery
 
