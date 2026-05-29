@@ -7,6 +7,8 @@
 
 # AIMarket Hub
 
+> **Ecosystem:** [AICOM overview & live demos](https://alexar76.github.io/aicom/)
+
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Protocol](https://img.shields.io/badge/AIMarket-v2-purple.svg)](https://github.com/ai-factory/aimarket-protocol)
