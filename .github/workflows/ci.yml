@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      AIMARKET_TEE_SOFTWARE_OK: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch acex (capital_pricing dependency)
+        run: git clone --depth 1 https://github.com/alexar76/acex.git acex
+
+      - name: Install hub (dev)
+        run: pip install -e ".[dev]"
+
+      - name: Pytest + coverage badge
+        run: bash scripts/ci_coverage_badge.sh -- tests/ -q --tb=short -k "not cross_hub" --maxfail=5 --cov=aimarket_hub
+
+      - name: Assert package version
+        run: python3 -c "import importlib.metadata as m; assert m.version('aimarket-hub')=='3.0.0'"

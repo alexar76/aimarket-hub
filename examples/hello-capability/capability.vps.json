@@ -1,0 +1,21 @@
+{
+  "product_id": "demo-hello",
+  "capability_id": "greet@v1",
+  "name": "greet",
+  "description": "Says hello — VPS/Docker quickstart (public invoke_url)",
+  "invoke_url": "http://YOUR_VPS_PUBLIC_IP:3456/invoke",
+  "price_per_call_usd": 0.01,
+  "publisher": "community",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string", "description": "Who to greet" }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "greeting": { "type": "string" }
+    }
+  }
+}
