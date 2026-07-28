@@ -1,0 +1,12 @@
+{
+  "_comment": "Committed federation seed list. The crawler walks these on startup/interval so ecosystem nodes are discovered automatically — no hand-editing of node lists anywhere. Each seed's `public_key` is operator-vouched: when a seed advertises exactly this Ed25519 key, the crawler trusts and indexes it on FIRST contact (instead of waiting for manual approval). A key mismatch falls back to the safe untrusted-first-contact path. Override the whole list with AIMARKET_SEED_LIST and pins with AIMARKET_SEED_PUBKEYS, or point AIMARKET_SEEDS_FILE elsewhere.",
+  "seeds": [
+    {
+      "name": "Oracle Family (AIMarket v2)",
+      "well_known_url": "https://oracles.modelmarket.dev/.well-known/ai-market.json",
+      "public_key": "+UWIwNJV6W5S8yMfWRsPz9MYhun90pcaeFiI6eRA5Jc=",
+      "categories": ["oracle", "simulation", "math-viz", "randomness-beacon", "agent-tooling"],
+      "note": "Federated oracle-family endpoint aggregating all 17 oracles (Platon chaos-VRF/beacon, Chronos Wesolowski VDF, Lattice low-discrepancy, Murmuration robust consensus, Lumen EigenTrust/PageRank, Colony TSP, Turing blue-noise, Percola percolation, Fermat routing, Ablation cascade-risk, Landauer thermodynamic audit, Sortes ECVRF verifiable randomness, Gauss Gaussian-process regression, Aestus RSW time-lock puzzles, Betti persistent homology, Kantor optimal transport, Fourier graph-spectral analysis) behind one signed manifest. The 'oracle'/'randomness-beacon' categories let the hub route invokes to the peer's mcp_endpoint. Verified live 2026-06-13."
+    }
+  ]
+}

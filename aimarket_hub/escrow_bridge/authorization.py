@@ -1,0 +1,243 @@
+"""C2 — accept a buyer's DebitAuthorization, or refuse the invoke.
+
+The contract will only debit a channel against a signature from its depositor, so this is
+where the hub earns the right to be paid: an invoke that runs without a stored, verified
+authorization is work the hub can never collect for on chain.
+
+Every check here answers a question the CONTRACT will ask later, and answers it before the
+provider does any billable work — so a mismatch costs a 402, not an unpaid delivery:
+
+    signer      == channels[channelId].depositor   (read from the chain, not claimed)
+    hub         == this hub's configured address   (the contract binds it into the digest)
+    token       == the channel's token
+    amount      == the cents the ledger is about to debit, converted exactly
+    receiptId   == the ledger's own receipt nonce for this debit
+    nonce       == the channel's CURRENT on-chain nonce
+    deadline     in the future, and not absurdly far in it
+
+Refusals raise AuthorizationRejected with a message meant for the buyer's client, because
+"your authorization is wrong" is only actionable if it says which field.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass
+
+from aimarket_hub.escrow_bridge import chain, config, escrow_verify, store
+from aimarket_hub.escrow_bridge.eip712 import (
+    DebitAuthorization,
+    Eip712Error,
+    addresses_equal,
+    normalize_address,
+    recover_signer,
+)
+from aimarket_hub.escrow_bridge.errors import (
+    AuthorizationRejected,
+    BridgeConfigError,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AcceptedAuthorization:
+    """A verified authorization and the on-chain facts it was checked against."""
+
+    row: store.AuthorizationRow
+    escrow_channel: chain.EscrowChannel
+    signer: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "receipt_id": self.row.receipt_id,
+            "escrow_channel": self.row.escrow_channel,
+            "nonce": self.row.nonce,
+            "amount_units": self.row.amount_units,
+            "amount_usd": escrow_verify.base_units_to_usd(self.row.amount_units),
+            "deadline": self.row.deadline,
+            "signer": self.signer,
+            "status": self.row.status,
+        }
+
+
+def _same_bytes32(left: object, right: object) -> bool:
+    """Compare two 32-byte hex ids, refusing to guess on anything malformed.
+
+    Not ``addresses_equal``: a channelId is 32 bytes, and a helper that silently accepts a
+    20-byte value here would treat a truncated id as a match.
+    """
+    def canon(value: object) -> str | None:
+        text = str(value or "").strip().lower()
+        if not text.startswith("0x"):
+            return None
+        body = text[2:]
+        if len(body) != 64:
+            return None
+        try:
+            bytes.fromhex(body)
+        except ValueError:
+            return None
+        return body
+
+    a, b = canon(left), canon(right)
+    return a is not None and a == b
+
+
+def _require_hub_address() -> str:
+    hub = config.hub_address()
+    if not hub:
+        raise BridgeConfigError(
+            "AIMARKET_ESCROW_HUB_ADDRESS is not set — the contract binds each "
+            "authorization to one hub address, so it cannot be guessed"
+        )
+    try:
+        return normalize_address(hub)
+    except Eip712Error as exc:
+        raise BridgeConfigError(f"AIMARKET_ESCROW_HUB_ADDRESS is not an address: {exc}") from exc
+
+
+def parse_authorization(payload: object) -> tuple[DebitAuthorization, str]:
+    """Turn a client-supplied blob into (authorization, signature). Raises on nonsense.
+
+    Accepts the field names the SDKs already produce for the contract's typed data
+    (``channelId``/``receiptId``), and their snake_case spellings, because the Dart, TS and
+    Rust helpers spell them differently and a buyer should not have to care.
+    """
+    if not isinstance(payload, dict):
+        raise AuthorizationRejected("payment authorization must be a JSON object")
+
+    def pick(*names: str) -> object:
+        for name in names:
+            if name in payload and payload[name] not in (None, ""):
+                return payload[name]
+        raise AuthorizationRejected(f"payment authorization is missing {names[0]}")
+
+    signature = str(pick("signature", "sig")).strip()
+    try:
+        auth = DebitAuthorization(
+            channel_id=str(pick("channelId", "channel_id")).strip(),
+            hub=str(pick("hub")).strip(),
+            token=str(pick("token")).strip(),
+            amount=int(pick("amount")),
+            receipt_id=str(pick("receiptId", "receipt_id")).strip(),
+            nonce=int(pick("nonce")),
+            deadline=int(pick("deadline")),
+        )
+    except AuthorizationRejected:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise AuthorizationRejected(f"payment authorization has a malformed field: {exc}") from exc
+    return auth, signature
+
+
+def verify_and_store(
+    *,
+    payload: object,
+    ledger_channel_id: str,
+    escrow_channel_id: str,
+    expected_amount_usd: float,
+    expected_receipt_id: str,
+    authorizations: store.AuthorizationStore,
+    now: float | None = None,
+) -> AcceptedAuthorization:
+    """Verify one authorization against the chain and the pending debit, then persist it.
+
+    ``expected_amount_usd`` and ``expected_receipt_id`` come from the hub, never from the
+    client: they are what the LEDGER is about to record. Checking the signed values against
+    them is what stops a buyer from authorising a cent and being served a dollar's work —
+    or from authorising a debit the ledger never makes.
+    """
+    auth, signature = parse_authorization(payload)
+    hub = _require_hub_address()
+    clock = int(now if now is not None else time.time())
+
+    # Read the chain first: every subsequent comparison is against what the contract says,
+    # and an unreadable chain must not fall back to trusting the payload.
+    escrow = chain.escrow_address()
+    cid = chain.chain_id()
+    ch = chain.read_channel(escrow_channel_id, address=escrow)
+    if not ch.exists or not ch.is_open:
+        raise AuthorizationRejected(
+            "the escrow channel backing this payment channel is not open on chain"
+        )
+
+    if not _same_bytes32(auth.channel_id, escrow_channel_id):
+        # The signature covers channelId; a mismatch means the buyer signed for a
+        # different channel than the one being debited.
+        raise AuthorizationRejected(
+            "authorization channelId does not match the escrow channel behind this invoke"
+        )
+    if not addresses_equal(auth.hub, hub):
+        raise AuthorizationRejected(
+            "authorization is bound to a different hub address and this hub could never "
+            "submit it"
+        )
+    if not addresses_equal(auth.token, ch.token):
+        raise AuthorizationRejected("authorization token does not match the escrow channel")
+
+    expected_units = escrow_verify.usd_to_base_units(expected_amount_usd)
+    if int(auth.amount) != expected_units:
+        raise AuthorizationRejected(
+            f"authorization amount {auth.amount} does not match the {expected_units} base "
+            "units this invoke debits"
+        )
+    if auth.amount > ch.balance:
+        raise AuthorizationRejected(
+            "authorization amount exceeds the escrow channel's remaining on-chain balance"
+        )
+    if str(auth.receipt_id).lower() != str(expected_receipt_id).lower():
+        raise AuthorizationRejected(
+            "authorization receiptId does not match this invoke's receipt"
+        )
+    if int(auth.nonce) != int(ch.nonce):
+        # The contract accepts only the channel's CURRENT nonce. A stale nonce is a replay
+        # of an older authorization; a future one would sit unsubmittable behind a gap.
+        raise AuthorizationRejected(
+            f"authorization nonce {auth.nonce} is not the channel's current on-chain "
+            f"nonce {ch.nonce}"
+        )
+    if int(auth.deadline) <= clock:
+        raise AuthorizationRejected("authorization deadline has already passed")
+    max_ttl = config.max_authorization_ttl_s()
+    if int(auth.deadline) - clock > max_ttl:
+        # A deadline is the buyer's cap on how long the hub may hold a claim on their
+        # money; an unbounded one turns a single signature into a standing licence.
+        raise AuthorizationRejected(
+            f"authorization deadline is more than {max_ttl}s in the future"
+        )
+
+    signer = recover_signer(auth, signature, chain_id=cid, verifying_contract=escrow)
+    if not signer:
+        raise AuthorizationRejected("payment authorization signature could not be recovered")
+    if not addresses_equal(signer, ch.depositor):
+        raise AuthorizationRejected(
+            "payment authorization was not signed by the escrow channel's depositor"
+        )
+
+    try:
+        row = authorizations.record(
+            receipt_id=auth.receipt_id,
+            ledger_channel=ledger_channel_id,
+            escrow_channel=escrow_channel_id,
+            chain_id=cid,
+            escrow_address=escrow,
+            hub=hub,
+            token=normalize_address(ch.token),
+            depositor=normalize_address(ch.depositor),
+            amount_units=int(auth.amount),
+            nonce=int(auth.nonce),
+            deadline=int(auth.deadline),
+            signature=signature,
+        )
+    except store.StoreError as exc:
+        # A duplicate receipt or a duplicate (channel, nonce) is a replay, not a server
+        # error — the buyer's client has to produce a fresh authorization.
+        raise AuthorizationRejected(str(exc)) from exc
+
+    logger.info(
+        "escrow bridge: stored authorization %s for escrow channel %s nonce %d (%d units)",
+        row.receipt_id[:14], escrow_channel_id[:14], row.nonce, row.amount_units,
+    )
+    return AcceptedAuthorization(row=row, escrow_channel=ch, signer=normalize_address(signer))

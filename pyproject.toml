@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aimarket-hub"
+version = "3.0.0"
+description = "AI Market Federation Hub — crawl, index, search, and route AI capabilities across the network"
+license = "Apache-2.0"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "AIMarket", email = "dev@modelmarket.dev" }]
+keywords = ["aimarket", "ai-agents", "marketplace", "federation", "micropayments"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
+dependencies = [
+    "httpx>=0.28",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "pydantic>=2.10",
+    "cryptography>=44",
+    "jsonschema>=4.23",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.25", "pytest-httpx>=0.35"]
+# Escrow settlement bridge (aimarket_hub.escrow_bridge). Optional on purpose: the
+# bridge fails closed with CryptoUnavailable when these are absent, so a hub that
+# does not settle on-chain carries no crypto stack. Required to ACCEPT escrow-funded
+# channels — without it every escrow channel open is refused, which is safe but means
+# no deposit can ever be credited on a deployment whose only funding path is escrow.
+escrow = ["eth-utils>=5", "eth-account>=0.13"]
+plugins = [
+    "aimarket-safety>=2.0",
+    "aimarket-reputation>=2.0",
+    "aimarket-channels>=2.0",
+    "aimarket-tee>=2.0",
+    "aimarket-mcp-packager>=2.0",
+]
+all = [
+    "aimarket-hub[dev,plugins]",
+]
+
+[project.urls]
+Homepage = "https://modelmarket.dev"
+Documentation = "https://github.com/alexar76/aimarket-hub"
+Repository = "https://github.com/alexar76/aimarket-hub"
+Issues = "https://github.com/alexar76/aimarket-hub/issues"
+
+[project.scripts]
+aimarket = "aimarket_hub.cli:_entrypoint"
+
+[tool.setuptools.packages.find]
+include = ["aimarket_hub*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

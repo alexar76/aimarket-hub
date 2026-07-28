@@ -1,0 +1,37 @@
+version: "3.9"
+
+# Build from monorepo root (Dockerfile COPYs aimarket-hub/, acex/, etc.).
+# Prefer: ./scripts/deploy_hub.sh  OR  docker compose up -d --build (from repo root -f this file)
+
+services:
+  hub:
+    build:
+      context: ..
+      dockerfile: aimarket-hub/Dockerfile
+    image: modelmarket-hub:latest
+    container_name: modelmarket-hub
+    ports:
+      - "127.0.0.1:9083:9083"
+    environment:
+      - AIMARKET_HUB_NAME=AI-Factory Federation Hub
+      - AIMARKET_HUB_URL=http://localhost:9083
+      - AIMARKET_DB_PATH=/app/data/hub.db
+      - AIMARKET_SIGNING_KEY_PATH=/app/data/hub_signing_key
+      - AIMARKET_SEED_LIST=
+      - AIMARKET_CRAWL_INTERVAL_S=3600
+      - AIMARKET_ROUTING_FEE_BPS=100
+      - AIMARKET_MIN_TRUST_SCORE=0.3
+      - AIMARKET_MAX_CRAWL_DEPTH=3
+      - AIMARKET_REQUEST_TIMEOUT_S=30
+    volumes:
+      - modelmarket_hub_data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9083/.well-known/ai-market.json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  modelmarket_hub_data:
+    name: modelmarket_hub_data
