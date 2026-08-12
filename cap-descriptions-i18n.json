@@ -1,0 +1,452 @@
+{
+  "langs": [
+    "en",
+    "ru",
+    "es",
+    "fr",
+    "zh"
+  ],
+  "descriptions": {
+    "platon.random@v1": {
+      "en": "Signed chaos-VRF randomness",
+      "ru": "Подписанная случайность chaos-VRF",
+      "es": "Aleatoriedad firmada chaos-VRF",
+      "fr": "Aléa signé chaos-VRF",
+      "zh": "已签名的 chaos-VRF 随机性"
+    },
+    "platon.beacon@v1": {
+      "en": "Hash-chained randomness beacon round",
+      "ru": "Раунд маяка случайности с цепочкой хешей",
+      "es": "Ronda de faro de aleatoriedad encadenada por hash",
+      "fr": "Tour de balise d'aléa chaînée par hash",
+      "zh": "哈希链随机性信标轮次"
+    },
+    "platon.commit@v1": {
+      "en": "Commit-reveal (bias-resistant) randomness",
+      "ru": "Commit-reveal случайность (устойчивая к смещению)",
+      "es": "Aleatoriedad commit-reveal (resistente al sesgo)",
+      "fr": "Aléa commit-reveal (résistant au biais)",
+      "zh": "Commit-reveal（抗偏置）随机性"
+    },
+    "platon.reveal@v1": {
+      "en": "Commit-reveal randomness, phase 2 — supply the round",
+      "ru": "Commit-reveal, фаза 2 — раскрытие раунда",
+      "es": "Commit-reveal, fase 2 — revelar la ronda",
+      "fr": "Commit-reveal, phase 2 — fournir le tour",
+      "zh": "Commit-reveal 第二阶段——提交轮次揭示"
+    },
+    "platon.oracle@v1": {
+      "en": "LLM mathematical witness at bifurcations",
+      "ru": "Математический свидетель LLM на бифуркациях",
+      "es": "Testigo matemático LLM en bifurcaciones",
+      "fr": "Témoin mathématique LLM aux bifurcations",
+      "zh": "分岔处的 LLM 数学见证"
+    },
+    "platon.ask@v1": {
+      "en": "Grounded, read-only informational guide",
+      "ru": "Заземлённый справочный гид (только чтение)",
+      "es": "Guía informativa anclada, solo lectura",
+      "fr": "Guide informatif ancré, lecture seule",
+      "zh": "有依据的只读信息指南"
+    },
+    "platon.state@v1": {
+      "en": "Snapshot of the 32D universe — telemetry, oscillators, projection",
+      "ru": "Снимок 32D-вселенной — телеметрия, осцилляторы, проекция",
+      "es": "Instantánea del universo 32D — telemetría, osciladores, proyección",
+      "fr": "Instantané de l'univers 32D — télémétrie, oscillateurs, projection",
+      "zh": "32 维宇宙快照——遥测、振荡器、投影"
+    },
+    "platon.steer@v1": {
+      "en": "Semantic steering — natural language maps to bifurcation parameters",
+      "ru": "Семантическое управление — NL → параметры бифуркации",
+      "es": "Dirección semántica — lenguaje natural → parámetros de bifurcación",
+      "fr": "Pilotage sémantique — langage naturel → paramètres de bifurcation",
+      "zh": "语义转向——自然语言映射到分岔参数"
+    },
+    "platon.project@v1": {
+      "en": "Rotate the Stiefel projection — how the 32D shadow appears in 2D",
+      "ru": "Поворот проекции Штифеля — 32D-тень в 2D",
+      "es": "Rotar la proyección de Stiefel — sombra 32D en 2D",
+      "fr": "Rotation de la projection de Stiefel — ombre 32D en 2D",
+      "zh": "旋转 Stiefel 投影——32 维阴影在 2D 中的样子"
+    },
+    "platon.dream@v1": {
+      "en": "Surrogate vs truth trajectory — see where prediction dies at chaos",
+      "ru": "Суррогат vs истина — где прогноз ломается на хаосе",
+      "es": "Trayectoria sustituta vs verdad — dónde muere la predicción en el caos",
+      "fr": "Trajectoire de substitution vs vérité — où la prédiction meurt dans le chaos",
+      "zh": "代理轨迹 vs 真值——预测在混沌处失效的位置"
+    },
+    "platon.witnesses@v1": {
+      "en": "Public feed of oracle testimonies — chimera births, chaos thresholds",
+      "ru": "Публичная лента свидетельств оракула — химеры, пороги хаоса",
+      "es": "Feed público de testimonios del oráculo — quimeras, umbrales de caos",
+      "fr": "Flux public de témoignages d'oracle — chimères, seuils de chaos",
+      "zh": "预言机证词公开动态——嵌合体诞生、混沌阈值"
+    },
+    "chronos.eval@v1": {
+      "en": "Verifiable delay function (VDF): proof that real sequential time passed",
+      "ru": "VDF: доказательство, что прошло реальное последовательное время",
+      "es": "VDF: prueba de que pasó tiempo secuencial real",
+      "fr": "VDF : preuve qu'un temps séquentiel réel s'est écoulé",
+      "zh": "可验证延迟函数（VDF）：证明真实顺序时间已流逝"
+    },
+    "chronos.verify@v1": {
+      "en": "Verify a VDF proof — cheap and trustless",
+      "ru": "Проверка VDF-доказательства — дёшево и без доверия",
+      "es": "Verificar una prueba VDF — barato y sin confianza",
+      "fr": "Vérifier une preuve VDF — bon marché et sans confiance",
+      "zh": "验证 VDF 证明——廉价且无需信任"
+    },
+    "lattice.sequence@v1": {
+      "en": "Halton low-discrepancy points in [0,1)^d",
+      "ru": "Точки Halton с низким расхождением в [0,1)^d",
+      "es": "Puntos Halton de baja discrepancia en [0,1)^d",
+      "fr": "Points Halton à faible discrépance dans [0,1)^d",
+      "zh": "[0,1)^d 中的 Halton 低差异点"
+    },
+    "murmuration.aggregate@v1": {
+      "en": "Robust consensus aggregate of agent-submitted values",
+      "ru": "Устойчивый консенсус-агрегат значений агентов",
+      "es": "Agregado de consenso robusto de valores de agentes",
+      "fr": "Agrégat de consensus robuste des valeurs d'agents",
+      "zh": "对智能体提交值的稳健共识聚合"
+    },
+    "lumen.reputation@v1": {
+      "en": "EigenTrust / PageRank reputation over a trust graph",
+      "ru": "Репутация EigenTrust / PageRank по графу доверия",
+      "es": "Reputación EigenTrust / PageRank sobre un grafo de confianza",
+      "fr": "Réputation EigenTrust / PageRank sur un graphe de confiance",
+      "zh": "信任图上的 EigenTrust / PageRank 声誉"
+    },
+    "lumen.score@v1": {
+      "en": "Single-agent trust lookup: score, rank, percentile",
+      "ru": "Доверие одного агента: score, rank, percentile",
+      "es": "Consulta de confianza de un agente: score, rank, percentil",
+      "fr": "Lookup de confiance d'un agent : score, rang, percentile",
+      "zh": "单智能体信任查询：分数、排名、百分位"
+    },
+    "lumen.verify@v1": {
+      "en": "Re-derive PageRank and check claimed scores match",
+      "ru": "Пересчёт PageRank и проверка заявленных scores",
+      "es": "Recalcular PageRank y comprobar scores reclamados",
+      "fr": "Recalculer PageRank et vérifier les scores revendiqués",
+      "zh": "重算 PageRank 并核对声称的分数"
+    },
+    "colony.optimize@v1": {
+      "en": "Tour optimization over 2D points (NN + 2-opt)",
+      "ru": "Оптимизация тура по 2D-точкам (NN + 2-opt)",
+      "es": "Optimización de tour sobre puntos 2D (NN + 2-opt)",
+      "fr": "Optimisation de tournée sur points 2D (NN + 2-opt)",
+      "zh": "二维点上的路径优化（NN + 2-opt）"
+    },
+    "turing.bluenoise@v1": {
+      "en": "Blue-noise points in [0,1)^2 (Mitchell best-candidate)",
+      "ru": "Blue-noise точки в [0,1)^2 (Mitchell best-candidate)",
+      "es": "Puntos blue-noise en [0,1)^2 (Mitchell best-candidate)",
+      "fr": "Points blue-noise dans [0,1)^2 (Mitchell best-candidate)",
+      "zh": "[0,1)^2 中的蓝噪声点（Mitchell best-candidate）"
+    },
+    "percola.threshold@v1": {
+      "en": "Graph connectivity resilience under high-leverage removals",
+      "ru": "Устойчивость связности графа при удалении ключевых узлов",
+      "es": "Resiliencia de conectividad bajo remociones de alto apalancamiento",
+      "fr": "Résilience de connectivité sous suppressions à fort effet de levier",
+      "zh": "高杠杆节点移除下的图连通韧性"
+    },
+    "percola.verify@v1": {
+      "en": "Trustless verification of percolation removal order",
+      "ru": "Trustless-проверка порядка удалений перколяции",
+      "es": "Verificación sin confianza del orden de remoción",
+      "fr": "Vérification sans confiance de l'ordre de suppression",
+      "zh": "渗流移除顺序的无信任验证"
+    },
+    "fermat.route@v1": {
+      "en": "Globally least-time composition path from start to goal",
+      "ru": "Глобально наибыстрейший составной маршрут start→goal",
+      "es": "Camino de composición de menor tiempo global start→goal",
+      "fr": "Chemin de composition au moindre temps global start→goal",
+      "zh": "从 start 到 goal 的全局最短时间组合路径"
+    },
+    "fermat.verify@v1": {
+      "en": "Trustless dual-certificate check of a least-time route",
+      "ru": "Trustless-проверка least-time маршрута по dual-сертификату",
+      "es": "Comprobación sin confianza vía certificado dual",
+      "fr": "Contrôle sans confiance via certificat dual",
+      "zh": "最短时间路径的无信任对偶证书校验"
+    },
+    "ablation.cascade@v1": {
+      "en": "Systemic cascade risk on an exposure / sandpile graph",
+      "ru": "Системный каскадный риск на графе экспозиций / sandpile",
+      "es": "Riesgo de cascada sistémica en grafo de exposición / sandpile",
+      "fr": "Risque de cascade systémique sur graphe d'exposition / sandpile",
+      "zh": "暴露/沙堆图上的系统性级联风险"
+    },
+    "ablation.verify@v1": {
+      "en": "Trustless replay of the cascade sandpile dynamics",
+      "ru": "Trustless-повтор динамики каскадного sandpile",
+      "es": "Rejuego sin confianza de la dinámica sandpile",
+      "fr": "Rejeu sans confiance de la dynamique sandpile",
+      "zh": "级联沙堆动力学的无信任重放"
+    },
+    "landauer.audit@v1": {
+      "en": "Thermodynamic cost audit of a computation (erasure count)",
+      "ru": "Аудит термодинамической стоимости вычисления (стирания)",
+      "es": "Auditoría del coste termodinámico de un cómputo",
+      "fr": "Audit du coût thermodynamique d'un calcul",
+      "zh": "计算的热力学成本审计（擦除计数）"
+    },
+    "landauer.verify@v1": {
+      "en": "Trustless replay of topological erasure counting",
+      "ru": "Trustless-повтор топологического подсчёта стираний",
+      "es": "Rejuego sin confianza del conteo topológico de borrados",
+      "fr": "Rejeu sans confiance du comptage topologique d'effacements",
+      "zh": "拓扑擦除计数的无信任重放"
+    },
+    "sortes.draw@v1": {
+      "en": "ECVRF draw: proof π and output β for input alpha",
+      "ru": "ECVRF-розыгрыш: доказательство π и выход β для alpha",
+      "es": "Sorteo ECVRF: prueba π y salida β para alpha",
+      "fr": "Tirage ECVRF : preuve π et sortie β pour alpha",
+      "zh": "ECVRF 抽取：对 alpha 的证明 π 与输出 β"
+    },
+    "sortes.verify@v1": {
+      "en": "Verify an ECVRF proof offline and trustlessly",
+      "ru": "Офлайн trustless-проверка ECVRF-доказательства",
+      "es": "Verificar una prueba ECVRF offline y sin confianza",
+      "fr": "Vérifier une preuve ECVRF hors ligne et sans confiance",
+      "zh": "离线无信任验证 ECVRF 证明"
+    },
+    "gauss.field@v1": {
+      "en": "GP posterior over a query field (RBF kernel)",
+      "ru": "GP-постериор по полю запроса (RBF-ядро)",
+      "es": "Posterior GP sobre un campo de consulta (kernel RBF)",
+      "fr": "Postérieur GP sur un champ de requête (noyau RBF)",
+      "zh": "查询场上的 GP 后验（RBF 核）"
+    },
+    "gauss.suggest@v1": {
+      "en": "Next experiment by Expected Improvement",
+      "ru": "Следующий эксперимент по Expected Improvement",
+      "es": "Siguiente experimento por Expected Improvement",
+      "fr": "Prochaine expérience par Expected Improvement",
+      "zh": "按 Expected Improvement 建议下一实验"
+    },
+    "gauss.verify@v1": {
+      "en": "Trustless replay of claimed GP posterior points",
+      "ru": "Trustless-повтор заявленных точек GP-постериора",
+      "es": "Rejuego sin confianza de puntos posteriores GP",
+      "fr": "Rejeu sans confiance des points postérieurs GP",
+      "zh": "声称的 GP 后验点的无信任重放"
+    },
+    "aestus.seal@v1": {
+      "en": "Time-lock seal: sequential squarings lock data until T",
+      "ru": "Time-lock печать: последовательные возведения до T",
+      "es": "Sello time-lock: elevaciones secuenciales hasta T",
+      "fr": "Sceau time-lock : élévations séquentielles jusqu'à T",
+      "zh": "时间锁封印：顺序平方直至 T"
+    },
+    "aestus.open@v1": {
+      "en": "Open a time-lock puzzle by redoing T sequential squarings",
+      "ru": "Открыть time-lock: повторить T последовательных возведений",
+      "es": "Abrir puzzle time-lock rehaciendo T elevaciones",
+      "fr": "Ouvrir un puzzle time-lock en refaisant T élévations",
+      "zh": "通过重做 T 次顺序平方打开时间锁谜题"
+    },
+    "aestus.verify@v1": {
+      "en": "Cheap check that unlock value b matches the squarings",
+      "ru": "Дешёвая проверка, что unlock b соответствует возведениям",
+      "es": "Comprobación barata de que b coincide con las elevaciones",
+      "fr": "Contrôle bon marché que b correspond aux élévations",
+      "zh": "廉价校验解锁值 b 是否匹配平方结果"
+    },
+    "betti.homology@v1": {
+      "en": "Persistent homology of a point cloud (Betti numbers)",
+      "ru": "Персистентная гомология облака точек (числа Бетти)",
+      "es": "Homología persistente de una nube de puntos (Betti)",
+      "fr": "Homologie persistante d'un nuage de points (Betti)",
+      "zh": "点云的持续同调（Betti 数）"
+    },
+    "betti.distance@v1": {
+      "en": "Bottleneck distance between two persistence diagrams",
+      "ru": "Bottleneck-расстояние между двумя диаграммами персистентности",
+      "es": "Distancia bottleneck entre dos diagramas de persistencia",
+      "fr": "Distance bottleneck entre deux diagrammes de persistance",
+      "zh": "两个持续图之间的瓶颈距离"
+    },
+    "kantor.transport@v1": {
+      "en": "Discrete optimal transport from source a to sink b",
+      "ru": "Дискретный оптимальный транспорт a → b",
+      "es": "Transporte óptimo discreto de a hacia b",
+      "fr": "Transport optimal discret de a vers b",
+      "zh": "从源 a 到汇 b 的离散最优传输"
+    },
+    "kantor.verify@v1": {
+      "en": "Two-sided primal-dual certificate for OT cost",
+      "ru": "Двусторонний primal-dual сертификат стоимости OT",
+      "es": "Certificado primal-dual bilateral del coste OT",
+      "fr": "Certificat primal-dual bilatéral du coût OT",
+      "zh": "OT 成本的双侧 primal-dual 证书"
+    },
+    "fourier.spectrum@v1": {
+      "en": "Spectral analysis of a graph Laplacian",
+      "ru": "Спектральный анализ лапласиана графа",
+      "es": "Análisis espectral del laplaciano de un grafo",
+      "fr": "Analyse spectrale du laplacien d'un graphe",
+      "zh": "图拉普拉斯的谱分析"
+    },
+    "fourier.verify@v1": {
+      "en": "Trustless eigenpair certificate for a claimed (λ, x)",
+      "ru": "Trustless-сертификат собственной пары (λ, x)",
+      "es": "Certificado sin confianza de un par propio (λ, x)",
+      "fr": "Certificat sans confiance d'une paire propre (λ, x)",
+      "zh": "声称特征对 (λ, x) 的无信任证书"
+    },
+    "gaia.weather.read@v1": {
+      "en": "Live or sim weather reading (T/RH/P/wind), Ed25519-attested — Open-Meteo / NWS",
+      "ru": "Живое или sim-показание погоды (T/RH/P/ветер), аттестация Ed25519 — Open-Meteo / NWS",
+      "es": "Lectura climática en vivo o sim (T/RH/P/viento), atestiguada Ed25519 — Open-Meteo / NWS",
+      "fr": "Relevé météo live ou sim (T/RH/P/vent), attesté Ed25519 — Open-Meteo / NWS",
+      "zh": "实时或仿真天气读数（温湿度气压风），Ed25519 认证 — Open-Meteo / NWS"
+    },
+    "gaia.air.read@v1": {
+      "en": "Live or sim air quality (PM2.5/PM10/CO2/VOC), Ed25519-attested",
+      "ru": "Живое или sim-качество воздуха (PM2.5/PM10/CO2/VOC), Ed25519",
+      "es": "Calidad del aire en vivo o sim (PM2.5/PM10/CO2/VOC), Ed25519",
+      "fr": "Qualité de l'air live ou sim (PM2.5/PM10/CO2/VOC), Ed25519",
+      "zh": "实时或仿真空气质量（PM2.5/PM10/CO2/VOC），Ed25519 认证"
+    },
+    "gaia.energy.read@v1": {
+      "en": "Attested energy-meter reading (V/A/W + Wh) — sim em-01",
+      "ru": "Аттестованное показание счётчика энергии (V/A/W + Wh) — sim em-01",
+      "es": "Lectura atestiguada de medidor de energía (V/A/W + Wh) — sim em-01",
+      "fr": "Relevé attesté de compteur d'énergie (V/A/W + Wh) — sim em-01",
+      "zh": "认证电能表读数（V/A/W + Wh）— 仿真 em-01"
+    },
+    "gaia.grid.read@v1": {
+      "en": "Live UK grid carbon intensity (gCO₂/kWh) relay — uk-grid-01",
+      "ru": "Живой релей углеродоёмкости UK grid (gCO₂/kWh) — uk-grid-01",
+      "es": "Relé en vivo de intensidad de carbono UK grid (gCO₂/kWh) — uk-grid-01",
+      "fr": "Relais live d'intensité carbone UK grid (gCO₂/kWh) — uk-grid-01",
+      "zh": "英国电网碳强度实时中继（gCO₂/kWh）— uk-grid-01"
+    },
+    "gaia.quake.read@v1": {
+      "en": "Live USGS M≥2.5 earthquake relay — magnitude, depth, lat/lon",
+      "ru": "Живой релей землетрясений USGS M≥2.5 — магнитуда, глубина, координаты",
+      "es": "Relé en vivo de sismos USGS M≥2.5 — magnitud, profundidad, lat/lon",
+      "fr": "Relais live séismes USGS M≥2.5 — magnitude, profondeur, lat/lon",
+      "zh": "USGS M≥2.5 地震实时中继——震级、深度、经纬度"
+    },
+    "gaia.tide.read@v1": {
+      "en": "Live NOAA tide gauge water level (m, MLLW) — noaa-tide-01",
+      "ru": "Живой уровень воды NOAA (м, MLLW) — noaa-tide-01",
+      "es": "Nivel de agua NOAA en vivo (m, MLLW) — noaa-tide-01",
+      "fr": "Niveau d'eau NOAA live (m, MLLW) — noaa-tide-01",
+      "zh": "NOAA 潮位实时水位（米，MLLW）— noaa-tide-01"
+    },
+    "gaia.river.read@v1": {
+      "en": "Live USGS NWIS river gauge — discharge + stage (metric)",
+      "ru": "Живой речной датчик USGS NWIS — расход + уровень (метрика)",
+      "es": "Relé USGS NWIS de río — caudal + etapa (métrico)",
+      "fr": "Relais USGS NWIS rivière — débit + hauteur (métrique)",
+      "zh": "USGS NWIS 河流实时——流量 + 水位（公制）"
+    },
+    "gaia.marine.read@v1": {
+      "en": "Live marine waves / SST — NDBC buoy or Open-Meteo Marine",
+      "ru": "Живое море — волны / SST (NDBC или Open-Meteo Marine)",
+      "es": "Marino en vivo — olas / SST (NDBC u Open-Meteo Marine)",
+      "fr": "Marin live — vagues / SST (NDBC ou Open-Meteo Marine)",
+      "zh": "实时海洋——浪高 / 海表温（NDBC 或 Open-Meteo Marine）"
+    },
+    "gaia.fire.read@v1": {
+      "en": "Live NASA FIRMS VIIRS fire hotspot (cite NASA FIRMS) — firms-fire-01",
+      "ru": "Живой очаг пожара NASA FIRMS VIIRS (цитировать NASA FIRMS) — firms-fire-01",
+      "es": "Punto de fuego NASA FIRMS VIIRS en vivo (citar NASA FIRMS) — firms-fire-01",
+      "fr": "Point chaud feu NASA FIRMS VIIRS live (citer NASA FIRMS) — firms-fire-01",
+      "zh": "NASA FIRMS VIIRS 实时火点（需注明 NASA FIRMS）— firms-fire-01"
+    },
+    "gaia.radiation.read@v1": {
+      "en": "Live Safecast radiation (CPM, CC0) — safecast-01",
+      "ru": "Живая радиация Safecast (CPM, CC0) — safecast-01",
+      "es": "Radiación Safecast en vivo (CPM, CC0) — safecast-01",
+      "fr": "Radiation Safecast live (CPM, CC0) — safecast-01",
+      "zh": "Safecast 实时辐射（CPM，CC0）— safecast-01"
+    },
+    "gaia.jamming.read@v1": {
+      "en": "Live CyberNews GNSS interference event (CC BY 4.0) — cybernews-jam-01",
+      "ru": "Живое событие GNSS-помех CyberNews (CC BY 4.0) — cybernews-jam-01",
+      "es": "Evento de interferencia GNSS CyberNews en vivo (CC BY 4.0) — cybernews-jam-01",
+      "fr": "Événement d'interférence GNSS CyberNews live (CC BY 4.0) — cybernews-jam-01",
+      "zh": "CyberNews GNSS 干扰事件实时（CC BY 4.0）— cybernews-jam-01"
+    },
+    "gaia.adsb.read@v1": {
+      "en": "Own-edge ADS-B feeder reading (operator dump1090) — not a third-party aggregator",
+      "ru": "Собственный ADS-B feeder (dump1090 оператора) — не сторонний агрегатор",
+      "es": "Lectura ADS-B de feeder propio (dump1090) — no un agregador de terceros",
+      "fr": "Relevé ADS-B feeder propre (dump1090) — pas un agrégateur tiers",
+      "zh": "自有边缘 ADS-B feeder 读数（运营方 dump1090）——非第三方聚合"
+    },
+    "gaia.ais.read@v1": {
+      "en": "Own-edge AIS feeder reading (operator receiver) — not a third-party aggregator",
+      "ru": "Собственный AIS feeder (приёмник оператора) — не сторонний агрегатор",
+      "es": "Lectura AIS de feeder propio (receptor operador) — no un agregador de terceros",
+      "fr": "Relevé AIS feeder propre (récepteur opérateur) — pas un agrégateur tiers",
+      "zh": "自有边缘 AIS feeder 读数（运营方接收机）——非第三方聚合"
+    },
+    "atlas.watchbox.subscribe@v1": {
+      "en": "ATLAS watchbox subscribe — save a geographic bbox + layer filter (REST); check is a separate billable SKU",
+      "ru": "Подписка ATLAS watchbox — сохранить bbox + фильтр слоёв (REST); проверка — отдельный billable SKU",
+      "es": "Suscripción ATLAS watchbox — guardar bbox + filtro de capas (REST); el check es otro SKU de pago",
+      "fr": "Abonnement ATLAS watchbox — enregistrer un bbox + filtre de couches (REST) ; le check est un SKU facturable séparé",
+      "zh": "ATLAS watchbox 订阅——保存地理 bbox + 图层过滤（REST）；check 为单独计费 SKU"
+    },
+    "atlas.watchbox.check@v1": {
+      "en": "Poll an ATLAS watchbox (bbox + layers) against the live fleet — LIVE matches + content receipt; fail-closed if empty",
+      "ru": "Проверка ATLAS watchbox (bbox + слои) по живому флоту — LIVE-совпадения + content receipt; fail-closed если пусто",
+      "es": "Evalúa un watchbox ATLAS (bbox + capas) contra la flota en vivo — matches LIVE + recibo; fail-closed si vacío",
+      "fr": "Évalue un watchbox ATLAS (bbox + couches) sur la flotte live — matches LIVE + reçu ; fail-closed si vide",
+      "zh": "对照实时机队轮询 ATLAS watchbox（bbox + 图层）——LIVE 匹配 + 内容回执；空则失败关闭"
+    },
+    "atlas.fire.weather@v1": {
+      "en": "Wildfire desk note: NASA FIRMS hotspots in a bbox + nearest LIVE wind/humidity (cite NASA); refuse without LIVE fire",
+      "ru": "Пожарная сводка: hotspots NASA FIRMS в bbox + ближайший LIVE wind/humidity (цитировать NASA); refuse без LIVE fire",
+      "es": "Nota de incendios: hotspots NASA FIRMS en un bbox + viento/humedad LIVE cercano (citar NASA); refuse sin fuego LIVE",
+      "fr": "Note feux : hotspots NASA FIRMS dans un bbox + vent/humidité LIVE proches (citer NASA) ; refuse sans feu LIVE",
+      "zh": "野火简报：bbox 内 NASA FIRMS 火点 + 最近 LIVE 风/湿度（注明 NASA）；无 LIVE 火点则拒绝"
+    },
+    "atlas.situation.brief@v1": {
+      "en": "Cross-layer situation brief for a bbox — score, drivers, cited LIVE pins; fail-closed if coverage empty",
+      "ru": "Кросс-слойный situational brief по bbox — score, drivers, цитаты LIVE; fail-closed если покрытие пусто",
+      "es": "Brief situacional multi-capa para un bbox — score, drivers, pines LIVE citados; fail-closed si cobertura vacía",
+      "fr": "Brief situationnel multi-couches pour un bbox — score, drivers, pins LIVE cités ; fail-closed si couverture vide",
+      "zh": "bbox 跨层态势简报——score、drivers、引用的 LIVE 针脚；无覆盖则失败关闭"
+    },
+    "atlas.nearest.read@v1": {
+      "en": "Nearest LIVE ATLAS pin to a lat/lon (layer filter, distance_km, max_km, receipt) — fail-closed if too far or empty",
+      "ru": "Ближайший LIVE-пин ATLAS к lat/lon (слой, distance_km, max_km, receipt) — fail-closed если слишком далеко или пусто",
+      "es": "Pin LIVE ATLAS más cercano a lat/lon (capa, distance_km, max_km, recibo) — fail-closed si está lejos o vacío",
+      "fr": "Pin LIVE ATLAS le plus proche d’un lat/lon (couche, distance_km, max_km, reçu) — fail-closed si trop loin ou vide",
+      "zh": "距 lat/lon 最近的 LIVE ATLAS 针脚（图层、distance_km、max_km、回执）——过远或为空则失败关闭"
+    },
+    "gaia.window@v1": {
+      "en": "Bundle of N attested readings from one device (micro-billing window)",
+      "ru": "Пакет из N аттестованных показаний одного устройства (окно micro-billing)",
+      "es": "Paquete de N lecturas atestiguadas de un dispositivo",
+      "fr": "Lot de N relevés attestés d'un appareil (fenêtre micro-facturation)",
+      "zh": "单设备 N 条认证读数打包（微计费窗口）"
+    },
+    "gaia.verify@v1": {
+      "en": "Statistical plausibility verdict over a GAIA reading",
+      "ru": "Статистический вердикт правдоподобия по показанию GAIA",
+      "es": "Veredicto de plausibilidad estadística sobre una lectura GAIA",
+      "fr": "Verdict de plausibilité statistique sur un relevé GAIA",
+      "zh": "对 GAIA 读数的统计合理性裁决"
+    },
+    "gaia.fleet.status@v1": {
+      "en": "Device registry: models, sites, pubkeys, fault state",
+      "ru": "Реестр устройств: модели, сайты, pubkeys, состояние неисправности",
+      "es": "Registro de dispositivos: modelos, sitios, pubkeys, fallos",
+      "fr": "Registre d'appareils : modèles, sites, pubkeys, panne",
+      "zh": "设备注册表：型号、站点、公钥、故障状态"
+    }
+  }
+}

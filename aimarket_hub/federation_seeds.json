@@ -1,0 +1,26 @@
+{
+  "_comment": "Committed federation seed list. The crawler walks these on startup/interval so ecosystem nodes are discovered automatically — no hand-editing of node lists anywhere. Each seed's `public_key` is operator-vouched: when a seed advertises exactly this Ed25519 key, the crawler trusts and indexes it on FIRST contact (instead of waiting for manual approval). A key mismatch falls back to the safe untrusted-first-contact path. Override the whole list with AIMARKET_SEED_LIST and pins with AIMARKET_SEED_PUBKEYS, or point AIMARKET_SEEDS_FILE elsewhere.",
+  "seeds": [
+    {
+      "name": "Oracle Family (AIMarket v2)",
+      "well_known_url": "https://oracles.modelmarket.dev/family/.well-known/ai-market.json",
+      "public_key": "YkAOwWNbRFti2cqEzD6zfuI4OTLsGUoObpCmlwZqaTQ=",
+      "categories": ["oracle", "simulation", "math-viz", "randomness-beacon", "agent-tooling"],
+      "note": "Federated oracle-family endpoint aggregating all 17 oracles (Platon chaos-VRF/beacon, Chronos Wesolowski VDF, Lattice low-discrepancy, Murmuration robust consensus, Lumen EigenTrust/PageRank, Colony TSP, Turing blue-noise, Percola percolation, Fermat routing, Ablation cascade-risk, Landauer thermodynamic audit, Sortes ECVRF verifiable randomness, Gauss Gaussian-process regression, Aestus RSW time-lock puzzles, Betti persistent homology, Kantor optimal transport, Fourier graph-spectral analysis) behind one signed manifest — 42 capabilities. The 'oracle'/'randomness-beacon' categories let the hub route invokes to the peer's mcp_endpoint. Until 2026-07-31 this entry pointed at https://oracles.modelmarket.dev/.well-known/ai-market.json with Platon's own signer key: that is one oracle of the seventeen, so a hub seeded from this file indexed 11 capabilities and the note above described 42 that were never crawled. The family endpoint lives under /family and signs with its own key. Verified live 2026-07-31."
+    },
+    {
+      "name": "GAIA physical-world oracle gateway",
+      "well_known_url": "https://iot.modelmarket.dev/.well-known/ai-market.json",
+      "public_key": "nXqEvIbWv+rA8TASY0GqGWZi/OPazT0HM1LQTrRXemg=",
+      "categories": ["iot", "sensors", "physical-data", "verification"],
+      "note": "Physical-world oracle gateway (GAIA): sim + LIVE relays sold as signed Hub SKUs (weather/air/energy + grid/quake/tide/river/marine + free-to-commercialize fire/radiation/jamming + optional own-edge ADS-B/AIS feeders) with Metis-envelope statistical verifier for Pay-on-Verified. Caps are dynamic from build_spec() on the running process — redeploy GAIA then wait for federation crawl. Hub UI strings: cap-descriptions-i18n.json."
+    },
+    {
+      "name": "ATLAS planetary sensor map & composite briefs",
+      "well_known_url": "https://atlas.modelmarket.dev/.well-known/ai-market.json",
+      "public_key": "UJ9MnZk217mUcPUe10CO7uOUM++AzOYRWtkhDRjb6Z0=",
+      "categories": ["iot", "sensors", "physical-data", "geospatial", "risk-brief", "wildfire", "watchbox"],
+      "note": "ATLAS map peer: composite Hub SKUs atlas.situation.brief@v1, atlas.fire.weather@v1, atlas.nearest.read@v1, atlas.watchbox.check@v1 (signed manifest). LIVE fail-closed. Pin matches ATLAS_SIGNING_SEED_B64 on the atlas host. Hub UI: cap-descriptions-i18n.json."
+    }
+  ]
+}

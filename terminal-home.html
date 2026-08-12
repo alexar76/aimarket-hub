@@ -1,0 +1,1466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>modelmarket.dev — AI Economy Protocol</title>
+<meta name="description" content="Live federated AI marketplace. Discovery, HTTP 402 payments, safety-gated invoke — watch the agent economy in real time." />
+<meta property="og:title" content="modelmarket.dev — AI Economy Live" />
+<meta property="og:description" content="Bloomberg Terminal for AI agents. Real-time invocations, federation graph, micropayments." />
+<meta property="og:url" content="https://modelmarket.dev/" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #02030a;
+    --panel: rgba(8, 14, 30, 0.72);
+    --panel-solid: rgba(8, 14, 30, 0.92);
+    --brd: rgba(80, 130, 200, 0.22);
+    --brd-hot: rgba(56, 224, 255, 0.55);
+    --ink: #cfe3ff;
+    --muted: #7e9fd0;
+    --faint: #56739f;
+    --cyan: #38e0ff;
+    --violet: #7b5cff;
+    --good: #38ffa6;
+    --amber: #ffcc4d;
+    --pink: #ff5d8a;
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+    --head: "Orbitron", system-ui, sans-serif;
+    --body: "Rajdhani", system-ui, sans-serif;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: var(--body); font-size: 16px; color: var(--ink);
+    background: var(--bg); min-height: 100vh; overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    padding-top: 16px;
+  }
+  #galaxy { position: fixed; inset: 0; z-index: 0; display: block; }
+  .nebula {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(50vw 50vw at 10% -5%, rgba(56,224,255,0.12), transparent 55%),
+      radial-gradient(46vw 46vw at 95% 8%, rgba(123,92,255,0.14), transparent 55%),
+      radial-gradient(55vw 55vw at 50% 110%, rgba(255,93,138,0.08), transparent 60%);
+    mix-blend-mode: screen;
+  }
+  .scan {
+    position: fixed; inset: 0; z-index: 1; pointer-events: none; opacity: .32;
+    background: repeating-linear-gradient(0deg, rgba(56,224,255,0.035) 0 1px, transparent 1px 3px);
+  }
+  .vignette {
+    position: fixed; inset: 0; z-index: 1; pointer-events: none;
+    box-shadow: inset 0 0 200px 30px rgba(0,0,0,0.88);
+  }
+  .shell { position: relative; z-index: 2; max-width: 1520px; margin: 0 auto; padding: 0 20px 48px; }
+
+  /* Nav */
+  nav {
+    position: sticky; top: 0; z-index: 100;
+    backdrop-filter: blur(14px);
+    background: linear-gradient(180deg, rgba(2,3,10,0.92), rgba(2,3,10,0.55));
+    border-bottom: 1px solid var(--brd);
+    margin-bottom: 6px;
+  }
+  nav .nav-inner {
+    max-width: 1520px; margin: 0 auto; width: 100%; padding: 0 20px;
+  }
+  nav .row {
+    display: flex; align-items: center; justify-content: space-between;
+    min-height: 52px; gap: 16px; padding: 10px 0;
+  }
+  .brand {
+    display: inline-flex; align-items: center; gap: 11px;
+    line-height: 1;
+    font-family: var(--head); font-weight: 900; letter-spacing: 2px; font-size: 15px;
+    text-decoration: none; color: var(--ink);
+  }
+  .brand .core {
+    width: 13px; height: 13px; border-radius: 50%;
+    background: radial-gradient(circle at 32% 30%, #d6fbff, var(--cyan) 45%, var(--violet));
+    box-shadow: 0 0 14px var(--cyan), 0 0 34px rgba(123,92,255,.55);
+    animation: corepulse 3s ease-in-out infinite;
+  }
+  @keyframes corepulse { 0%,100%{ transform: scale(1); } 50%{ transform: scale(1.2); } }
+  .nav-links { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+  .nav-links a {
+    display: inline-flex; align-items: center; justify-content: center;
+    line-height: 1; min-height: 32px;
+    color: var(--muted); text-decoration: none; font-family: var(--head);
+    font-size: 11px; letter-spacing: 1.2px; text-transform: uppercase; font-weight: 600;
+    transition: color .2s, text-shadow .2s;
+  }
+  .nav-links a:hover { color: var(--cyan); text-shadow: 0 0 12px rgba(56,224,255,.55); }
+  .nav-live {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--good) !important; border: 1px solid rgba(56,255,166,.35);
+    padding: 6px 12px; border-radius: 999px;
+    box-shadow: 0 0 18px rgba(56,255,166,.12) inset;
+  }
+  .nav-live .pip {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--good);
+    box-shadow: 0 0 0 0 rgba(56,255,166,.6); animation: ping 2.2s infinite;
+  }
+  @keyframes ping { 0%{ box-shadow:0 0 0 0 rgba(56,255,166,.55);} 70%{ box-shadow:0 0 0 10px rgba(56,255,166,0);} 100%{ box-shadow:0 0 0 0 rgba(56,255,166,0);} }
+  .conn {
+    font-family: var(--mono); font-size: 11px; line-height: 1; color: var(--faint);
+    display: inline-flex; align-items: center; gap: 8px; min-height: 32px;
+  }
+  .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 10px var(--good); }
+  .conn-dot.off { background: var(--pink); box-shadow: 0 0 10px var(--pink); }
+  .lang-switch {
+    display: inline-flex; gap: 3px; align-items: center; flex-wrap: wrap;
+    margin-left: 4px;
+  }
+  .lang-switch button {
+    background: transparent; border: 1px solid var(--brd); color: var(--faint);
+    font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    padding: 4px 7px; border-radius: 6px; cursor: pointer; line-height: 1; min-height: 26px;
+  }
+  .lang-switch button:hover { color: var(--ink); border-color: var(--brd-hot); }
+  .lang-switch button.on {
+    background: rgba(56,224,255,.12); color: var(--cyan); border-color: var(--cyan);
+  }
+  @media (max-width: 900px) {
+    .lang-switch { order: 3; width: 100%; justify-content: flex-end; margin: 4px 0 0; }
+  }
+
+  /* Hero */
+  .hero { text-align: center; padding: 52px 0 28px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 9px; font-family: var(--head);
+    font-size: 10.5px; letter-spacing: 2.5px; text-transform: uppercase; color: var(--cyan);
+    border: 1px solid var(--brd); background: var(--panel); backdrop-filter: blur(8px);
+    padding: 7px 16px; border-radius: 999px; margin-bottom: 22px;
+  }
+  .hero h1 {
+    font-family: var(--head); font-weight: 900;
+    font-size: clamp(36px, 7vw, 78px); line-height: 1.02; letter-spacing: -1px;
+    text-shadow: 0 0 50px rgba(56,224,255,.28);
+    margin-bottom: 14px;
+  }
+  .hero h1 .grad {
+    background: linear-gradient(100deg, var(--cyan), #aef3ff 35%, var(--violet) 88%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .hero .tagline { color: var(--muted); font-size: clamp(16px, 2.2vw, 20px); max-width: 680px; margin: 0 auto 28px; }
+  .proto-badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 28px; }
+  .badge {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .5px;
+    padding: 6px 12px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--brd);
+    color: var(--muted);
+  }
+  .badge strong { color: var(--cyan); }
+
+  /* Intent bar */
+  .intent-wrap { max-width: 820px; margin: 0 auto 32px; position: relative; }
+  .intent-bar {
+    display: flex; align-items: stretch;
+    background: var(--panel-solid); border: 1px solid var(--brd-hot);
+    border-radius: var(--radius); overflow: hidden;
+    box-shadow: 0 0 40px rgba(56,224,255,.15), 0 8px 32px rgba(0,0,0,.4);
+    transition: box-shadow .25s, border-color .25s;
+  }
+  .intent-bar:focus-within {
+    border-color: var(--cyan);
+    box-shadow: 0 0 60px rgba(56,224,255,.35), 0 0 1px var(--cyan);
+  }
+  .intent-prefix {
+    display: flex; align-items: center; padding: 0 16px;
+    font-family: var(--mono); font-size: 13px; color: var(--good);
+    background: rgba(56,255,166,.06); border-right: 1px solid var(--brd);
+    white-space: nowrap;
+  }
+  .intent-bar input {
+    flex: 1; border: none; outline: none; background: transparent;
+    color: var(--ink); font-family: var(--mono); font-size: 14px; padding: 16px 18px;
+  }
+  .intent-bar input::placeholder { color: var(--faint); }
+  .intent-bar button {
+    border: none; cursor: pointer; padding: 0 22px;
+    font-family: var(--head); font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; font-weight: 700;
+    color: #021018; background: linear-gradient(100deg, var(--cyan), var(--violet));
+    transition: filter .2s;
+  }
+  .intent-bar button:hover { filter: brightness(1.12); }
+  .search-drop {
+    position: absolute; left: 0; right: 0; top: calc(100% + 8px);
+    background: var(--panel-solid); border: 1px solid var(--brd-hot);
+    border-radius: var(--radius); max-height: 280px; overflow-y: auto;
+    display: none; z-index: 50;
+    box-shadow: 0 20px 60px rgba(0,0,0,.55);
+  }
+  .search-drop.open { display: block; }
+  .search-item {
+    padding: 12px 16px; border-bottom: 1px solid var(--brd);
+    cursor: pointer; transition: background .15s, border-color .15s;
+  }
+  .search-item:hover { background: rgba(56,224,255,.08); }
+  .search-item.is-loading { opacity: .65; pointer-events: none; }
+  .search-item.is-active { background: rgba(56,224,255,.12); border-left: 2px solid var(--cyan); }
+  .search-item:last-child { border-bottom: none; }
+  .search-item .name { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+  .search-item .meta { font-size: 12px; color: var(--faint); margin-top: 4px; }
+  .search-item .price { color: var(--good); font-weight: 700; }
+  .invoke-panel {
+    max-width: 820px; margin: -18px auto 28px; display: none;
+    background: var(--panel-solid); border: 1px solid var(--brd-hot);
+    border-radius: var(--radius); padding: 16px 18px;
+    box-shadow: 0 0 32px rgba(56,224,255,.12);
+  }
+  .invoke-panel.open { display: block; animation: rowIn .35s ease-out both; }
+  .invoke-panel .head {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    font-family: var(--head); font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--faint); margin-bottom: 10px;
+  }
+  .invoke-panel .status { color: var(--good); font-family: var(--mono); font-size: 12px; }
+  .invoke-panel .status.err { color: var(--pink); }
+  .invoke-panel pre {
+    margin: 0; padding: 12px; background: rgba(2,3,10,.65); border: 1px solid var(--brd);
+    border-radius: 8px; font-family: var(--mono); font-size: 11px; line-height: 1.45;
+    white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto;
+    color: var(--ink);
+  }
+
+  /* Stats heroes */
+  .heroes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px; }
+  .stat {
+    position: relative; background: var(--panel); backdrop-filter: blur(10px);
+    border: 1px solid var(--brd); border-radius: var(--radius); padding: 18px 20px;
+    overflow: hidden; transition: border-color .25s, box-shadow .25s;
+  }
+  .stat::before {
+    content: ""; position: absolute; left: 0; top: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent, var(--cyan)), transparent);
+    opacity: .7;
+  }
+  .stat:hover { border-color: var(--brd-hot); box-shadow: 0 0 28px rgba(56,224,255,.12); }
+  .stat[data-a="cyan"] { --accent: var(--cyan); }
+  .stat[data-a="good"] { --accent: var(--good); }
+  .stat[data-a="violet"] { --accent: var(--violet); }
+  .stat[data-a="amber"] { --accent: var(--amber); }
+  .stat-label {
+    font-family: var(--head); font-size: 9.5px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--faint); margin-bottom: 8px;
+  }
+  .stat-val {
+    font-family: var(--mono); font-size: clamp(26px, 3vw, 36px); font-weight: 700; line-height: 1;
+    background: linear-gradient(135deg, var(--accent), var(--ink));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    transition: filter .4s;
+  }
+  .stat-val.flash { filter: brightness(1.5) drop-shadow(0 0 16px var(--accent)); }
+  .stat-sub { margin-top: 8px; font-size: 12px; color: var(--faint); }
+  .stat-spark { margin-top: 10px; height: 28px; width: 100%; }
+  .stat.clickable { cursor: pointer; }
+  .stat.clickable:hover { border-color: var(--accent, var(--brd-hot)); }
+  .stat.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .stat.clickable .stat-hint {
+    margin-top: 6px; font-family: var(--mono); font-size: 10px; letter-spacing: .5px;
+    color: var(--faint); text-transform: uppercase;
+  }
+  .stat.clickable:hover .stat-hint { color: var(--accent); }
+
+  /* Catalogue drawer (peers / capabilities) */
+  .cat-drawer {
+    display: none; margin: -8px 0 22px; background: var(--panel-solid);
+    border: 1px solid var(--brd); border-radius: var(--radius); overflow: hidden;
+  }
+  .cat-drawer.open { display: block; animation: drawerIn .22s ease-out; }
+  @keyframes drawerIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+  .cat-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    padding: 14px 18px; border-bottom: 1px solid var(--brd);
+  }
+  .cat-head h3 {
+    font-family: var(--head); font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--ink); font-weight: 700;
+  }
+  .cat-head .meta { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .cat-langs { display: flex; gap: 4px; flex-wrap: wrap; }
+  .cat-lang {
+    background: transparent; border: 1px solid var(--brd); color: var(--faint);
+    font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    padding: 4px 8px; border-radius: 6px; cursor: pointer;
+  }
+  .cat-lang:hover { color: var(--ink); border-color: var(--brd-hot); }
+  .cat-lang.on { background: rgba(255,204,77,.12); color: var(--amber); border-color: var(--amber); }
+  .cat-close {
+    background: transparent; border: 1px solid var(--brd); color: var(--muted);
+    font-family: var(--mono); font-size: 11px; padding: 5px 10px; border-radius: 6px; cursor: pointer;
+  }
+  .cat-close:hover { color: var(--pink); border-color: var(--pink); }
+  .cat-body { max-height: min(52vh, 520px); overflow-y: auto; padding: 8px 10px 14px; }
+  .cat-body::-webkit-scrollbar { width: 5px; }
+  .cat-body::-webkit-scrollbar-thumb { background: var(--brd); border-radius: 3px; }
+  .cat-item {
+    padding: 12px 10px; border-bottom: 1px solid rgba(80,130,200,.12);
+  }
+  .cat-item:last-child { border-bottom: 0; }
+  .cat-item .id {
+    font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--cyan);
+    word-break: break-all;
+  }
+  .cat-item .hub {
+    font-family: var(--mono); font-size: 10px; color: var(--violet); margin-top: 3px;
+  }
+  .cat-item .price {
+    font-family: var(--mono); font-size: 11px; color: var(--good); margin-left: 8px;
+  }
+  .cat-item .desc {
+    margin-top: 6px; font-size: 14px; line-height: 1.45; color: var(--ink); opacity: .92;
+  }
+  .cat-item .langs-all {
+    margin-top: 8px; display: none; flex-direction: column; gap: 4px;
+  }
+  .cat-item.expanded .langs-all { display: flex; }
+  .cat-item .lang-row {
+    font-size: 12px; line-height: 1.4; color: var(--muted);
+    padding: 4px 8px; border-left: 2px solid var(--brd); background: rgba(0,0,0,.18);
+  }
+  .cat-item .lang-row strong {
+    font-family: var(--mono); font-size: 10px; color: var(--amber); margin-right: 6px;
+  }
+  .cat-item .toggle-langs {
+    margin-top: 6px; background: none; border: 0; color: var(--faint); cursor: pointer;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .5px; text-transform: uppercase;
+    padding: 0;
+  }
+  .cat-item .toggle-langs:hover { color: var(--cyan); }
+  .peer-item .name { font-size: 15px; font-weight: 600; color: var(--ink); }
+  .peer-item .url a { color: var(--cyan); text-decoration: none; font-family: var(--mono); font-size: 12px; word-break: break-all; }
+  .peer-item .url a:hover { text-decoration: underline; }
+  .peer-meta {
+    margin-top: 6px; display: flex; flex-wrap: wrap; gap: 10px;
+    font-family: var(--mono); font-size: 11px; color: var(--faint);
+  }
+  .peer-meta span b { color: var(--muted); font-weight: 600; }
+  .peer-cats { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .peer-cats i {
+    font-style: normal; font-family: var(--mono); font-size: 10px;
+    padding: 2px 7px; border-radius: 999px; border: 1px solid var(--brd); color: var(--muted);
+  }
+  .cat-empty { padding: 24px; text-align: center; color: var(--faint); font-family: var(--mono); font-size: 12px; }
+  .cat-loading { padding: 24px; text-align: center; color: var(--cyan); font-family: var(--mono); font-size: 12px; }
+
+  /* Ticker */
+  .ticker-wrap {
+    background: var(--panel); border: 1px solid var(--brd); border-radius: 12px;
+    overflow: hidden; margin-bottom: 22px; position: relative;
+  }
+  .ticker-wrap::before, .ticker-wrap::after {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 70px; z-index: 2; pointer-events: none;
+  }
+  .ticker-wrap::before { left: 0; background: linear-gradient(90deg, rgba(8,14,30,.95), transparent); }
+  .ticker-wrap::after { right: 0; background: linear-gradient(-90deg, rgba(8,14,30,.95), transparent); }
+  .ticker {
+    display: inline-block; white-space: nowrap; padding: 12px 0;
+    animation: scroll 85s linear infinite;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .ticker.paused { animation-play-state: paused; }
+  .ticker.empty { animation: none; padding-left: 20px; color: var(--faint); }
+  @keyframes scroll { 0%{ transform: translateX(0); } 100%{ transform: translateX(-50%); } }
+  .tick { display: inline-block; margin: 0 24px; }
+  .tick .cap { color: var(--violet); }
+  .tick .usd { color: var(--good); font-weight: 700; }
+
+  /* Grid — start, not stretch: stretch made the feed card as tall as the
+     right stack while #feed stayed max-height 480px → huge empty gap under the scrollbar. */
+  .grid { display: grid; grid-template-columns: 1.45fr 1fr; gap: 18px; align-items: start; }
+  .card {
+    background: var(--panel); backdrop-filter: blur(10px);
+    border: 1px solid var(--brd); border-radius: var(--radius); padding: 18px;
+  }
+  .card-feed {
+    display: flex; flex-direction: column; min-height: 0;
+    width: 100%;
+  }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 14px; gap: 10px; flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+  .card-title {
+    font-family: var(--head); font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--faint);
+  }
+  .filters { display: flex; gap: 5px; flex-wrap: wrap; }
+  .filt {
+    background: transparent; border: 1px solid var(--brd); color: var(--faint);
+    font-family: var(--mono); font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+    padding: 5px 9px; border-radius: 6px; cursor: pointer; transition: all .15s;
+  }
+  .filt:hover { color: var(--ink); border-color: var(--brd-hot); }
+  .filt.on { background: rgba(56,224,255,.12); color: var(--cyan); border-color: var(--cyan); }
+
+  #feed {
+    display: flex; flex-direction: column; gap: 6px;
+    max-height: min(62vh, 640px); overflow-y: auto; padding-right: 4px;
+  }
+  #feed::-webkit-scrollbar { width: 5px; }
+  #feed::-webkit-scrollbar-thumb { background: var(--brd); border-radius: 3px; }
+  .row-feed {
+    display: grid; grid-template-columns: 26px 1fr 56px 72px 64px 24px; gap: 8px; align-items: center;
+    padding: 9px 11px; background: rgba(2,3,10,.55); border: 1px solid transparent;
+    border-radius: 8px; font-family: var(--mono); font-size: 12px;
+    animation: rowIn .45s ease-out both;
+  }
+  @keyframes rowIn {
+    from { opacity: 0; transform: translateY(-6px); border-color: var(--cyan); box-shadow: 0 0 16px rgba(56,224,255,.2); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .row-feed .usd { color: var(--good); font-weight: 600; text-align: right; }
+  .row-feed .lat { color: var(--faint); font-size: 10px; text-align: right; }
+  .row-feed .ok { color: var(--good); }
+  .row-feed .bad { color: var(--pink); }
+  .row-feed .cap-cell { min-width: 0; line-height: 1.35; }
+  .row-feed .cap-id { color: var(--ink); word-break: break-all; }
+  .hub-via {
+    display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap;
+    font-size: 10px; color: #9af0ff;
+  }
+  .row-feed .hub-via { margin-top: 3px; }
+  .hub-via .tag {
+    flex-shrink: 0; font-size: 8px; font-weight: 700; letter-spacing: .08em;
+    padding: 1px 5px; border-radius: 3px;
+    color: #02030a; background: var(--cyan);
+  }
+  .hub-via .tag.local {
+    background: var(--violet); color: #fff;
+  }
+  .hub-via .name { color: #9af0ff; font-weight: 600; }
+  .hub-via .host { color: var(--muted); font-weight: 400; }
+  .row-feed .tc {
+    font-size: 9px; letter-spacing: .04em; text-transform: uppercase;
+    text-align: center; padding: 2px 4px; border-radius: 4px; border: 1px solid var(--brd);
+    color: var(--faint);
+  }
+  .row-feed .tc.ext { color: var(--amber); border-color: rgba(255,204,77,.35); }
+  .row-feed .tc.self { color: var(--faint); }
+  .feed-empty { padding: 28px; text-align: center; color: var(--faint); font-family: var(--mono); font-size: 12px; }
+
+  .stack { display: flex; flex-direction: column; gap: 18px; }
+
+  /* 402 flow */
+  .flow402 {
+    display: flex; align-items: center; justify-content: space-between; gap: 4px;
+    padding: 8px 0 4px; font-family: var(--mono); font-size: 10px;
+  }
+  .flow402 .node {
+    flex: 1; text-align: center; padding: 10px 6px;
+    background: rgba(2,3,10,.6); border: 1px solid var(--brd); border-radius: 10px;
+    position: relative; color: var(--muted); transition: all .3s;
+  }
+  .flow402 .node.active {
+    border-color: var(--cyan); color: var(--cyan);
+    box-shadow: 0 0 20px rgba(56,224,255,.25); transform: scale(1.04);
+  }
+  .flow402 .node.done { border-color: var(--good); color: var(--good); }
+  .flow402 .arrow { color: var(--faint); font-size: 14px; flex-shrink: 0; }
+  .flow402 .node span { display: block; font-size: 16px; margin-bottom: 4px; }
+
+  /* In-card links must beat browser visited-blue on dark panels */
+  .card a, .card a:visited {
+    color: var(--cyan);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-thickness: 1px;
+  }
+  .card a:hover { color: #9af0ff; text-shadow: 0 0 10px rgba(56,224,255,.35); }
+  .flow-proof {
+    margin: 14px 16px 4px; font-size: 12px; color: var(--muted); line-height: 1.55;
+  }
+  .flow-proof .proof-links { display: inline; }
+  .flow-proof .proof-links a {
+    font-weight: 600; letter-spacing: .02em;
+  }
+
+  #fed-svg { width: 100%; height: 230px; }
+  .fed-edge { stroke: var(--brd); stroke-width: 1; stroke-dasharray: 4 6; opacity: .5; }
+  .fed-edge.live { stroke: var(--cyan); opacity: 1; animation: dash 1.2s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -20; } }
+  .fed-legend {
+    display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+    margin: 0 16px 12px; padding-top: 2px;
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+  }
+  .fed-legend .swatch {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle;
+  }
+  .fed-legend .swatch.you { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+  .fed-legend .swatch.peer { background: var(--violet); }
+  .fed-peers {
+    list-style: none; margin: 0 16px 14px; padding: 0;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px;
+    font-family: var(--mono); font-size: 10px;
+  }
+  .fed-peers li {
+    display: flex; align-items: baseline; gap: 6px; min-width: 0;
+    color: var(--muted); padding: 3px 0;
+  }
+  .fed-peers .role {
+    flex-shrink: 0; font-size: 8px; letter-spacing: .06em; text-transform: uppercase;
+    padding: 1px 5px; border-radius: 3px; border: 1px solid var(--brd);
+  }
+  .fed-peers .role.you { color: var(--cyan); border-color: rgba(56,224,255,.4); }
+  .fed-peers .role.peer { color: var(--violet); border-color: rgba(123,92,255,.4); }
+  .fed-peers a {
+    color: var(--ink); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .fed-peers a:hover { color: var(--cyan); text-decoration: underline; }
+  @media (max-width: 520px) {
+    .fed-peers { grid-template-columns: 1fr; }
+  }
+
+  .lb { list-style: none; padding: 0 16px 12px; }
+  .lb li {
+    display: grid; grid-template-columns: 20px 1fr auto; gap: 8px; align-items: start;
+    padding: 9px 0; font-family: var(--mono); font-size: 11px;
+  }
+  .lb li + li { border-top: 1px solid var(--brd); }
+  .lb .cap-id { color: var(--ink); word-break: break-all; line-height: 1.35; }
+  .lb .cnt {
+    color: var(--cyan); background: rgba(56,224,255,.12); padding: 2px 7px; border-radius: 4px;
+    font-weight: 600; align-self: center;
+  }
+
+  footer {
+    margin-top: 36px; padding-top: 20px; border-top: 1px solid var(--brd);
+    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
+    font-family: var(--mono); font-size: 11px; color: var(--faint);
+  }
+  footer a { color: var(--cyan); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 960px) {
+    .heroes { grid-template-columns: repeat(2, 1fr); }
+    .grid { grid-template-columns: 1fr; }
+    .nav-links a:not(.nav-live) { display: none; }
+    .intent-prefix { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .core, .pip, .ticker { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<canvas id="galaxy" aria-hidden="true"></canvas>
+<div class="nebula"></div>
+<div class="scan"></div>
+<div class="vignette"></div>
+
+<nav>
+  <div class="nav-inner row">
+    <a class="brand" href="/"><span class="core"></span> modelmarket.dev</a>
+    <div class="nav-links">
+      <a href="/developers" data-i18n="nav_devs">Developers</a>
+      <a href="/examples" data-i18n="nav_integrate">Integrate</a>
+      <a href="/widget/demo" data-i18n="nav_widget">Widget</a>
+      <a href="/plugins/demo" data-i18n="nav_plugins">Plugins</a>
+      <a href="https://github.com/alexar76/aimarket-hub" target="_blank" rel="noopener">GitHub</a>
+      <a class="nav-live" href="/"><span class="pip"></span> <span data-i18n="nav_live">Live</span></a>
+      <div class="lang-switch" id="lang-switch" role="group" aria-label="Language">
+        <button type="button" data-lang="en" class="on">EN</button>
+        <button type="button" data-lang="ru">RU</button>
+        <button type="button" data-lang="es">ES</button>
+        <button type="button" data-lang="fr">FR</button>
+        <button type="button" data-lang="zh">ZH</button>
+      </div>
+    </div>
+    <div class="conn"><span class="conn-dot off" id="conn-dot"></span><span id="conn-text">Connecting…</span></div>
+  </div>
+</nav>
+
+<div class="shell">
+  <header class="hero">
+    <div class="eyebrow"><span class="pip"></span> <span data-i18n="eyebrow">AIMarket Protocol v2 · Federated · HTTP 402</span></div>
+    <h1><span class="grad">model</span>market<span class="grad">.dev</span></h1>
+    <p class="tagline" data-i18n="tagline">The live terminal for AI-to-AI commerce — discovery, micropayments, safety-gated invoke. Watch agents trade capabilities in real time.</p>
+    <div class="proto-badges">
+      <span class="badge"><strong>402</strong> <span data-i18n="badge_402">Pay-per-call</span></span>
+      <span class="badge"><strong>.well-known</strong> <span data-i18n="badge_discovery">Discovery</span></span>
+      <span class="badge"><strong>15</strong> <span data-i18n="badge_plugins">Plugins</span></span>
+      <span class="badge"><strong>Federation</strong> <span data-i18n="badge_federation">Multi-hub</span></span>
+    </div>
+  </header>
+
+  <div class="intent-wrap">
+    <form class="intent-bar" id="intent-form">
+      <span class="intent-prefix">$ search</span>
+      <input type="text" id="intent-input" data-i18n-placeholder="search_ph" placeholder='Try "randomness" or "gaia weather"' autocomplete="off" />
+      <button type="submit" data-i18n="search_btn">Discover</button>
+    </form>
+    <div class="search-drop" id="search-drop"></div>
+    <div class="invoke-panel" id="invoke-panel" aria-live="polite">
+      <div class="head"><span id="invoke-title" data-i18n="invoke_title">Invoke</span><span class="status" id="invoke-status"></span></div>
+      <pre id="invoke-body" data-i18n="invoke_body">Select a capability above to run a free sandbox trial.</pre>
+    </div>
+  </div>
+
+  <div class="heroes">
+    <div class="stat" data-a="cyan">
+      <div class="stat-label" data-i18n="s_inv">Invocations</div>
+      <div class="stat-val" id="s-inv">0</div>
+      <div class="stat-sub" id="s-inv-sub" data-i18n="s_inv_awaiting">awaiting traffic</div>
+      <svg class="stat-spark" id="spark-inv" preserveAspectRatio="none" viewBox="0 0 100 28"></svg>
+    </div>
+    <div class="stat" data-a="good">
+      <div class="stat-label" data-i18n="s_rev">Revenue / Hour</div>
+      <div class="stat-val" id="s-rev">$0.00</div>
+      <div class="stat-sub" id="s-rev-sub" data-i18n="s_rev_extrap">extrapolated</div>
+      <svg class="stat-spark" id="spark-rev" preserveAspectRatio="none" viewBox="0 0 100 28"></svg>
+    </div>
+    <div class="stat clickable" data-a="violet" id="stat-hubs" role="button" tabindex="0" aria-controls="cat-drawer" aria-expanded="false" data-i18n-title="title_peers" title="Show federated peers">
+      <div class="stat-label" data-i18n="s_hubs">Federated Hubs</div>
+      <div class="stat-val" id="s-hubs">0</div>
+      <div class="stat-sub" id="s-hubs-sub">peers online</div>
+      <div class="stat-hint" data-i18n="hint_peers">click · peer list</div>
+    </div>
+    <div class="stat clickable" data-a="amber" id="stat-caps" role="button" tabindex="0" aria-controls="cat-drawer" aria-expanded="false" data-i18n-title="title_caps" title="Show offerable capabilities">
+      <div class="stat-label" data-i18n="s_caps">Capabilities</div>
+      <div class="stat-val" id="s-caps">0</div>
+      <div class="stat-sub" id="s-caps-sub">indexed tools</div>
+      <div class="stat-hint" data-i18n="hint_caps">click · catalogue</div>
+    </div>
+  </div>
+
+  <div class="cat-drawer" id="cat-drawer" hidden>
+    <div class="cat-head">
+      <div>
+        <h3 id="cat-title">Catalogue</h3>
+        <div class="meta" id="cat-meta"></div>
+      </div>
+      <button type="button" class="cat-close" id="cat-close" data-i18n="close">Close ✕</button>
+    </div>
+    <div class="cat-body" id="cat-body"><div class="cat-loading" data-i18n="loading">Loading…</div></div>
+  </div>
+
+  <div class="ticker-wrap">
+    <div class="ticker empty" id="ticker"><span class="tick" data-i18n="ticker_wait">Waiting for live invocations…</span></div>
+  </div>
+
+  <div class="grid">
+    <div class="card card-feed">
+      <div class="card-head">
+        <div class="card-title" data-i18n="feed_title">Live Invocation Feed</div>
+        <div class="filters" id="filters">
+          <button class="filt on" data-f="all" data-i18n="filt_all">All</button>
+          <button class="filt" data-f="success">✓</button>
+          <button class="filt" data-f="failure">✗</button>
+          <button class="filt" data-f="federated" data-i18n="filt_fed">Fed</button>
+          <button class="filt" data-f="external" data-i18n="filt_ext">Ext</button>
+          <button class="filt" data-f="operator_self" data-i18n="filt_self">Self</button>
+        </div>
+      </div>
+      <div id="feed"><div class="feed-empty" data-i18n="feed_empty">Marketplace warming up — invoke a capability to see the stream</div></div>
+    </div>
+
+    <div class="stack">
+      <div class="card">
+        <div class="card-head"><div class="card-title" data-i18n="flow_title">HTTP 402 Payment Flow</div></div>
+        <div class="flow402" id="flow402">
+          <div class="node" data-step="0"><span>🔓</span><span data-i18n="flow_channel">Channel</span></div>
+          <div class="arrow">→</div>
+          <div class="node" data-step="1"><span>⚡</span><span data-i18n="flow_invoke">Invoke</span></div>
+          <div class="arrow">→</div>
+          <div class="node" data-step="2"><span>🧾</span><span data-i18n="flow_receipt">Receipt</span></div>
+          <div class="arrow">→</div>
+          <div class="node" data-step="3"><span>💰</span><span data-i18n="flow_settle">Settle</span></div>
+        </div>
+        <p class="flow-proof">
+          <span data-i18n="flow_escrow">Live escrow on Base:</span>
+          <a href="https://basescan.org/address/0x0606983cbEc6D0C12a0B750f72Ceb6032c72C25D" target="_blank" rel="noopener">0x0606983c…72C25D</a>.
+          <span data-i18n="flow_proof">External depositor proof (§3j):</span>
+          <span class="proof-links">
+            <a href="https://basescan.org/tx/0xea4038c9f6dedb26ece1c0454a4b181cd17c71686c6e73b5f092e70a2c83549e" target="_blank" rel="noopener" data-i18n="flow_open">open</a>
+            ·
+            <a href="https://basescan.org/tx/0xf740cd0cd2ada97dd243ad067c2dc0f16504d40030c54b4aef37137f2a824355" target="_blank" rel="noopener" data-i18n="flow_debit">debit</a>
+            ·
+            <a href="https://basescan.org/tx/0xcce0dcdddfd962cd2d16840246cfc2761b8325d4a58f186009bcdd5b3c942472" target="_blank" rel="noopener" data-i18n="flow_settle_link">settle</a>.
+          </span>
+        </p>
+      </div>
+      <div class="card">
+        <div class="card-head"><div class="card-title" data-i18n="fed_title">Hub Federation</div></div>
+        <svg id="fed-svg" viewBox="0 0 400 230" preserveAspectRatio="xMidYMid meet" aria-label="Hub federation map"></svg>
+        <div class="fed-legend" id="fed-legend" hidden>
+          <span><i class="swatch you"></i><span data-i18n="fed_you_legend">cyan · this hub</span></span>
+          <span><i class="swatch peer"></i><span data-i18n="fed_peer_legend">violet · peer hubs</span></span>
+        </div>
+        <ul class="fed-peers" id="fed-peers" hidden></ul>
+      </div>
+      <div class="card">
+        <div class="card-head"><div class="card-title" data-i18n="top_title">Top Capabilities</div></div>
+        <ul class="lb" id="top-caps"><li><span>—</span><span style="color:var(--faint)" data-i18n="top_collecting">collecting…</span><span class="cnt">0</span></li></ul>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <div><span data-i18n="footer_proto">Protocol v2 ·</span> <a href="/developers" data-i18n="footer_api">API docs</a> · <a href="https://basescan.org/address/0x0606983cbEc6D0C12a0B750f72Ceb6032c72C25D" target="_blank" rel="noopener" data-i18n="footer_escrow">Escrow (Basescan)</a> · <a href="https://magic-ai-factory.com" target="_blank" rel="noopener">AI-Factory</a></div>
+    <div id="last-up">—</div>
+  </footer>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const HUB = location.origin;
+  const POLL = 3000;
+  const LANGS = ['en', 'ru', 'es', 'fr', 'zh'];
+  let events = [], filter = 'all', lastInv = 0;
+  let sparkInv = [], sparkRev = [];
+  let UI = null;
+  let capI18n = null;
+  let hubLang = (() => {
+    const q = new URLSearchParams(location.search).get('lang');
+    if (q && LANGS.includes(q)) return q;
+    const stored = localStorage.getItem('mm_hub_lang') || localStorage.getItem('mm_cat_lang');
+    if (stored && LANGS.includes(stored)) return stored;
+    const nav = (navigator.language || 'en').slice(0, 2).toLowerCase();
+    return LANGS.includes(nav) ? nav : 'en';
+  })();
+
+  function t(key, vars) {
+    const pack = (UI && UI[hubLang]) || (UI && UI.en) || {};
+    let s = pack[key] || (UI && UI.en && UI.en[key]) || key;
+    if (vars) {
+      for (const [k, v] of Object.entries(vars)) {
+        s = s.split('{' + k + '}').join(String(v));
+      }
+    }
+    return s;
+  }
+
+  let connOk = false;
+  function applyStaticI18n() {
+    document.documentElement.lang = hubLang;
+    document.title = t('page_title');
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+      const key = el.getAttribute('data-i18n');
+      if (key) el.textContent = t(key);
+    });
+    // Conn label is owned by setConn / poll — never wipe Live back to Connecting.
+    document.getElementById('conn-text').textContent = connOk
+      ? t('conn_live', { time: new Date().toLocaleTimeString() })
+      : t('conn_connecting');
+    document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+      const key = el.getAttribute('data-i18n-placeholder');
+      if (key) el.setAttribute('placeholder', t(key));
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach(el => {
+      const key = el.getAttribute('data-i18n-title');
+      if (key) el.setAttribute('title', t(key));
+    });
+    document.querySelectorAll('#lang-switch button').forEach(b => {
+      b.classList.toggle('on', b.dataset.lang === hubLang);
+    });
+  }
+
+  async function fetchJson(url, ms) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms || 4000);
+    try {
+      const r = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+      if (!r.ok) throw new Error(String(r.status));
+      return await r.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function loadUiI18n() {
+    try {
+      const data = await fetchJson('/hub-ui-i18n.json', 4000);
+      UI = data.ui || data;
+    } catch (_) { /* keep English markup until next retry */ }
+    if (!UI) UI = { en: {} };
+    applyStaticI18n();
+  }
+
+  async function loadCapI18n() {
+    if (capI18n) return capI18n;
+    try {
+      capI18n = await fetchJson('/cap-descriptions-i18n.json', 4000);
+    } catch (_) { /* fall back to live EN descriptions */ }
+    return capI18n;
+  }
+
+  /* Galaxy background */
+  const canvas = document.getElementById('galaxy');
+  const ctx = canvas.getContext('2d');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let W, H, DPR, cx, cy;
+  const mouse = { x: 0, y: 0, tx: 0, ty: 0 };
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2);
+    W = canvas.width = innerWidth * DPR;
+    H = canvas.height = innerHeight * DPR;
+    canvas.style.width = innerWidth + 'px';
+    canvas.style.height = innerHeight + 'px';
+    cx = W / 2; cy = H / 2;
+  }
+  resize();
+  addEventListener('resize', resize);
+  addEventListener('mousemove', e => { mouse.tx = (e.clientX / innerWidth - .5); mouse.ty = (e.clientY / innerHeight - .5); });
+  const labels = ['402', 'Invoke', 'Safety', 'Federation', 'Discovery', 'Plugins'];
+  const stars = Array.from({ length: Math.min(480, Math.max(120, (innerWidth * innerHeight / 2800) | 0)) }, () => ({
+    x: Math.random() * 2 - 1, y: Math.random() * 2 - 1, z: Math.random() * .9 + .1,
+    r: Math.random() * 1.3 + .4, c: ['#38e0ff','#7b5cff','#38ffa6','#fff'][(Math.random()*4)|0], tw: Math.random() * 6.28
+  }));
+  const nodes = labels.map((l, i) => ({
+    a: (i / labels.length) * Math.PI * 2, rad: .28 + (i % 3) * .06,
+    spd: .0002 + (i % 4) * .00005, size: 2 + (i % 3), c: i % 2 ? '#7b5cff' : '#38e0ff', label: l
+  }));
+  const warp = reduce ? .0003 : .0016;
+  // Must not be named `t` — that identifier is the i18n helper in this IIFE.
+  let galTick = 0;
+  function galFrame() {
+    galTick++;
+    mouse.x += (mouse.tx - mouse.x) * .05;
+    mouse.y += (mouse.ty - mouse.y) * .05;
+    ctx.clearRect(0, 0, W, H);
+    const minD = Math.min(W, H), maxD = Math.max(W, H), spread = maxD * .58;
+    const px = mouse.x * .08 * minD, py = mouse.y * .08 * minD;
+    for (const s of stars) {
+      s.z -= warp;
+      if (s.z <= .02) { s.z = 1; s.x = Math.random() * 2 - 1; s.y = Math.random() * 2 - 1; }
+      const k = .26 / s.z;
+      const sx = cx + s.x * spread * k + px * (1 - s.z);
+      const sy = cy + s.y * spread * k + py * (1 - s.z);
+      if (sx < -20 || sx > W + 20 || sy < -20 || sy > H + 20) continue;
+      const depth = 1 - s.z;
+      ctx.globalAlpha = Math.min(1, (.22 + depth) * 1.2) * (.55 + .45 * Math.sin(galTick * .03 + s.tw));
+      ctx.fillStyle = s.c;
+      ctx.beginPath(); ctx.arc(sx, sy, s.r * (.5 + depth * 1.8) * DPR, 0, 7); ctx.fill();
+    }
+    const pts = nodes.map(n => {
+      n.a += n.spd * (reduce ? .3 : 1);
+      const r = n.rad * minD;
+      return { x: cx + Math.cos(n.a) * r + px * 1.4, y: cy + Math.sin(n.a) * r * .6 + py * 1.4, n };
+    });
+    ctx.lineWidth = DPR;
+    for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+      const d = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y);
+      if (d < minD * .32) {
+        ctx.globalAlpha = (1 - d / (minD * .32)) * .18;
+        ctx.strokeStyle = '#38e0ff';
+        ctx.beginPath(); ctx.moveTo(pts[i].x, pts[i].y); ctx.lineTo(pts[j].x, pts[j].y); ctx.stroke();
+      }
+    }
+    const cg = ctx.createRadialGradient(cx + px, cy + py, 0, cx + px, cy + py, 70 * DPR);
+    cg.addColorStop(0, 'rgba(56,224,255,.45)'); cg.addColorStop(1, 'rgba(56,224,255,0)');
+    ctx.globalAlpha = 1; ctx.fillStyle = cg;
+    ctx.beginPath(); ctx.arc(cx + px, cy + py, 70 * DPR, 0, 7); ctx.fill();
+    for (const p of pts) {
+      const pulse = 1 + .22 * Math.sin(galTick * .04 + p.n.a * 3);
+      ctx.globalAlpha = .85; ctx.fillStyle = p.n.c;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.n.size * 5 * DPR * pulse, 0, 7); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    requestAnimationFrame(galFrame);
+  }
+  requestAnimationFrame(galFrame);
+
+  /* 402 animation cycles on new events */
+  let flowStep = 0;
+  function pulse402() {
+    const nodes = document.querySelectorAll('#flow402 .node');
+    nodes.forEach((n, i) => {
+      n.classList.remove('active', 'done');
+      if (i < flowStep) n.classList.add('done');
+      else if (i === flowStep) n.classList.add('active');
+    });
+    flowStep = (flowStep + 1) % 4;
+  }
+  setInterval(pulse402, 1200);
+
+  /* Helpers */
+  function hostOf(u) { if (!u || u === 'local') return ''; try { return new URL(u).host; } catch { return u; } }
+  // Two decimals turn every sub-cent price into "$0.00" — platon.random@v1 costs $0.004 and read
+  // as free next to a page whose whole claim is micropayments. Show enough digits to see the price.
+  function usd(v) {
+    const n = Number(v) || 0;
+    if (n === 0) return '$0.00';
+    if (n < 0.01) return '$' + n.toFixed(n < 0.001 ? 5 : 4).replace(/0+$/, '');
+    return '$' + n.toFixed(2);
+  }
+  function anim(el, from, to, opts = {}) {
+    const { dur = 650, pre = '', suf = '', dec = 0 } = opts;
+    const t0 = performance.now();
+    function tick(now) {
+      const k = Math.min(1, (now - t0) / dur);
+      const v = from + (to - from) * (1 - Math.pow(1 - k, 3));
+      el.textContent = pre + v.toFixed(dec) + suf;
+      if (k < 1) requestAnimationFrame(tick);
+      else el.textContent = pre + to.toFixed(dec) + suf;
+    }
+    requestAnimationFrame(tick);
+    if (from !== to) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 500); }
+  }
+  function spark(id, vals, color) {
+    const svg = document.getElementById(id);
+    if (!svg || vals.length < 2) return;
+    const w = 100, h = 28, min = Math.min(...vals), max = Math.max(...vals), rng = (max - min) || 1;
+    const step = w / (vals.length - 1);
+    const pts = vals.map((v, i) => `${i * step},${h - ((v - min) / rng) * (h - 4) - 2}`).join(' ');
+    svg.innerHTML = `<polyline fill="none" stroke="${color}" stroke-width="1.5" points="${pts}"/>`;
+  }
+  function setConn(ok, msg) {
+    connOk = !!ok;
+    document.getElementById('conn-dot').classList.toggle('off', !ok);
+    document.getElementById('conn-text').textContent = msg;
+  }
+
+  /* Feed */
+  document.getElementById('filters').addEventListener('click', e => {
+    const b = e.target.closest('.filt'); if (!b) return;
+    document.querySelectorAll('.filt').forEach(x => x.classList.remove('on'));
+    b.classList.add('on'); filter = b.dataset.f; renderFeed();
+  });
+  function renderFeed() {
+    const el = document.getElementById('feed');
+    const list = events.filter(e => {
+      if (filter === 'success') return e.success;
+      if (filter === 'failure') return !e.success;
+      if (filter === 'federated') return e.source_hub !== 'local';
+      if (filter === 'external') return e.traffic_class === 'external';
+      if (filter === 'operator_self') return e.traffic_class === 'operator_self';
+      return true;
+    }).slice(0, 55);
+    if (!list.length) { el.innerHTML = `<div class="feed-empty">${esc(t('feed_no_filter'))}</div>`; return; }
+    const selfHost = location.host || 'hub';
+    el.innerHTML = list.map(e => {
+      const raw = e.source_hub;
+      const isLocal = !raw || raw === 'local';
+      const fullHost = isLocal ? selfHost : (hostOf(raw) || String(raw));
+      const short = isLocal ? hubShortName(selfHost) : hubShortName(raw);
+      const tc = e.traffic_class === 'external' ? 'ext' : 'self';
+      const tcLabel = e.traffic_class === 'external' ? 'ext' : 'self';
+      const hubLine = isLocal
+        ? `<div class="hub-via" title="${esc(selfHost)}"><span class="tag local">HUB</span><span class="name">${esc(short)}</span><span class="host">· ${esc(t('fed_you'))}</span></div>`
+        : `<div class="hub-via" title="${esc(fullHost)}"><span class="tag">HUB</span><span class="name">${esc(short)}</span><span class="host">· ${esc(fullHost)}</span></div>`;
+      return `<div class="row-feed">
+        <span>🤖</span>
+        <span class="cap-cell"><span class="cap-id">${esc(e.capability_id || '?')}</span>${hubLine}</span>
+        <span class="tc ${tc}" title="${esc(e.consumer_hub || '')}">${tcLabel}</span>
+        <span class="usd">${usd(e.price_usd)}</span>
+        <span class="lat">${e.latency_ms ?? '?'}ms</span>
+        <span class="${e.success ? 'ok' : 'bad'}">${e.success ? '✓' : '✗'}</span>
+      </div>`;
+    }).join('');
+  }
+  function renderTicker() {
+    const tickEl = document.getElementById('ticker');
+    if (!events.length) {
+      tickEl.className = 'ticker empty';
+      tickEl.innerHTML = `<span class="tick">${esc(t('ticker_empty'))}</span>`;
+      return;
+    }
+    tickEl.className = 'ticker';
+    const parts = [];
+    for (let loop = 0; loop < 2; loop++) for (const e of events.slice(0, 18)) {
+      const tag = e.traffic_class === 'external' ? 'EXT' : 'SELF';
+      parts.push(`<span class="tick">🤖 → <span class="cap">${esc(e.capability_id || '?')}</span> <span class="usd">${usd(e.price_usd)}</span> [${tag}] ${e.success ? '✓' : '✗'}</span>`);
+    }
+    tickEl.innerHTML = parts.join('');
+  }
+  function renderTop() {
+    const c = {};
+    const hubs = {};
+    for (const e of events) {
+      const id = e.capability_id || '?';
+      c[id] = (c[id] || 0) + 1;
+      if (!hubs[id] && e.source_hub) hubs[id] = e.source_hub;
+    }
+    const sorted = Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const ul = document.getElementById('top-caps');
+    if (!sorted.length) return;
+    const selfHost = location.host || 'hub';
+    ul.innerHTML = sorted.map(([n, cnt], i) => {
+      const raw = hubs[n];
+      const isLocal = !raw || raw === 'local';
+      const fullHost = isLocal ? selfHost : (hostOf(raw) || String(raw));
+      const short = isLocal ? hubShortName(selfHost) : hubShortName(raw);
+      const hubLine = isLocal
+        ? `<div class="hub-via" title="${esc(selfHost)}"><span class="tag local">HUB</span><span class="name">${esc(short)}</span><span class="host">· ${esc(t('fed_you'))}</span></div>`
+        : `<div class="hub-via" title="${esc(fullHost)}"><span class="tag">HUB</span><span class="name">${esc(short)}</span><span class="host">· ${esc(fullHost)}</span></div>`;
+      return `<li><span>${i + 1}</span><span><div class="cap-id">${esc(n)}</div>${hubLine}</span><span class="cnt">${cnt}</span></li>`;
+    }).join('');
+  }
+  /** Short display name for a hub host — readable in the federation map. */
+  function hubShortName(urlOrHost) {
+    const h = (hostOf(urlOrHost) || String(urlOrHost || '')).toLowerCase().replace(/^www\./, '');
+    const known = {
+      'modelmarket.dev': 'modelmarket',
+      'iot.modelmarket.dev': 'iot',
+      'oracles.modelmarket.dev': 'oracles',
+      'hunt.modelmarket.dev': 'hunt',
+      'use.modelmarket.dev': 'use',
+      'magic-ai-factory.com': 'factory',
+      '108.165.32.182': 'lab',
+      '108.165.32.182:9083': 'lab',
+    };
+    if (known[h]) return known[h];
+    if (/^\d+\.\d+\.\d+\.\d+/.test(h)) return 'lab';
+    const first = h.split(':')[0].split('.')[0];
+    return (first || h || 'hub').slice(0, 12);
+  }
+
+  function peerHref(p) {
+    const u = p && (p.url || p.name);
+    if (!u || String(u).startsWith('peer-')) return '';
+    try {
+      const parsed = new URL(u.includes('://') ? u : `https://${u}`);
+      return parsed.origin;
+    } catch {
+      return '';
+    }
+  }
+
+  function renderFed(summary) {
+    const svg = document.getElementById('fed-svg');
+    const legend = document.getElementById('fed-legend');
+    const peerList = document.getElementById('fed-peers');
+    const cx = 200, cy = 105, r = 68;
+    const selfHost = location.host || 'hub';
+    const selfShort = hubShortName(selfHost);
+    // Prefer live federation peer list (real URLs + trust) over event-derived placeholders.
+    const list = (peersForFed && peersForFed.length)
+      ? peersForFed
+      : (() => {
+          const peerHubs = [];
+          const seen = new Set();
+          for (const e of events) {
+            if (e.source_hub && e.source_hub !== 'local' && !seen.has(e.source_hub)) {
+              seen.add(e.source_hub); peerHubs.push({ url: e.source_hub, name: e.source_hub });
+            }
+          }
+          const peers = summary.peers_count || 0;
+          while (peerHubs.length < peers) peerHubs.push({ url: `peer-${peerHubs.length + 1}`, name: `peer-${peerHubs.length + 1}` });
+          return peerHubs;
+        })();
+    const N = Math.min(list.length, 8);
+    let edges = '';
+    let nodes = `<g>
+      <circle cx="${cx}" cy="${cy}" r="13" fill="#38e0ff" filter="drop-shadow(0 0 10px #38e0ff)"/>
+      <text x="${cx}" y="${cy + 28}" text-anchor="middle" fill="#38e0ff" font-family="JetBrains Mono" font-size="10" font-weight="700">${esc(selfShort)}</text>
+      <text x="${cx}" y="${cy + 40}" text-anchor="middle" fill="#7e9fd0" font-family="JetBrains Mono" font-size="8">${esc(t('fed_you'))}</text>
+    </g>`;
+    for (let i = 0; i < N; i++) {
+      const p = list[i];
+      const full = hostOf(p.url || p.name) || p.name || 'peer';
+      const label = hubShortName(p.url || p.name);
+      const trust = Number(p.trust_score);
+      const ang = (Math.PI * 2 * i) / Math.max(N, 1) - Math.PI / 2;
+      const px = cx + Math.cos(ang) * r, py = cy + Math.sin(ang) * r;
+      const live = events.some(e => e.source_hub && (e.source_hub === p.url || hostOf(e.source_hub) === hostOf(p.url)));
+      const pr = 6 + (Number.isFinite(trust) ? Math.min(1, Math.max(0, trust)) * 5 : 2);
+      const href = peerHref(p);
+      edges += `<line class="fed-edge ${live ? 'live' : ''}" x1="${cx}" y1="${cy}" x2="${px}" y2="${py}"/>`;
+      const body = `<circle cx="${px}" cy="${py}" r="${pr.toFixed(1)}" fill="#7b5cff" opacity=".95"/>
+        <text x="${px}" y="${py + 18}" text-anchor="middle" fill="#cfe3ff" font-family="JetBrains Mono" font-size="9">${esc(label)}</text>
+        <text x="${px}" y="${py + 29}" text-anchor="middle" fill="#7b5cff" font-family="JetBrains Mono" font-size="7">${esc(t('fed_peer'))}</text>
+        <title>${esc(full)}${Number.isFinite(trust) ? ` · trust ${trust.toFixed(3)}` : ''}</title>`;
+      nodes += href
+        ? `<a href="${esc(href)}" target="_blank" rel="noopener"><g>${body}</g></a>`
+        : `<g>${body}</g>`;
+    }
+    svg.innerHTML = edges + nodes;
+
+    if (legend) legend.hidden = false;
+    if (peerList) {
+      const rows = [
+        `<li><span class="role you">${esc(t('fed_you'))}</span><a href="${esc(location.origin)}" target="_blank" rel="noopener" title="${esc(selfHost)}">${esc(selfShort)} · ${esc(selfHost)}</a></li>`,
+        ...list.slice(0, 8).map((p) => {
+          const full = hostOf(p.url || p.name) || p.name || 'peer';
+          const short = hubShortName(p.url || p.name);
+          const href = peerHref(p);
+          const trust = Number(p.trust_score);
+          const trustBit = Number.isFinite(trust) ? ` · ${t('trust_label')} ${trust.toFixed(2)}` : '';
+          const label = `${short} · ${full}${trustBit}`;
+          const inner = href
+            ? `<a href="${esc(href)}" target="_blank" rel="noopener" title="${esc(full)}">${esc(label)}</a>`
+            : `<span title="${esc(full)}">${esc(label)}</span>`;
+          return `<li><span class="role peer">${esc(t('fed_peer'))}</span>${inner}</li>`;
+        }),
+      ];
+      peerList.innerHTML = rows.join('');
+      peerList.hidden = false;
+    }
+  }
+
+  /* Search + invoke */
+  const VISITOR_KEY = 'mm_visitor_id';
+  function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function visitorId() {
+    try {
+      let id = localStorage.getItem(VISITOR_KEY);
+      if (id && id.length >= 8) return id;
+      id = 'vis_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem(VISITOR_KEY, id);
+      return id;
+    } catch { return 'vis_' + Date.now(); }
+  }
+  const form = document.getElementById('intent-form');
+  const input = document.getElementById('intent-input');
+  const drop = document.getElementById('search-drop');
+  const invokePanel = document.getElementById('invoke-panel');
+  const invokeTitle = document.getElementById('invoke-title');
+  const invokeStatus = document.getElementById('invoke-status');
+  const invokeBody = document.getElementById('invoke-body');
+  let searchMatches = [];
+
+  function renderSearchResults(matches) {
+    searchMatches = matches;
+    drop.innerHTML = matches.map((c, i) => {
+      const hubLabel = c.source_hub_name || hostOf(c.source_hub) || (c.source_hub === 'local' ? 'local' : c.source_hub);
+      const score = (typeof c.score === 'number' && c.score > 0) ? ` · ${t('match')} ${c.score.toFixed(2)}` : '';
+      return `<div class="search-item" data-idx="${i}" role="button" tabindex="0">
+      <div class="name">${esc(c.capability_id || c.name)}${hubLabel ? ` <span style="color:var(--cyan);font-size:10px;font-weight:400">${esc(t('via'))} ${esc(hubLabel)}</span>` : ''}</div>
+      <div class="meta">${esc(descForSearch(c))} · <span class="price">${usd(c.routed_price_usd || c.price_per_call_usd)}</span> · ${c.p50_latency_ms || '?'}ms${score} · <span style="color:var(--cyan)">${esc(t('try_free'))}</span></div>
+    </div>`;
+    }).join('');
+  }
+
+  function showInvoke(state, title, body) {
+    invokePanel.classList.add('open');
+    invokeTitle.textContent = title;
+    invokeStatus.textContent = state.label;
+    invokeStatus.className = 'status' + (state.ok ? '' : ' err');
+    invokeBody.textContent = body;
+  }
+
+  async function invokeMatch(idx) {
+    const m = searchMatches[idx];
+    if (!m) return;
+    const q = input.value.trim();
+    drop.querySelectorAll('.search-item').forEach((el, i) => {
+      el.classList.toggle('is-active', i === idx);
+      el.classList.toggle('is-loading', i === idx);
+    });
+    showInvoke({ ok: true, label: t('invoking') }, m.capability_id || 'capability', t('opening'));
+    drop.classList.remove('open');
+    try {
+      const r = await fetch(`${HUB}/ai-market/v2/invoke`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-AIMarket-Sandbox-Visitor': visitorId(),
+        },
+        body: JSON.stringify({
+          product_id: m.product_id,
+          capability_id: m.capability_id,
+          source_hub: m.source_hub || 'local',
+          input: { text: q },
+        }),
+      });
+      const body = await r.json();
+      if (r.status === 403) {
+        showInvoke({ ok: false, label: t('blocked') }, m.capability_id, `Safety gate: ${body.category || 'blocked'}\n${body.reason || ''}`);
+        return;
+      }
+      if (r.status === 429) {
+        showInvoke({ ok: false, label: t('quota') }, m.capability_id, body.detail || 'Free trials used. Fund a payment channel to continue.');
+        return;
+      }
+      if (!body.success) {
+        showInvoke({ ok: false, label: t('failed') }, m.capability_id, JSON.stringify(body, null, 2));
+        return;
+      }
+      const trials = body.remaining != null ? ` · ${body.remaining} free trials left` : '';
+      showInvoke(
+        { ok: true, label: `OK · ${body.latency_ms || '?'}ms${trials}` },
+        m.capability_id,
+        JSON.stringify(body.result || body.output || body, null, 2),
+      );
+      poll();
+    } catch (err) {
+      showInvoke({ ok: false, label: t('error') }, m.capability_id, String(err.message || err));
+    } finally {
+      drop.querySelectorAll('.search-item').forEach(el => el.classList.remove('is-loading'));
+    }
+  }
+
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const q = input.value.trim();
+    if (!q) return;
+    drop.classList.add('open');
+    drop.innerHTML = `<div class="search-item"><span class="meta">${esc(t('searching'))}</span></div>`;
+    try {
+      const r = await fetch(`${HUB}/ai-market/v2/search?intent=${encodeURIComponent(q)}&limit=8`);
+      const d = await r.json();
+      const m = d.matches || [];
+      if (!m.length) {
+        searchMatches = [];
+        drop.innerHTML = `<div class="search-item"><span class="meta">${esc(t('no_matches'))}</span></div>`;
+        return;
+      }
+      renderSearchResults(m);
+    } catch {
+      searchMatches = [];
+      drop.innerHTML = `<div class="search-item"><span class="meta">${esc(t('search_failed'))}</span></div>`;
+    }
+  });
+
+  drop.addEventListener('click', ev => {
+    const item = ev.target.closest('.search-item[data-idx]');
+    if (!item) return;
+    ev.stopPropagation();
+    invokeMatch(parseInt(item.dataset.idx, 10));
+  });
+  drop.addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    const item = ev.target.closest('.search-item[data-idx]');
+    if (!item) return;
+    ev.preventDefault();
+    invokeMatch(parseInt(item.dataset.idx, 10));
+  });
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.intent-wrap')) drop.classList.remove('open');
+  });
+
+  /* ── Catalogue drawer: peers / capabilities ─────────────────── */
+  const drawer = document.getElementById('cat-drawer');
+  const catBody = document.getElementById('cat-body');
+  const catTitle = document.getElementById('cat-title');
+  const catMeta = document.getElementById('cat-meta');
+  let catMode = null; // 'peers' | 'caps'
+  let capsCache = null;
+  let peersCache = null;
+  let peersForFed = null;
+
+  async function ensurePeers() {
+    if (peersCache) return peersCache;
+    const r = await fetch(`${HUB}/ai-market/v2/federation/peers`, { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    peersCache = (await r.json()).peers || [];
+    peersForFed = peersCache;
+    return peersCache;
+  }
+
+  function descFor(cap, lang) {
+    const id = cap.capability_id || '';
+    const map = capI18n && capI18n.descriptions && capI18n.descriptions[id];
+    if (map && map[lang]) return map[lang];
+    if (map && map.en) return map.en;
+    return cap.description || '';
+  }
+  function descForSearch(cap) { return descFor(cap, hubLang); }
+
+  function allLangsFor(cap) {
+    const id = cap.capability_id || '';
+    const map = (capI18n && capI18n.descriptions && capI18n.descriptions[id]) || {};
+    return LANGS.map(l => ({
+      lang: l,
+      text: map[l] || (l === 'en' ? (cap.description || '') : ''),
+    })).filter(x => x.text);
+  }
+
+  function setDrawerOpen(open) {
+    drawer.hidden = !open;
+    drawer.classList.toggle('open', open);
+    document.getElementById('stat-hubs').setAttribute('aria-expanded', open && catMode === 'peers' ? 'true' : 'false');
+    document.getElementById('stat-caps').setAttribute('aria-expanded', open && catMode === 'caps' ? 'true' : 'false');
+  }
+
+  function renderPeers(peers) {
+    if (!peers.length) {
+      catBody.innerHTML = `<div class="cat-empty">${esc(t('no_peers'))}</div>`;
+      return;
+    }
+    catBody.innerHTML = peers.map(p => {
+      const cats = (p.categories || []).slice(0, 12).map(c => `<i>${esc(c)}</i>`).join('');
+      const trust = (Number(p.trust_score) || 0).toFixed(3);
+      const crawl = p.last_crawl ? esc(String(p.last_crawl).replace('T', ' ').replace(/Z$/, ' UTC')) : '—';
+      return `<div class="cat-item peer-item">
+        <div class="name">${esc(p.name || hostOf(p.url) || 'peer')}</div>
+        <div class="url"><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url)}</a></div>
+        <div class="peer-meta">
+          <span><b>${esc(t('caps_label'))}</b> ${p.capabilities_count ?? 0}</span>
+          <span><b>${esc(t('trust_label'))}</b> ${trust}</span>
+          <span><b>${esc(t('crawl_label'))}</b> ${crawl}</span>
+        </div>
+        ${cats ? `<div class="peer-cats">${cats}</div>` : ''}
+      </div>`;
+    }).join('');
+  }
+
+  function renderCaps(caps) {
+    if (!caps.length) {
+      catBody.innerHTML = `<div class="cat-empty">${esc(t('no_caps'))}</div>`;
+      return;
+    }
+    catBody.innerHTML = caps.map((c, i) => {
+      const hub = c.source_hub_name || hostOf(c.source_hub) || c.source_hub || '';
+      const price = usd(c.routed_price_usd || c.price_per_call_usd);
+      const main = descFor(c, hubLang);
+      const rows = allLangsFor(c).map(r =>
+        `<div class="lang-row"><strong>${r.lang.toUpperCase()}</strong>${esc(r.text)}</div>`
+      ).join('');
+      return `<div class="cat-item" data-ci="${i}">
+        <div class="id">${esc(c.capability_id || c.name)}<span class="price">${price}</span></div>
+        <div class="hub">${esc(t('via'))} ${esc(hub)}</div>
+        <div class="desc">${esc(main)}</div>
+        <button type="button" class="toggle-langs" data-toggle="${i}">${esc(t('all_langs_open'))}</button>
+        <div class="langs-all">${rows}</div>
+      </div>`;
+    }).join('');
+  }
+
+  async function openCatalogue(mode, force) {
+    if (!force && catMode === mode && drawer.classList.contains('open')) {
+      setDrawerOpen(false);
+      catMode = null;
+      return;
+    }
+    catMode = mode;
+    setDrawerOpen(true);
+    catBody.innerHTML = `<div class="cat-loading">${esc(t('loading'))}</div>`;
+
+    if (mode === 'peers') {
+      catTitle.textContent = t('peers_title');
+      try {
+        if (!peersCache) {
+          await ensurePeers();
+        }
+        catMeta.textContent = t('peers_meta', { n: peersCache.length });
+        renderPeers(peersCache);
+      } catch (err) {
+        catBody.innerHTML = `<div class="cat-empty">${esc(t('fail_peers', { err: String(err.message || err) }))}</div>`;
+      }
+      return;
+    }
+
+    catTitle.textContent = t('caps_title');
+    try {
+      await loadCapI18n();
+      if (!capsCache) {
+        const r = await fetch(`${HUB}/ai-market/v2/search?intent=&limit=100`, { cache: 'no-store' });
+        if (!r.ok) throw new Error(r.status);
+        capsCache = (await r.json()).matches || [];
+        capsCache.sort((a, b) =>
+          String(a.source_hub_name || a.source_hub).localeCompare(String(b.source_hub_name || b.source_hub))
+          || String(a.capability_id).localeCompare(String(b.capability_id))
+        );
+      }
+      const withI18n = capsCache.filter(c => capI18n && capI18n.descriptions && capI18n.descriptions[c.capability_id]).length;
+      catMeta.textContent = t('caps_meta', { n: capsCache.length, i18n: withI18n, lang: hubLang.toUpperCase() });
+      renderCaps(capsCache);
+    } catch (err) {
+      catBody.innerHTML = `<div class="cat-empty">${esc(t('fail_caps', { err: String(err.message || err) }))}</div>`;
+    }
+  }
+
+  document.getElementById('stat-hubs').addEventListener('click', () => openCatalogue('peers'));
+  document.getElementById('stat-caps').addEventListener('click', () => openCatalogue('caps'));
+  ['stat-hubs', 'stat-caps'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openCatalogue(id === 'stat-hubs' ? 'peers' : 'caps'); }
+    });
+  });
+  document.getElementById('cat-close').addEventListener('click', () => { setDrawerOpen(false); catMode = null; });
+  catBody.addEventListener('click', ev => {
+    const btn = ev.target.closest('[data-toggle]');
+    if (!btn) return;
+    const item = btn.closest('.cat-item');
+    if (!item) return;
+    const open = item.classList.toggle('expanded');
+    btn.textContent = open ? t('all_langs_close') : t('all_langs_open');
+  });
+
+  document.getElementById('lang-switch').addEventListener('click', ev => {
+    const btn = ev.target.closest('button[data-lang]');
+    if (!btn) return;
+    hubLang = btn.dataset.lang;
+    localStorage.setItem('mm_hub_lang', hubLang);
+    applyStaticI18n();
+    if (catMode === 'peers' && peersCache) {
+      catTitle.textContent = t('peers_title');
+      catMeta.textContent = t('peers_meta', { n: peersCache.length });
+      renderPeers(peersCache);
+    } else if (catMode === 'caps' && capsCache) {
+      openCatalogue('caps', true);
+    }
+    if (searchMatches.length) renderSearchResults(searchMatches);
+    renderFeed(); renderTicker();
+  });
+
+  /* Poll live stats */
+  async function poll() {
+    try {
+      const r = await fetch(`${HUB}/ai-market/v2/stats/live?limit=80`, { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      const d = await r.json();
+      events = d.events || [];
+      const s = d.summary || {};
+      setConn(true, t('conn_live', { time: new Date().toLocaleTimeString() }));
+
+      const inv = s.total_invocations || 0;
+      const rev = s.revenue_per_hour_usd || 0;
+      const hubs = s.peers_count || 0;
+      const extN = s.external_events_in_page;
+      const selfN = s.operator_self_events_in_page;
+      const caps = (s.offerable_capabilities_count ?? s.capabilities_count) || 0;
+      const hidden = (s.capabilities_count || 0) - caps;
+
+      const elInv = document.getElementById('s-inv');
+      anim(elInv, parseFloat(elInv.textContent.replace(/\D/g,'')) || 0, inv);
+      let invSub = inv > lastInv
+        ? t('since_poll', { n: inv - lastInv })
+        : t('success_pct', { pct: ((s.success_rate||0)*100).toFixed(1) });
+      if (typeof extN === 'number' && typeof selfN === 'number') {
+        invSub += ` · ${extN} ${t('filt_ext').toLowerCase()} / ${selfN} ${t('filt_self').toLowerCase()}`;
+      }
+      document.getElementById('s-inv-sub').textContent = invSub;
+      lastInv = inv;
+
+      const elRev = document.getElementById('s-rev');
+      anim(elRev, parseFloat(elRev.textContent.replace(/[^\d.]/g,'')) || 0, rev,
+           { pre: '$', dec: rev > 0 && rev < 0.01 ? 4 : 2 });
+      document.getElementById('s-rev-sub').textContent = t('avg_samples', {
+        avg: usd(s.avg_price_usd), n: events.length,
+      });
+
+      anim(document.getElementById('s-hubs'), parseFloat(document.getElementById('s-hubs').textContent) || 0, hubs);
+      document.getElementById('s-hubs-sub').textContent = hubs
+        ? t('peers_n', { n: hubs })
+        : t('solo_hub');
+
+      anim(document.getElementById('s-caps'), parseFloat(document.getElementById('s-caps').textContent) || 0, caps);
+      document.getElementById('s-caps-sub').textContent =
+        t('federated_n', { n: s.federated_capabilities_count || 0 })
+        + (hidden > 0 ? t('demo_hidden', { n: hidden }) : '');
+
+      sparkInv.push(inv); if (sparkInv.length > 24) sparkInv.shift();
+      sparkRev.push(rev); if (sparkRev.length > 24) sparkRev.shift();
+      spark('spark-inv', sparkInv, '#38e0ff');
+      spark('spark-rev', sparkRev, '#38ffa6');
+
+      try { await ensurePeers(); } catch (_) { /* fed viz falls back to events */ }
+      renderFeed(); renderTicker(); renderTop(); renderFed(s);
+      document.getElementById('last-up').textContent = t('updated', { time: new Date().toLocaleTimeString() });
+    } catch (e) {
+      setConn(false, t('conn_reconnecting'));
+    }
+  }
+
+  // Live stats must not wait on i18n JSON — a hung/cached fetch left the UI on
+  // "Connecting…" forever while the hub itself was healthy.
+  poll();
+  setInterval(poll, POLL);
+  loadUiI18n().catch(() => {});
+  loadCapI18n().catch(() => {});
+})();
+</script>
+</body>
+</html>
