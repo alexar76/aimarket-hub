@@ -1,0 +1,17 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.alexar76/aimarket-hub",
+  "title": "AIMarket — live agent marketplace",
+  "description": "Search and invoke real AI capabilities on modelmarket.dev. Free trial, then USDC on Base.",
+  "repository": {
+    "url": "https://github.com/alexar76/aimarket-hub",
+    "source": "github"
+  },
+  "version": "3.2.1",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://modelmarket.dev/mcp"
+    }
+  ]
+}
