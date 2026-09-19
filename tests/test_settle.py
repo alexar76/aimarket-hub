@@ -1,0 +1,434 @@
+"""The market rail: buyer pays the seller; Hub only verifies.
+
+RPC is stubbed so these pin the money rules, not the network. One payment
+buys one call, a transfer to the wrong address is refused, and a priced
+listing without a seller is not billed to the platform.
+"""
+
+from __future__ import annotations
+
+import json
+from contextlib import contextmanager
+
+import pytest
+from fastapi.testclient import TestClient
+
+from aimarket_hub import settle
+from aimarket_hub.api import create_app
+from aimarket_hub.config import HubConfig
+from aimarket_hub.database import HubDatabase
+from aimarket_hub.models import Capability
+from aimarket_hub.signing import Signer
+
+TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+BUYER = "0x6E94c380d908531f9822035d6cc4c8D2B0186C9c"
+SELLER = "0x1218000000000000000000000000000000000001"
+OPERATOR = "0x1218Ff3600000000000000000000000000000a0a"
+TX = "0x" + "ab" * 32
+PRICE = 0.02
+
+
+def _topic_addr(address: str) -> str:
+    return "0x" + "0" * 24 + address[2:].lower()
+
+
+def fake_rpc(monkeypatch, *, to: str, units: int, token: str = USDC,
+             status: str = "0x1", block: int = 100, head: int = 101) -> dict:
+    seen: dict = {"receipts": 0}
+
+    def _post(url, json=None, timeout=None):  # noqa: A002
+        method = json["method"]
+
+        class R:
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+            @staticmethod
+            def json() -> dict:
+                if method == "eth_blockNumber":
+                    return {"result": hex(head)}
+                seen["receipts"] += 1
+                return {
+                    "result": {
+                        "status": status,
+                        "blockNumber": hex(block),
+                        "logs": [
+                            {
+                                "address": token,
+                                "topics": [TRANSFER, _topic_addr(BUYER), _topic_addr(to)],
+                                "data": hex(units),
+                            }
+                        ],
+                    }
+                }
+
+        return R()
+
+    monkeypatch.setattr("aimarket_hub.settle.httpx.post", _post)
+    monkeypatch.setattr(
+        "aimarket_hub.settle.rpc_urls", lambda: ["http://rpc.invalid"],
+    )
+    return seen
+
+
+@contextmanager
+def _hub(monkeypatch, tmp_path, **env):
+    env.setdefault("AIMARKET_X402_CHAIN", "base")
+    env.setdefault("AIMARKET_SETTLE_REQUIRE_BINDING", "0")
+    env.setdefault("AIMARKET_ORACLE_FAMILY_URL", "off")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    root = tmp_path / f"hub-{len(list(tmp_path.iterdir()))}"
+    root.mkdir(parents=True, exist_ok=True)
+    config = HubConfig()
+    config.db_path = str(root / "hub.db")
+    config.signing_key_path = str(root / "key")
+    db = HubDatabase(root / "hub.db")
+    db.upsert_capability(Capability(
+        capability_id="x.pay@v1", product_id="x-pay", name="Paid pack",
+        description="static", price_per_call_usd=PRICE, source_hub="local",
+        invoke_url="", prompt_template=json.dumps({"answer": "paid"}),
+        payout_address=SELLER, publisher_id=SELLER,
+    ))
+    app = create_app(config=config, db=db, signer=Signer(root / "key"))
+    with TestClient(app) as client:
+        client.hub_db = db  # type: ignore[attr-defined]
+        yield client
+
+
+def _invoke(client, header: str | None = None):
+    headers = {"X-PAYMENT": header} if header else {}
+    return client.post("/ai-market/v2/invoke", headers=headers, json={
+        "product_id": "x-pay", "capability_id": "x.pay@v1",
+        "input": {}, "source_hub": "local",
+    })
+
+
+class TestSellerPayTo:
+    def test_a_wallet_publisher_is_the_payee(self):
+        cap = Capability(
+            capability_id="a@v1", product_id="p", name="n",
+            publisher_id=SELLER, price_per_call_usd=0.01,
+        )
+        assert settle.seller_pay_to(cap, operator_pay_to=OPERATOR) == SELLER
+
+    def test_an_explicit_payout_wins_over_the_operator_wallet(self):
+        cap = Capability(
+            capability_id="a@v1", product_id="p", name="n",
+            publisher_id="some-slug", payout_address=SELLER, price_per_call_usd=0.01,
+        )
+        assert settle.seller_pay_to(cap, operator_pay_to=OPERATOR) == SELLER
+
+    def test_a_slug_publisher_is_not_silently_paid_to_the_platform(self):
+        cap = Capability(
+            capability_id="a@v1", product_id="p", name="n",
+            publisher_id="credit-acct-1", price_per_call_usd=0.01,
+        )
+        assert settle.seller_pay_to(cap, operator_pay_to=OPERATOR) == ""
+
+    def test_an_operator_owned_listing_pays_the_operator_as_seller(self):
+        cap = Capability(
+            capability_id="a@v1", product_id="p", name="n", price_per_call_usd=0.01,
+        )
+        assert settle.seller_pay_to(cap, operator_pay_to=OPERATOR) == OPERATOR
+
+
+class TestVerifyTransfer:
+    def test_a_transfer_to_someone_else_is_refused(self, monkeypatch):
+        fake_rpc(monkeypatch, to=BUYER, units=20_000)
+        terms = settle.PaymentTerms("base", "USDC", USDC, 6, SELLER, 20_000, PRICE, 1)
+        with pytest.raises(settle.PaymentError, match="no USDC transfer"):
+            settle.verify_transfer(tx_hash=TX, terms=terms, rpc_url="http://rpc.invalid")
+
+    def test_an_underpayment_is_refused(self, monkeypatch):
+        fake_rpc(monkeypatch, to=SELLER, units=19_999)
+        terms = settle.PaymentTerms("base", "USDC", USDC, 6, SELLER, 20_000, PRICE, 1)
+        with pytest.raises(settle.PaymentError, match="paid 19999 base units"):
+            settle.verify_transfer(tx_hash=TX, terms=terms, rpc_url="http://rpc.invalid")
+
+    def test_a_good_transfer_settles(self, monkeypatch):
+        fake_rpc(monkeypatch, to=SELLER, units=20_000)
+        terms = settle.PaymentTerms("base", "USDC", USDC, 6, SELLER, 20_000, PRICE, 1)
+        out = settle.verify_transfer(tx_hash=TX, terms=terms, rpc_url="http://rpc.invalid")
+        assert out["pay_to"] == SELLER
+        assert out["paid_units"] == 20_000
+        assert out["tx_hash"] == TX
+
+
+class TestInvokeSettle:
+    def test_an_unpaid_call_names_the_seller_not_the_platform(self, monkeypatch, tmp_path):
+        with _hub(monkeypatch, tmp_path, AIMARKET_X402_PAY_TO=OPERATOR) as client:
+            r = _invoke(client)
+            assert r.status_code == 402
+            body = r.json()
+            assert body["pay_to"] == SELLER
+            accepts = body.get("accepts") or []
+            assert accepts and accepts[0]["payTo"] == SELLER
+            raw = {k.upper(): v for k, v in r.headers.items()}["PAYMENT-REQUIRED"]
+            import base64
+            doc = json.loads(base64.b64decode(raw))
+            assert doc["accepts"][0]["payTo"] == SELLER
+
+    def test_a_paid_call_is_served_and_the_tx_cannot_buy_twice(self, monkeypatch, tmp_path):
+        fake_rpc(monkeypatch, to=SELLER, units=20_000)
+        with _hub(monkeypatch, tmp_path) as client:
+            first = _invoke(client, TX)
+            assert first.status_code == 200, first.text
+            assert first.json()["result"]["answer"] == "paid"
+            stats = client.get("/ai-market/v2/stats/live").json()["summary"]["x402"]
+            assert stats["x402_settled_usd"] == pytest.approx(PRICE)
+            assert stats["x402_unsettled_usd"] == 0.0
+            second = _invoke(client, TX)
+            assert second.status_code == 402
+            assert "already been spent" in second.json()["detail"]
+
+    def test_a_signature_without_a_chain_receipt_is_not_a_payment(self, monkeypatch, tmp_path):
+        with _hub(monkeypatch, tmp_path) as client:
+            payload = {"scheme": "exact", "network": "eip155:8453", "asset": USDC}
+            import base64
+            header = base64.b64encode(json.dumps(payload).encode()).decode()
+            r = _invoke(client, header)
+            assert r.status_code == 402
+            assert "on-chain" in r.json()["detail"]
+
+    def test_discovery_advertises_the_seller(self, monkeypatch, tmp_path):
+        with _hub(monkeypatch, tmp_path) as client:
+            r = client.get("/discovery/resources")
+            item = next(
+                i for i in r.json()["items"]
+                if i["metadata"]["capability_id"] == "x.pay@v1"
+            )
+            assert item["accepts"][0]["payTo"] == SELLER
+            assert item["metadata"]["payout_address"] == SELLER
+
+class TestAListingWithNoSeller:
+    """A priced listing nobody can be paid for must not point at the platform.
+
+    ``seller_pay_to`` already returns "" for a publisher that is a credit-account
+    slug rather than a wallet, and ``settle.terms_for`` refuses such a listing at
+    settlement. The 402 did not agree: it fell back to the operator's own wallet,
+    so a buyer following the offer paid the platform and then got
+    "this listing has no seller payout_address" back. The two ends now say the
+    same thing.
+    """
+
+    @contextmanager
+    def _sellerless_hub(self, monkeypatch, tmp_path, **env):
+        env.setdefault("AIMARKET_X402_CHAIN", "base")
+        env.setdefault("AIMARKET_X402_ACCEPT", "1")
+        env.setdefault("AIMARKET_X402_PAY_TO", OPERATOR)
+        env.setdefault("AIFACTORY_CRYPTO_ENABLED", "1")
+        env.setdefault("AIMARKET_ORACLE_FAMILY_URL", "off")
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        root = tmp_path / f"hub-{len(list(tmp_path.iterdir()))}"
+        root.mkdir(parents=True, exist_ok=True)
+        config = HubConfig()
+        config.db_path = str(root / "hub.db")
+        config.signing_key_path = str(root / "key")
+        db = HubDatabase(root / "hub.db")
+        db.upsert_capability(Capability(
+            capability_id="x.slug@v1", product_id="x-slug", name="Slug pack",
+            description="static", price_per_call_usd=PRICE, source_hub="local",
+            invoke_url="", prompt_template=json.dumps({"answer": "paid"}),
+            publisher_id="credit-acct-1",
+        ))
+        app = create_app(config=config, db=db, signer=Signer(root / "key"))
+        with TestClient(app) as client:
+            yield client
+
+    def test_the_402_does_not_send_the_buyer_to_the_platform_wallet(
+        self, monkeypatch, tmp_path,
+    ):
+        with self._sellerless_hub(monkeypatch, tmp_path) as client:
+            r = client.post("/ai-market/v2/invoke", json={
+                "product_id": "x-slug", "capability_id": "x.slug@v1",
+                "input": {}, "source_hub": "local",
+            })
+            assert r.status_code == 402
+            assert OPERATOR.lower() not in r.text.lower()
+            body = r.json()
+            assert body["error"] == "listing_not_sellable"
+            assert "no payout address" in body["detail"]
+            assert not body.get("accepts")
+
+    def test_settlement_refuses_the_same_listing(self, monkeypatch, tmp_path):
+        """The offer and the settlement agree: nobody to pay, no sale."""
+        fake_rpc(monkeypatch, to=OPERATOR, units=20_000)
+        with self._sellerless_hub(
+            monkeypatch, tmp_path, AIMARKET_SETTLE_REQUIRE_BINDING="0",
+        ) as client:
+            r = client.post("/ai-market/v2/invoke", headers={"X-PAYMENT": TX}, json={
+                "product_id": "x-slug", "capability_id": "x.slug@v1",
+                "input": {}, "source_hub": "local",
+            })
+            assert r.status_code == 402
+            body = r.json()
+            # The settlement refusal keeps its OWN reason rather than being
+            # flattened into the generic one — it knows more than the offer does.
+            assert body["error"] == "payment_invalid"
+            assert "payout_address" in body["detail"]
+            assert OPERATOR.lower() not in r.text.lower()
+
+
+class TestPayeeIsNotOptional:
+    """`None` means "no listing here"; "" means "this listing has no seller"."""
+
+    def test_an_unbound_402_still_offers_the_operator_wallet(self, monkeypatch):
+        monkeypatch.setenv("AIMARKET_X402_CHAIN", "base")
+        monkeypatch.setenv("AIMARKET_X402_PAY_TO", OPERATOR)
+        from aimarket_hub import x402
+        accepts = x402.payment_requirements(PRICE)
+        assert accepts and accepts[0]["payTo"] == OPERATOR
+
+    def test_an_empty_payee_makes_no_offer_at_all(self, monkeypatch):
+        monkeypatch.setenv("AIMARKET_X402_CHAIN", "base")
+        monkeypatch.setenv("AIMARKET_X402_PAY_TO", OPERATOR)
+        from aimarket_hub import x402
+        assert x402.payment_requirements(PRICE, pay_to="") == []
+
+SPLITTER = "0x5911770000000000000000000000000000000002"
+
+
+def fake_rpc_two_legs(monkeypatch, *, seller_units: int, fee_units: int,
+                      fee_to: str = OPERATOR, token: str = USDC,
+                      block: int = 100, head: int = 101) -> None:
+    """A receipt carrying BOTH transfer legs, the way the splitter produces them."""
+    logs = [
+        {"address": token, "topics": [TRANSFER, _topic_addr(BUYER), _topic_addr(SELLER)],
+         "data": hex(seller_units)},
+    ]
+    if fee_units:
+        logs.append(
+            {"address": token, "topics": [TRANSFER, _topic_addr(SPLITTER), _topic_addr(fee_to)],
+             "data": hex(fee_units)}
+        )
+
+    def _post(url, json=None, timeout=None):  # noqa: A002
+        method = json["method"]
+
+        class R:
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+            @staticmethod
+            def json() -> dict:
+                if method == "eth_blockNumber":
+                    return {"result": hex(head)}
+                return {"result": {"status": "0x1", "blockNumber": hex(block), "logs": logs}}
+
+        return R()
+
+    monkeypatch.setattr("aimarket_hub.settle.httpx.post", _post)
+    monkeypatch.setattr("aimarket_hub.settle.rpc_urls", lambda: ["http://rpc.invalid"])
+
+
+class TestTheOperatorsShare:
+    """A cut without custody: the chain says both were paid, or the call is refused."""
+
+    def test_rounding_goes_to_the_seller(self):
+        # The same arithmetic the contract does, and the same reason: the computed
+        # side loses the dust, so the computed side must be the operator's.
+        assert settle.fee_split(1, 250) == (1, 0)
+        assert settle.fee_split(20_000, 250) == (19_500, 500)
+        assert settle.fee_split(20_000, 0) == (20_000, 0)
+
+    def test_a_fee_is_off_until_it_is_configured(self, monkeypatch):
+        monkeypatch.delenv("AIMARKET_MARKET_FEE_BPS", raising=False)
+        assert settle.fee_bps() == 0
+
+    def test_the_fee_cannot_exceed_what_the_contract_allows(self, monkeypatch):
+        monkeypatch.setenv("AIMARKET_MARKET_FEE_BPS", "5000")
+        assert settle.fee_bps() == 1000
+
+    def test_paying_only_the_seller_does_not_buy_the_call(self, monkeypatch):
+        """The whole point: the fee is enforced by the chain, not by a contract."""
+        fake_rpc_two_legs(monkeypatch, seller_units=19_500, fee_units=0)
+        terms = settle.PaymentTerms(
+            "base", "USDC", USDC, 6, SELLER, 20_000, PRICE, 1,
+            seller_units=19_500, fee_units=500, fee_to=OPERATOR, offer_to=SPLITTER,
+        )
+        with pytest.raises(settle.PaymentError, match="operator's share was not paid"):
+            settle.verify_transfer(tx_hash=TX, terms=terms, rpc_url="http://rpc.invalid")
+
+    def test_both_legs_in_one_transaction_settle(self, monkeypatch):
+        fake_rpc_two_legs(monkeypatch, seller_units=19_500, fee_units=500)
+        terms = settle.PaymentTerms(
+            "base", "USDC", USDC, 6, SELLER, 20_000, PRICE, 1,
+            seller_units=19_500, fee_units=500, fee_to=OPERATOR, offer_to=SPLITTER,
+        )
+        settled = settle.verify_transfer(
+            tx_hash=TX, terms=terms, rpc_url="http://rpc.invalid",
+        )
+        assert settled["paid_units"] == 19_500
+        assert settled["fee_units"] == 500
+
+    def test_the_402_names_the_splitter_but_verification_names_the_seller(self, monkeypatch):
+        """`payTo` is a convenience; who must be paid is not."""
+        monkeypatch.setenv("AIMARKET_X402_CHAIN", "base")
+        monkeypatch.setenv("AIMARKET_MARKET_FEE_BPS", "250")
+        monkeypatch.setenv("AIMARKET_MARKET_FEE_TO", OPERATOR)
+        monkeypatch.setenv("AIMARKET_MARKET_SPLITTER", SPLITTER)
+        cap = Capability(
+            capability_id="a@v1", product_id="p", name="n",
+            payout_address=SELLER, price_per_call_usd=PRICE,
+        )
+        terms = settle.terms_for(cap)
+        assert terms is not None
+        assert terms.offer_to == SPLITTER
+        assert terms.as_x402_accept()["payTo"] == SPLITTER
+        assert terms.pay_to == SELLER          # who verification requires
+        assert terms.fee_to == OPERATOR
+        assert terms.seller_units + terms.fee_units == terms.amount_units
+
+    def test_a_fee_with_nowhere_to_send_it_is_not_charged(self, monkeypatch):
+        monkeypatch.setenv("AIMARKET_X402_CHAIN", "base")
+        monkeypatch.setenv("AIMARKET_MARKET_FEE_BPS", "250")
+        monkeypatch.delenv("AIMARKET_MARKET_FEE_TO", raising=False)
+        monkeypatch.delenv("AIMARKET_X402_PAY_TO", raising=False)
+        monkeypatch.delenv("AIMARKET_PAYMENT_RECIPIENT", raising=False)
+        cap = Capability(
+            capability_id="a@v1", product_id="p", name="n",
+            payout_address=SELLER, price_per_call_usd=PRICE,
+        )
+        terms = settle.terms_for(cap)
+        assert terms is not None
+        assert terms.fee_units == 0
+        assert terms.seller_units == terms.amount_units
+        assert terms.offer_to == SELLER
+
+class TestTheRoutingFeeIsOwedToTheHub:
+    """The hub's broker fee is owed to the HUB, not to the listing's seller.
+
+    The federated path binds the listing's payee early, because most of its 402s are
+    about the sale. The routing-fee refusal is not: `needed` there is the hub's own 1%
+    for brokering somebody else's capability, and it was inheriting the seller's
+    address — so the offer asked the buyer to pay the hub's fee TO THE SELLER. Caught
+    on modelmarket.dev minutes after the rail shipped, by reading a real 402.
+
+    Reaching that branch needs a registered federated peer, which is a heavy fixture;
+    what is pinned here is the rule the fix turns on, and the end-to-end check is the
+    live 402 itself.
+    """
+
+    def test_the_fee_goes_to_the_hub_wallet_not_to_any_listing(self, monkeypatch):
+        monkeypatch.setenv("AIMARKET_X402_PAY_TO", OPERATOR)
+        monkeypatch.delenv("AIMARKET_MARKET_FEE_TO", raising=False)
+        assert settle.fee_recipient() == OPERATOR
+        assert settle.fee_recipient() != SELLER
+
+    def test_an_explicit_fee_wallet_wins(self, monkeypatch):
+        other = "0x0fee000000000000000000000000000000000003"
+        monkeypatch.setenv("AIMARKET_X402_PAY_TO", OPERATOR)
+        monkeypatch.setenv("AIMARKET_MARKET_FEE_TO", other)
+        assert settle.fee_recipient() == other
+
+    def test_a_two_payee_total_makes_no_single_payee_offer(self, monkeypatch):
+        """price + fee is owed to two addresses; `exact` has one `payTo`."""
+        monkeypatch.setenv("AIMARKET_X402_CHAIN", "base")
+        monkeypatch.setenv("AIMARKET_X402_PAY_TO", OPERATOR)
+        from aimarket_hub import x402
+        assert x402.payment_requirements(PRICE, pay_to="") == []
