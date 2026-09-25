@@ -1,0 +1,127 @@
+{
+  "registry_version": "1.0",
+  "updated_at": "2026-05-30",
+  "plugins": [
+    {
+      "name": "provenance",
+      "display_name": "aimarket-provenance",
+      "version": "1.1.0",
+      "category": "compliance",
+      "description": "Cryptographic W3C VC receipts for every invoke (Ed25519 + verify URLs)",
+      "homepage": "https://github.com/ai-factory/aimarket-hub/tree/main/plugins/aimarket-provenance",
+      "entry_point": "provenance"
+    },
+    {
+      "name": "aimarket-safety",
+      "display_name": "aimarket-safety",
+      "version": "2.0.0",
+      "category": "security",
+      "description": "Pre/post-invoke safety classifier with constitutional contracts",
+      "entry_point": "safety"
+    },
+    {
+      "name": "aimarket-tee",
+      "display_name": "aimarket-tee",
+      "version": "2.0.0",
+      "category": "security",
+      "description": "TEE attestation and escrow hooks",
+      "entry_point": "tee"
+    },
+    {
+      "name": "aimarket-zk",
+      "display_name": "aimarket-zk",
+      "version": "2.0.0",
+      "category": "security",
+      "description": "Zero-knowledge cohort proofs",
+      "entry_point": "zk"
+    },
+    {
+      "name": "aimarket-reputation",
+      "display_name": "aimarket-reputation",
+      "version": "2.0.0",
+      "category": "reputation",
+      "description": "Trust scores and stake bonds",
+      "entry_point": "reputation"
+    },
+    {
+      "name": "aimarket-channels",
+      "display_name": "aimarket-channels",
+      "version": "2.0.0",
+      "category": "infrastructure",
+      "description": "USDT payment channel lifecycle",
+      "entry_point": "channels"
+    },
+    {
+      "name": "aimarket-auction",
+      "display_name": "aimarket-auction",
+      "version": "2.0.0",
+      "category": "monetization",
+      "description": "Price discovery auctions",
+      "entry_point": "auction"
+    },
+    {
+      "name": "aimarket-streaming",
+      "display_name": "aimarket-streaming",
+      "version": "2.0.0",
+      "category": "monetization",
+      "description": "Streaming invoke monetization",
+      "entry_point": "streaming"
+    },
+    {
+      "name": "aimarket-nft",
+      "display_name": "aimarket-nft",
+      "version": "2.0.0",
+      "category": "monetization",
+      "description": "Capability NFT listings",
+      "entry_point": "nft"
+    },
+    {
+      "name": "aimarket-promo",
+      "display_name": "aimarket-promo",
+      "version": "2.0.0",
+      "category": "monetization",
+      "description": "Promotional pricing rules",
+      "entry_point": "promo"
+    },
+    {
+      "name": "aimarket-orchestrator",
+      "display_name": "aimarket-orchestrator",
+      "version": "2.0.0",
+      "category": "monetization",
+      "description": "Multi-capability orchestration plans",
+      "entry_point": "orchestrator"
+    },
+    {
+      "name": "aimarket-data-cap",
+      "display_name": "aimarket-data-cap",
+      "version": "2.0.0",
+      "category": "monetization",
+      "description": "Data-capability packaging",
+      "entry_point": "data-cap"
+    },
+    {
+      "name": "aimarket-personas",
+      "display_name": "aimarket-personas",
+      "version": "2.0.0",
+      "category": "tooling",
+      "description": "Seller persona profiles",
+      "entry_point": "personas"
+    },
+    {
+      "name": "aimarket-mcp-packager",
+      "display_name": "aimarket-mcp-packager",
+      "version": "2.0.0",
+      "category": "tooling",
+      "description": "Export capabilities as MCP tools",
+      "entry_point": "mcp-packager"
+    },
+    {
+      "name": "aimarket-dataset",
+      "display_name": "aimarket-dataset",
+      "version": "2.0.0",
+      "category": "tooling",
+      "description": "Dataset marketplace listings",
+      "entry_point": "dataset"
+    }
+  ]
+}
