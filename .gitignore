@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+data/
+*.db
+*.key
+.env
+.venv/
+dist/
+*.egg-info/
+# Local CI/dev clone — acex is a separate satellite repo
+acex/
