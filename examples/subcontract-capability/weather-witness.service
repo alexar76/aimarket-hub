@@ -1,0 +1,42 @@
+# weather.witness@v1 — the first-party subcontracting provider (aimarket-hub/examples/subcontract-capability).
+# Install and go-live steps: README.md, "Going live on modelmarket.dev". Check before enabling:
+#   systemd-analyze verify /etc/systemd/system/weather-witness.service
+[Unit]
+Description=weather.witness@v1 subcontracting provider for modelmarket.dev
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=weather-witness
+Group=weather-witness
+Environment=WITNESS_HUB_URL=https://modelmarket.dev
+# Loopback only: the public address is nginx's /providers/weather-witness/ location.
+Environment=WITNESS_BIND=127.0.0.1
+Environment=WITNESS_PORT=9475
+Environment=WITNESS_KEY_PATH=/var/lib/weather-witness/provider_key
+Environment=WITNESS_STATE_PATH=/var/lib/weather-witness/daily_spend.json
+Environment=WITNESS_DAILY_CAP_USD=0.05
+# WITNESS_API_KEY (fixed-price mode only) goes in this root-owned 0600 file, never here:
+# a unit file is world-readable, and `systemctl show` prints its Environment= lines.
+EnvironmentFile=-/etc/weather-witness.env
+ExecStart=/usr/bin/python3 /usr/local/lib/weather-witness/server.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+# The key and the daily-cap ledger are its only state.
+ReadWritePaths=/var/lib/weather-witness
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

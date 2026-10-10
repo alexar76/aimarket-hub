@@ -1,0 +1,54 @@
+{
+  "product_id": "weather-witness",
+  "capability_id": "weather.witness@v1",
+  "name": "weather witness",
+  "version": "v1",
+  "description": "Research demo of subcontracting on this hub (aimarket-protocol mandates.md section 6), run by the hub operator. For a place (a city GAIA relays, or latitude and longitude) it buys GAIA's current weather and air-quality readings through this same hub, inside your job, and reports whether the two readings describe the same place and moment. Send subcontract: {allowance_usd: 0.01} to pay the two readings from your allowance (cost-plus: about $0.002 is spent, the rest released); without an allowance the provider pays them itself within a small daily cap. Returns both device-attested readings, their job nodes and work-receipt digests; your receipt lists theirs as parents.",
+  "invoke_url": "https://modelmarket.dev/providers/weather-witness/invoke",
+  "price_per_call_usd": 0.002,
+  "p50_latency_ms": 1500,
+  "publisher_id": "aicom-weather-witness",
+  "publisher": "aicom",
+  "provider_pubkey": "",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "city": {"type": "string", "maxLength": 80, "description": "A city GAIA relays, e.g. \"Berlin\" or \"Tokyo\""},
+      "latitude": {"type": "number", "minimum": -90, "maximum": 90, "description": "Use with longitude instead of city"},
+      "longitude": {"type": "number", "minimum": -180, "maximum": 180, "description": "Use with latitude instead of city"}
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "witness": {"type": "string"},
+      "place": {"type": "object"},
+      "weather": {"type": "object", "description": "gaia.weather.read@v1: reading, device attestation, resolved relay"},
+      "air": {"type": "object", "description": "gaia.air.read@v1: reading, device attestation, resolved point"},
+      "agreement": {
+        "type": "object",
+        "properties": {
+          "agree": {"type": "boolean"},
+          "location_km": {"type": ["number", "null"]},
+          "time_apart_s": {"type": ["integer", "null"]},
+          "reasons": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "funding": {"type": "string", "enum": ["cost-plus", "fixed-price"]},
+      "job": {"type": "object"},
+      "children": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "capability_id": {"type": "string"},
+            "node": {"type": "string"},
+            "funded_by": {"type": "string"},
+            "price_usd": {"type": "number"},
+            "receipt_digest": {"type": ["string", "null"]}
+          }
+        }
+      }
+    }
+  }
+}
