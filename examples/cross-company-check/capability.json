@@ -1,0 +1,33 @@
+{
+  "product_id": "independent-claim-audit",
+  "capability_id": "claim.audit@v1",
+  "name": "claim audit (Independent AI, checks by Attested Memory)",
+  "version": "v1",
+  "description": "Independent AI audits a claim by subcontracting Attested Memory, a separate company on its own hub (hub.attestedmemory.net): inside your job it buys Attested's claim.check@v1 (verdict from the evidence you supply) and contradiction.scan@v1 (conflicts among your statements), then answers with both signed findings and a combined verdict (inconsistent when the statements contradict each other, otherwise Attested's status). Send subcontract: {allowance_usd: 0.05}: about $0.032 goes to Attested's two checks through this hub, the rest is released. Your receipt lists theirs as parents.",
+  "invoke_url": "https://independentai.network/hub/providers/claim-audit/invoke",
+  "price_per_call_usd": 0.003,
+  "p50_latency_ms": 2500,
+  "publisher_id": "independent-claim-audit",
+  "publisher": "independentai",
+  "provider_pubkey": "",
+  "input_schema": {
+    "type": "object",
+    "required": ["claim", "statements"],
+    "properties": {
+      "claim": {"type": "string", "minLength": 3, "maxLength": 2000},
+      "evidence": {"type": "array", "maxItems": 100, "description": "As Attested's claim.check@v1 takes it: {source_uri, excerpt_hash (sha256:<hex>), stance supports|refutes|context, quality 0..1}"},
+      "statements": {"type": "array", "minItems": 2, "maxItems": 50, "items": {"type": "string", "maxLength": 2000}, "description": "Statements to scan for contradictions (lexical negation)"}
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "verdict": {"type": "string", "enum": ["inconsistent", "supported", "contested", "rejected", "unverified"]},
+      "because": {"type": "string"},
+      "attested": {"type": "object", "description": "Attested's claim_check and contradiction_scan answers, verbatim"},
+      "funding": {"type": "string", "enum": ["cost-plus", "fixed-price"]},
+      "job": {"type": "object"},
+      "children": {"type": "array"}
+    }
+  }
+}
