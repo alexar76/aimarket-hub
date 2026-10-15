@@ -1,0 +1,24 @@
+# Render Blueprint for one AIMarket hub — docs/run-on-a-platform.md.
+# A disk needs a paid instance type; without one, keys and settings are lost on every deploy
+# and the hub comes back as a different hub that its peers refuse.
+services:
+  - type: web
+    name: aimarket-hub
+    runtime: docker
+    dockerfilePath: ./Dockerfile.standalone
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /ai-market/v2/health
+    disk:
+      name: hub-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: PORT
+        value: "9083"
+      - key: AIMARKET_HUB_URL      # https://<service name>.onrender.com, or your own domain
+        sync: false
+      - key: AIMARKET_HUB_NAME     # your hub's name — not "AIMarket"
+        sync: false
+      - key: AIMARKET_ADMIN_TOKEN  # approve peers, top up buyers
+        generateValue: true

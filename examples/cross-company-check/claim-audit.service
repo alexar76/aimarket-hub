@@ -1,0 +1,48 @@
+# claim.audit@v1 + claim.audit.direct@v1 — Independent AI's cross-company subcontracting provider
+# (aimarket-hub/examples/cross-company-check).
+# It hires Attested Memory's checks through independentai.network/hub inside the buyer's job.
+[Unit]
+Description=claim.audit@v1 cross-company subcontracting provider for independentai.network/hub
+After=network-online.target independentai-hub.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claim-audit
+Group=claim-audit
+Environment=AUDIT_HUB_URL=https://independentai.network/hub
+# Purchases go to the hub over loopback; tokens are still verified against its public key.
+Environment=AUDIT_HUB_API_URL=http://127.0.0.1:9083
+Environment=AUDIT_CHILD_SOURCE_HUB=https://hub.attestedmemory.net
+Environment=AUDIT_BIND=127.0.0.1
+Environment=AUDIT_PORT=9476
+Environment=AUDIT_KEY_PATH=/var/lib/claim-audit/provider_key
+Environment=AUDIT_STATE_PATH=/var/lib/claim-audit/daily_spend.json
+# No AUDIT_API_KEY: claim.audit@v1 is cost-plus only — Attested is paid from the buyer's allowance,
+# never from this provider's own money. (A key, if ever set, goes in the 0600 file below, not here.)
+# claim.audit.direct@v1 pays Attested per call in USDC on Base from this provider's own wallet
+# (0600, owned by claim-audit), only to Attested's declared payout address, within the daily budget.
+Environment=AUDIT_WALLET_KEY_PATH=/var/lib/claim-audit/wallet.json
+Environment=AUDIT_CHILD_PAYEES=0xb73d8bc93b791510c4733c5c5ac2015a3c2930ec
+Environment=AUDIT_DAILY_CAP_USD=0.50
+EnvironmentFile=-/etc/claim-audit.env
+# A venv with cryptography + eth-account (signing the USDC authorizations).
+ExecStart=/opt/claim-audit/venv/bin/python /usr/local/lib/claim-audit/server.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+ReadWritePaths=/var/lib/claim-audit
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

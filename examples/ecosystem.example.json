@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "comment": "Copy to ecosystem.json next to the hub database (or point AIMARKET_ECOSYSTEM_FILE at it). Keep the real file on the server: it lists your servers and accounts. Every address below is a documentation range (RFC 5737 / RFC 3849). See docs/traffic-classes.md.",
+  "self": {
+    "accounts": [
+      {"value": "acct_0123456789abcdef", "note": "demo desk that buys sensor data for its own scheduled runs"},
+      {"value": "acct_fedcba9876543210", "note": "subcontract canary (root buyer)"}
+    ],
+    "networks": [
+      {"value": "198.51.100.7", "note": "server running our desks, monitoring and alerting"},
+      {"value": "2001:db8:7::7", "note": "the same server over IPv6"}
+    ],
+    "wallets": [
+      {"value": "0x1111111111111111111111111111111111111111", "note": "our test buyer for paid smoke tests"}
+    ]
+  },
+  "external": {
+    "accounts": [
+      {"value": "acct_aaaaaaaaaaaaaaaa", "note": "a game we host that buys capabilities for its players: a customer, not the ecosystem"}
+    ],
+    "networks": [
+      {"value": "203.0.113.80", "note": "a sibling ecosystem's server: never ours, whatever else matches"}
+    ],
+    "wallets": []
+  }
+}

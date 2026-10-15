@@ -1,0 +1,15 @@
+# Build context for Dockerfile.standalone (docker-compose.yml here). The monorepo image is
+# built from the repository root and uses the root .dockerignore instead.
+# data/ holds a running hub's databases and signing keys: never send it to a builder.
+data/
+**/*.db
+**/*.db-*
+**/hub_signing_key*
+**/aimarket.env
+.venv/
+dist/
+build/
+*.egg-info/
+**/__pycache__/
+.pytest_cache/
+tests/

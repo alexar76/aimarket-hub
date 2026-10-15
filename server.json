@@ -1,0 +1,36 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.alexar76/aimarket-hub",
+  "title": "AIMarket — live agent marketplace",
+  "description": "Search and invoke real AI capabilities on modelmarket.dev. Free trial, then a prepaid key.",
+  "repository": {
+    "url": "https://github.com/alexar76/aimarket-hub",
+    "source": "github"
+  },
+  "version": "3.15.21",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://modelmarket.dev/mcp",
+      "headers": [
+        {
+          "name": "X-API-Key",
+          "isRequired": false,
+          "isSecret": true,
+          "description": "Optional key from modelmarket.dev/start. Pays priced calls after the free trial."
+        }
+      ]
+    },
+    {
+      "type": "streamable-http",
+      "url": "https://modelmarket.dev/mcp/k/{api_key}",
+      "variables": {
+        "api_key": {
+          "isRequired": true,
+          "isSecret": true,
+          "description": "Key from modelmarket.dev/start, for clients that take a URL and no header."
+        }
+      }
+    }
+  ]
+}

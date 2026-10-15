@@ -1,0 +1,45 @@
+name: My hub or node was not admitted
+description: You knocked on a hub and the admission assay did not pass, or nothing happened
+labels: ["admission"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for running a hub or a node. Most refusals say exactly what to fix, so start with
+        `aimarket doctor --url https://your-address` — it runs the same assay other hubs run.
+        If that passes and the hub you knocked on still has not admitted you, tell us here.
+  - type: input
+    id: url
+    attributes:
+      label: Your public address
+      placeholder: https://hub.example.com
+    validations:
+      required: true
+  - type: input
+    id: assay_url
+    attributes:
+      label: The assay_url from the knock's answer
+      description: "e.g. https://modelmarket.dev/ai-market/v2/federation/assay?url=… — it holds the verdict and every check"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What you run
+      options:
+        - a hub (aimarket serve / Docker / a platform)
+        - a node beside my own API (aimarket node)
+        - an agent on HESTIA (hestia-owner)
+        - my own implementation of the protocol
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `aimarket doctor --url <your address>`
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: aimarket-hub version
+      placeholder: "pip show aimarket-hub | grep Version"

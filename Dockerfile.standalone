@@ -1,0 +1,55 @@
+# Hub-only image for the aimarket-hub satellite repo (PyPI install + optional plugins).
+# Full production image with all plugins: use monorepo aimarket-hub/Dockerfile via deploy_hub.sh.
+FROM python:3.12-slim
+
+LABEL org.opencontainers.image.title="AIMarket Hub"
+LABEL org.opencontainers.image.description="Federation hub — pip install aimarket-hub"
+LABEL org.opencontainers.image.version="3.15.28"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md LICENSE ./
+COPY aimarket_hub ./aimarket_hub/
+COPY plugins-demo.html terminal-home.html operator.html cap-descriptions-i18n.json hub-ui-i18n.json ./
+
+# `[escrow]` brings eth-utils/eth-account. Without them every escrow-funded channel
+# raises CryptoUnavailable, which left the published image with no on-chain funding
+# path at all — the credits rail works regardless, but an operator who wants the
+# chain should not have to rebuild the image to get it.
+# `[pqc]` brings the ML-DSA-65 verifier. Every AIMarket hub signs hybrid, and a hub
+# without the verifier fails closed on those signatures and indexes none of them.
+# Signing hybrid itself stays the operator's switch: AIMARKET_PQC=1.
+RUN pip install --no-cache-dir -e ".[escrow,pqc]" && pip install --no-cache-dir uvicorn \
+    && mkdir -p /app/data \
+    && groupadd --system --gid 10001 hub \
+    && useradd --system --uid 10001 --gid hub --shell /usr/sbin/nologin --home-dir /app hub \
+    && chown -R hub:hub /app
+
+# No `USER hub` here: docker-entrypoint.sh starts as root only to hand a root-owned platform
+# volume at /app/data to `hub`, then drops to it before anything of the hub runs.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+ENV AIMARKET_DB_PATH=/app/data/hub.db
+ENV AIMARKET_SIGNING_KEY_PATH=/app/data/hub_signing_key
+# No AIMARKET_HUB_URL here: an image ENV is "the environment", which wins over the settings
+# file, so `quickstart --url https://…` was silently overridden by localhost on every `serve`.
+# The code's own default is the same localhost.
+
+EXPOSE 9083
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:9083/.well-known/ai-market.json || exit 1
+
+# Any subcommand: `docker run … IMAGE quickstart --name "My hub"`, `… add …`, `… doctor --url …`.
+# With ENTRYPOINT fixed to `serve`, `docker run IMAGE quickstart` was an argparse error, so the
+# first command of the operator quickstart could not be run in the published image (2026-10-12).
+# quickstart saves its settings to /app/data/aimarket.env, on the data volume with the keys,
+# and `serve` reads them from there. `--init` sets a hub up on its first start when nobody ran
+# quickstart (a platform deploy has no shell before it) and does nothing afterwards.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["serve", "--init"]

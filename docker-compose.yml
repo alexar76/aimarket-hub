@@ -1,0 +1,29 @@
+# One hub from this repository, on its own. Works from a clone of alexar76/aimarket-hub
+# (the build context is this directory and Dockerfile.standalone is in it).
+#
+#   docker compose run --rm hub quickstart --name "My hub" --url https://hub.example.com
+#   docker compose up -d
+#   docker compose run --rm hub add my.api@v1 --url https://api.example.com/run --price 0.01 --pay-to 0x…
+#   docker compose run --rm hub doctor
+#
+# quickstart writes its settings (admin token included) to /app/data/aimarket.env on the
+# `hub_data` volume, beside the signing keys; `serve` reads them. Back that volume up.
+# Publish it on 443 with any TLS proxy in front of 127.0.0.1:9083 (docs/operator-quickstart.md).
+#
+# Inside the aicom monorepo the fleet image is built by scripts/deploy_hub.sh from
+# aimarket-hub/Dockerfile instead; this file does not touch it.
+
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: Dockerfile.standalone
+    image: aimarket-hub:local
+    ports:
+      - "127.0.0.1:9083:9083"
+    volumes:
+      - hub_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  hub_data:
