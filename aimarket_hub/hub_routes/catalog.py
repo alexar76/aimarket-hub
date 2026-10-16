@@ -39,8 +39,10 @@ def register(
 
     # ── Manifest ────────────────────────────────────────────────
 
+    # Plain `def` (FastAPI runs it in a worker thread): a 0.8-1 s catalogue walk and
+    # signature on the event loop holds every other request, /health included.
     @router.get("/manifest")
-    async def v2_manifest():
+    def v2_manifest():
         # The manifest is the federation's and every MCP client's view of what is on
         # sale here, so it gets the same gate as /search: a row this hub cannot execute
         # is not a tool, and advertising it to peers propagates the dead listing.
@@ -156,7 +158,7 @@ def register(
     # ── Prices (bulk) ───────────────────────────────────────────
 
     @router.get("/prices")
-    async def v2_prices():
+    def v2_prices():  # sync for the same reason as /manifest
         """Compact, signed price list for every capability — so an agent can learn
         'what costs what' in one call without a full manifest/search.
 

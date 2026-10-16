@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from aimarket_hub import (
     contracts_declaration,
@@ -30,6 +31,7 @@ from aimarket_hub.database import HubDatabase
 from aimarket_hub.deposit_watch import DepositStore
 from aimarket_hub.models import Peer
 from aimarket_hub.plugin import PluginRegistry
+from aimarket_hub.public_cache import PublicDocumentCache
 from aimarket_hub.sandbox_trials import trial_policy
 from aimarket_hub.signing import Signer
 from aimarket_hub.paging import page_limit
@@ -209,6 +211,13 @@ def register(
             ),
         }
 
+    # The document is the same for every caller and costs a catalogue scan plus a
+    # full-document signature (0.3-0.5 s on a crowded host), so it is built once per TTL in
+    # a worker thread. On 2026-10-16 building it on the event loop for a monitor that asked
+    # every 1.5 s left /health queued until hub.attestedmemory.net went down. `generated_at`
+    # is therefore up to a TTL old; it is inside the signature, so it stays honest.
+    _well_known_cache = PublicDocumentCache("AIMARKET_WELL_KNOWN_CACHE_S", 60.0)
+
     @wellknown_router.api_route(
         "/.well-known/ai-market.json", methods=["GET", "HEAD"]
     )
@@ -232,6 +241,11 @@ def register(
                     )
         # HEAD must succeed (Allow: GET alone → 405). Same payload as GET;
         # Starlette/FastAPI omit the body for HEAD automatically.
+        return await run_in_threadpool(
+            _well_known_cache.get, "document", _build_well_known
+        )
+
+    def _build_well_known() -> dict[str, Any]:
         peers = []
         for p in db.list_peers():
             entry = {

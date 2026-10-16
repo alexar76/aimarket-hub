@@ -21,6 +21,11 @@ os.environ.setdefault("AIMARKET_AUTO_CRAWL", "0")
 os.environ.setdefault("AIMARKET_VERIFY_METIS_URL", "http://127.0.0.1:8080")
 # `doctor` and `serve` ask PyPI for a newer release (release_check.py); tests stay offline.
 os.environ.setdefault("AIMARKET_UPDATE_CHECK", "0")
+# /.well-known and /stats/live are memoised for 30-60 s in production (public_cache.py).
+# Tests write and then read within one hub, so the memo is off by default here;
+# test_public_document_cache.py turns it on to pin the behaviour.
+os.environ.setdefault("AIMARKET_WELL_KNOWN_CACHE_S", "0")
+os.environ.setdefault("AIMARKET_STATS_LIVE_CACHE_S", "0")
 
 
 @pytest.fixture(autouse=True)

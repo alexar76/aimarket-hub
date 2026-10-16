@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from aimarket_hub import credits, ecosystem, terminal_ssr, x402
 from aimarket_hub.api_models import PermissionViolationRequest
@@ -15,6 +16,7 @@ from aimarket_hub.channels import channel_stats
 from aimarket_hub.config import HubConfig
 from aimarket_hub.credits import CreditsLedger
 from aimarket_hub.database import HubDatabase
+from aimarket_hub.public_cache import PublicDocumentCache
 from aimarket_hub.supply_chain_admission import SupplyChainAdmission
 from aimarket_hub.supply_security import SupplySecurity
 from aimarket_hub.x402 import PaymentStore as X402PaymentStore
@@ -43,10 +45,22 @@ def register(
         _trim_rate_buckets,
     )
 
+    # Every caller gets the same page for a given limit, so it is built once per TTL and
+    # in a worker thread: on 2026-10-16 a monitor asking for this every 1.5 s, at 0.25 s a
+    # build on the event loop, kept /health queued until hub.attestedmemory.net went down.
+    _live_stats_cache = PublicDocumentCache("AIMARKET_STATS_LIVE_CACHE_S", 30.0)
+
     @router.get("/stats/live")
     async def live_stats(limit: int = 50):
+        # Stays on the loop: it schedules a task there.
         supply_chain_admission.schedule_refresh()
-        stats = db.recent_stats(limit=min(limit, 200))
+        page = min(limit, 200)
+        return await run_in_threadpool(
+            _live_stats_cache.get, page, lambda: _build_live_stats(page)
+        )
+
+    def _build_live_stats(limit: int) -> dict[str, Any]:
+        stats = db.recent_stats(limit=limit)
         summary = db.stats_summary()
         public_caps = _catalogue_snapshot(db, config)
         summary["capabilities_count"] = len(public_caps)
