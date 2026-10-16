@@ -141,6 +141,7 @@ class LedgerOpeningMixin:
         # Only such deposits are single-use-guarded (see consumed_deposits claim
         # below): stub/demo channels carry no real tx to replay.
         verified_onchain = False
+        proven_payer = ""  # the wallet whose signature recovered below, and only that
         if not channels._VERIFY_STUB:
             if channels._is_production_mode():
                 result = channels._verify_tx_onchain(
@@ -240,6 +241,7 @@ class LedgerOpeningMixin:
                                 deposit_usd=deposit_usd,
                             ),
                         }
+                    proven_payer = payer
 
                 # Store the on-chain payer (the verified truth). An empty claim is not a
                 # bypass: the channel is bound to the payer, never left anonymous.
@@ -369,6 +371,8 @@ class LedgerOpeningMixin:
                  token, chain, wallet, tx_hash, channels._RECIPIENT, now, expires,
                  secret_hash),
             )
+            if proven_payer:
+                self._record_proven_payer(conn, channel_id, proven_payer)
             conn.commit()
 
         balance_usd = channels._cents_to_dollars(deposit_cents)
@@ -542,6 +546,7 @@ class LedgerOpeningMixin:
                 if proven:
                     self._ensure_proven_opens(conn)
                     conn.execute("INSERT INTO escrow_proven_opens (channel_id) VALUES (?)", (channel_id,))
+                    self._record_proven_payer(conn, channel_id, wallet)
                 conn.commit()
             except Exception:
                 channels._release_deposit_shared(
@@ -574,6 +579,36 @@ class LedgerOpeningMixin:
         if channel_secret:
             channel["channel_secret"] = channel_secret
         return {"channel": channel}
+
+    # ── The payer a channel's opener proved ──────────────────────────────────
+
+    @staticmethod
+    def _ensure_proven_payers(conn) -> None:
+        """Ledger channels whose opener proved control of the paying wallet, and that wallet.
+
+        Created on first use, like escrow_proven_opens. ``channels.wallet`` is not the same
+        thing: a stub or demo-credit open stores whatever wallet the caller typed there.
+        This table only ever holds an address a signature recovered at open."""
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS channel_proven_payers "
+            "(channel_id TEXT PRIMARY KEY, payer TEXT NOT NULL)"
+        )
+
+    def _record_proven_payer(self, conn, channel_id: str, payer: str) -> None:
+        self._ensure_proven_payers(conn)
+        conn.execute(
+            "INSERT INTO channel_proven_payers (channel_id, payer) VALUES (?, ?)",
+            (channel_id, payer),
+        )
+
+    def proven_payer_for(self, channel_id: str) -> str:
+        """The wallet that proved it paid for this channel when it was opened, or ""."""
+        with self._get_conn() as conn:
+            self._ensure_proven_payers(conn)
+            row = conn.execute(
+                "SELECT payer FROM channel_proven_payers WHERE channel_id = ?", (channel_id,)
+            ).fetchone()
+        return str(row[0] or "") if row else ""
 
     def escrow_channel_for(self, channel_id: str) -> str:
         """The escrow channel backing a ledger channel, or "" for a transfer-funded one."""

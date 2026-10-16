@@ -34,12 +34,13 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from aimarket_hub import credits, invoke_funding, settle, verified_settlement, x402
+from aimarket_hub import credits, invoke_funding, provider_request_auth, settle, verified_settlement, x402
 from aimarket_hub.api_models import InvokeRequest
 from aimarket_hub.channels import (
     capture_hold,
     channel_balance,
     channel_escrow_binding,
+    channel_payer,
     debit_channel,
     hold_channel,
     release_hold,
@@ -1264,6 +1265,39 @@ async def _local_execute(d: SimpleNamespace, call: _Call, local: _Local):
     return result
 
 
+def _payer_statement(
+    d: SimpleNamespace, call: _Call, admission: dict[str, str], *, input_payload: Any,
+    x402_accepted: dict[str, Any] | None, hold_rail: str, reserved: bool,
+) -> dict[str, str]:
+    """Who paid for this admitted call, signed next to its admission, or {}.
+
+    For a provider that hands something to one buyer: GAIA leases a plug to the payer of
+    its "on" (provider_request_auth.py, "The payer statement"). Only a payer this hub
+    checked: the x402 `authorization.from` the chain settled, or, when the price is held
+    on a channel whose secret this call presented, the wallet that proved control of that
+    channel's deposit at open. A trial, hub credits and a demo-credit channel name nobody,
+    and the buyer is anonymous there. Never raises: a fault leaves the statement out.
+    """
+    try:
+        if (not admission or call.sandbox_mode
+                or not provider_request_auth.payer_statement_wanted(call.body.capability_id)):
+            return {}
+        payer, rail = "", ""
+        if isinstance(x402_accepted, dict) and x402_accepted.get("ok") and call.payer_wallet:
+            payer, rail = call.payer_wallet, "x402"
+        elif reserved and hold_rail == "channel" and call.x_payment_channel:
+            payer, rail = channel_payer(call.x_payment_channel), "channel"
+        if not payer:
+            return {}
+        return provider_request_auth.payer_headers(
+            d.signer, admission, capability_id=call.body.capability_id,
+            input_payload=input_payload, payer=payer, rail=rail,
+        )
+    except Exception:  # noqa: BLE001 — never fail the buyer's call over who they are
+        d.logger.exception("payer statement for %s left out", call.body.capability_id)
+        return {}
+
+
 async def _local_call_provider(d: SimpleNamespace, call: _Call, local: _Local):
     """The listing's own invoke_url, with the provider's signature checked."""
     body, request, sandbox_mode = call.body, call.request, call.sandbox_mode
@@ -1314,6 +1348,19 @@ async def _local_call_provider(d: SimpleNamespace, call: _Call, local: _Local):
         target_host = (urlparse(resolve_invoke_url(invoke_url)).hostname or "").lower()
         if capability_token and target_host in set(invoke_gateway_hosts()):
             provider_headers["X-AIMarket-Internal-Token"] = capability_token
+        # Signed with this hub's key, so a provider behind a price gate
+        # (oracle_core.price_gate) can tell this hub admitted the call: the paywall or the
+        # trial above has already run. Over the registered invoke_url, before any
+        # gateway rewrite, because that is the name the provider knows itself by.
+        admission = provider_request_auth.signed_headers(
+            d.signer, hub_url=d.config.hub_url, audience=invoke_url,
+            capability_id=body.capability_id, input_payload=sanitized,
+        )
+        provider_headers.update(admission)
+        provider_headers.update(_payer_statement(
+            d, call, admission, input_payload=sanitized, x402_accepted=local.x402_accepted,
+            hold_rail=local.hold_rail, reserved=local.reserved,
+        ))
 
         ir = await safe_post(
             invoke_url,
@@ -2503,6 +2550,20 @@ async def _fed_deliver(d: SimpleNamespace, call: _Call, fed: _Fed):
     # _peer_invoke_endpoint for why a category allow-list was the wrong test.
     mcp_endpoint = await _peer_invoke_endpoint(peer)
     headers = _fed_peer_headers(d, call, fed)
+    if fed.sells and mcp_endpoint:
+        # Only where this hub is the seller of record (AIMARKET_SELLS_FOR): it has taken
+        # the price or a trial, and the signature tells a gated provider so. For a peer
+        # it only brokers, the peer bills the buyer, and signing would vouch for a call
+        # nobody paid for. See aimarket_hub/provider_request_auth.py.
+        admission = provider_request_auth.signed_headers(
+            d.signer, hub_url=d.config.hub_url, audience=mcp_endpoint,
+            capability_id=body.capability_id, input_payload=body.input,
+        )
+        headers.update(admission)
+        headers.update(_payer_statement(
+            d, call, admission, input_payload=body.input, x402_accepted=fed.x402_accepted,
+            hold_rail=fed.hold_rail, reserved=fed.reserved,
+        ))
 
     # Payment is settled and the hold is taken; before crossing the federation,
     # is the request even complete? A second of round trip to be told "lat/lon

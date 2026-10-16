@@ -1275,3 +1275,18 @@ def channel_escrow_binding(channel_id: str) -> str:
     decide whether a DebitAuthorization is even applicable to this channel.
     """
     return _ledger.escrow_channel_for(channel_id)
+
+
+def channel_payer(channel_id: str) -> str:
+    """The wallet that proved control of this channel's deposit when it was opened, or "".
+
+    That address is the one ``_recover_payer_address`` recovered from the opener's signature
+    (or the escrow depositor's, on a proven escrow open). A stub, demo-credit or unproven
+    open has none, whatever ``wallet`` it stored. Read-only, so not gated by the crypto
+    master switch, like ``channel_escrow_binding``.
+    """
+    try:
+        return _ledger.proven_payer_for((channel_id or "").strip())
+    except Exception as exc:  # noqa: BLE001 — a lookup fault means "no payer", not a failed call
+        logger.error("channel payer lookup failed: %s", exc)
+        return ""
