@@ -229,6 +229,41 @@ def _replace_placeholders(sql: str) -> str:
 # ── SQLite Backend ──────────────────────────────────────────────────
 
 
+class _LockedSQLiteCursor:
+    """Keep cursor stepping under the shared connection's lock as well as execute.
+
+    sqlite3 releases the GIL while fetching. An unguarded fetch can overlap a
+    different thread's execute/commit on this connection and lose a result row.
+    """
+
+    def __init__(self, cursor: Any, lock: Any):
+        self._cursor = cursor
+        self._lock = lock
+
+    def fetchone(self) -> Any:
+        with self._lock:
+            return self._cursor.fetchone()
+
+    def fetchall(self) -> list:
+        with self._lock:
+            return self._cursor.fetchall()
+
+    def fetchmany(self, size: int | None = None) -> list:
+        with self._lock:
+            return self._cursor.fetchmany() if size is None else self._cursor.fetchmany(size)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        with self._lock:
+            return next(self._cursor)
+
+    def __getattr__(self, name: str) -> Any:
+        with self._lock:
+            return getattr(self._cursor, name)
+
+
 class SQLiteBackend:
     """SQLite backend — zero-dependency, single-file database.
 
@@ -275,7 +310,7 @@ class SQLiteBackend:
     def execute(self, sql: str, params: tuple = ()) -> Any:
         with self._lock:
             try:
-                self._last_cursor = self._conn.execute(sql, params)
+                self._last_cursor = _LockedSQLiteCursor(self._conn.execute(sql, params), self._lock)
             except sqlite3.Error:
                 self._abandon_failed_transaction()
                 raise
@@ -284,7 +319,7 @@ class SQLiteBackend:
     def executemany(self, sql: str, seq: list) -> Any:
         with self._lock:
             try:
-                self._last_cursor = self._conn.executemany(sql, seq)
+                self._last_cursor = _LockedSQLiteCursor(self._conn.executemany(sql, seq), self._lock)
             except sqlite3.Error:
                 self._abandon_failed_transaction()
                 raise

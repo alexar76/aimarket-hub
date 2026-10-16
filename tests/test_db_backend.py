@@ -1149,3 +1149,25 @@ class TestPostgresDialectBoundary:
         for _ in range(200):
             with pg_backend.get_connection() as conn:
                 conn.execute("SELECT 1").fetchone()
+
+
+def test_sqlite_read_rows_survive_concurrent_updates(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    backend = SQLiteBackend(tmp_path / "concurrent-reads.db")
+    backend.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, value INTEGER)")
+    backend.execute("INSERT INTO items VALUES (1, 0)")
+    backend.commit()
+    barrier = threading.Barrier(12)
+    def reader_writer(worker):
+        barrier.wait()
+        for _ in range(100):
+            row = backend.execute("SELECT id, value FROM items WHERE id = 1").fetchone()
+            assert row is not None and row["id"] == 1
+            backend.execute("UPDATE items SET value = value + 1 WHERE id = 1")
+            backend.commit()
+    try:
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            list(pool.map(reader_writer, range(12)))
+        assert backend.execute("SELECT value FROM items WHERE id = 1").fetchone()[0] == 1200
+    finally:
+        backend.close()

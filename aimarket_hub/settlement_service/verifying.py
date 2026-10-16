@@ -11,8 +11,9 @@ from typing import Any
 class SettlementVerifyingMixin:
     """Compose the verifier's input, post it, and resolve its verdict."""
 
-    async def _attempt(self, row: Any) -> tuple[str, Any]:
-        """One Metis /v1/verify attempt.
+    async def _attempt(self, row: Any, judge: Any = None) -> tuple[str, Any]:
+        """One /v1/verify attempt at `judge`, the verifier routed for this capability
+        (vs.verifier_route; the default verifier when no route matches).
 
         Returns (kind, payload): "verdict" -> success envelope; "engine" -> error /
         needs_clarification envelope (a definitive Metis response, retried a bounded
@@ -20,6 +21,8 @@ class SettlementVerifyingMixin:
         "transport" -> no envelope at all (retried forever); "fatal" -> config/input
         error retrying cannot fix (401/400/413).
         """
+        if judge is None:
+            judge = vs.verifier_route(row["capability_id"])
         # Fresh per attempt: a nonce reused across re-runs would eventually leak into
         # a provider's next delivery and could then be echoed back as a fake verdict.
         audit_id = secrets.token_hex(vs._FENCE_NONCE_BYTES)
@@ -31,7 +34,9 @@ class SettlementVerifyingMixin:
             # count only the votes that echo it (metis/verify/jury.py). Ignored elsewhere.
             "audit_id": audit_id,
         }
-        return await self._post_verify(vs.metis_url(), vs.metis_key(), payload, audit_id)
+        # The route's own token only: a routed verifier never sees the default verifier's
+        # key, nor the default verifier a route's.
+        return await self._post_verify(judge.url, judge.key(), payload, audit_id)
 
     async def _attempt_appeal(self, row: Any) -> tuple[str, Any]:
         """One call to the appeal court: the same contract as `_attempt`, a different
@@ -186,8 +191,13 @@ class SettlementVerifyingMixin:
 
     # ── Resolution ─────────────────────────────────────────────────────────
 
-    def _resolve_verdict(self, row: Any, metis_env: dict[str, Any], verify_latency_ms: int) -> None:
+    def _resolve_verdict(self, row: Any, metis_env: dict[str, Any], verify_latency_ms: int,
+                         judge: Any = None) -> None:
         """Turn a status=success envelope into a money outcome.
+
+        `judge` is the verifier that answered (a vs.VerifierRoute): its id is what the signed
+        envelope names as `verifier`, and the appeal court must be a different service
+        from it. None = the default verifier, named as before.
 
         A genuine PASS/FAIL verdict — the only outcome that moves reputation and can
         escalate to a slash — requires all three of: a verification actually happened,
@@ -202,11 +212,11 @@ class SettlementVerifyingMixin:
                                 audit_bar=vs.audit_threshold())
         if not reading.genuine:
             self._resolve_policy(row, metis_env, cause=reading.cause,
-                                 force_refund=reading.force_refund)
+                                 force_refund=reading.force_refund, judge=judge)
             return
 
-        if self._appealable(row):
-            self._make_provisional(row, reading, verify_latency_ms)
+        if self._appealable(row, judge):
+            self._make_provisional(row, reading, verify_latency_ms, judge=judge)
             return
 
         passed = reading.passed
@@ -216,6 +226,7 @@ class SettlementVerifyingMixin:
             verify_score=delivery.score, trace_id=reading.trace_id,
             reason=None if passed else "verify_failed",
             audit_score=reading.audit_score, delivery=delivery,
+            verifier=None if judge is None else judge.verifier_id,
         )
         # Reputation is a one-shot side-effect too: only emit it if this call actually
         # resolved the row (a re-run after a crash-mid-finalize must not double-emit).

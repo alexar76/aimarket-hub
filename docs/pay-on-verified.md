@@ -62,6 +62,57 @@ flowchart TB
 - Indeterminate verdicts follow `AIMARKET_VERIFY_FAIL_CLOSED` (prod defaults to fail-closed)
 - Crypto off → advisory mode: verdicts + reputation real, money never moves
 
+## Verifier routes
+
+One verifier does not fit every capability. An LLM jury is the right judge of a translation and
+the wrong judge of "did this plug switch", where GAIA can check a signed command record and
+attested meter readings exactly. `AIMARKET_VERIFY_ROUTES` names, per capability, the verifier
+that judges it; every capability no route matches stays with the default verifier
+(`AIMARKET_VERIFY_METIS_URL`) exactly as before.
+
+```
+AIMARKET_VERIFY_ROUTES={"gaia.actuate@v1": {"url": "https://iot.modelmarket.dev", "verifier_id": "gaia.verify@v1", "key_env": "AIMARKET_VERIFY_GAIA_TOKEN"}}
+AIMARKET_VERIFY_GAIA_TOKEN=<GAIA's GAIA_VERIFY_TOKEN>
+```
+
+(An env file for `docker run --env-file` takes each line literally: no quotes around the JSON.)
+
+- **Keys** are a capability id, or a prefix ending in `*` (`gaia.*`). An exact id beats any
+  prefix and the longest prefix wins; an id without `*` never matches as a prefix. A bare `*` is
+  refused: the default verifier is `AIMARKET_VERIFY_METIS_URL`.
+- **Each route** has exactly `url` (`http(s)://host[/path]`, no credentials, query or fragment;
+  `https` in production unless loopback), `verifier_id` (what signed envelopes name as
+  `verifier`) and `key_env` — the NAME of the variable holding the route's Bearer token, which
+  must be an `AIMARKET_VERIFY_*` variable so a typo can never send the hub's admin or escrow
+  token to a verifier. A route is sent its own token only, and the default verifier never sees it.
+- **Attribution:** the signed envelope names the verifier that actually answered. One service, one
+  name: two URLs may not share an id, one URL may not appear under two ids, and the default
+  verifier's id and URL go together.
+- **Everything else is unchanged per route:** the threshold sent as `min_verify_score` and the
+  echoed `threshold` check, the indeterminate policy, engine retries, unbounded transport retries,
+  reputation events and the slash ladder. Each verifier has its own concurrency gate
+  (`AIMARKET_VERIFY_MAX_CONCURRENCY`), so a fast verifier never queues behind a slow jury.
+- **Appeals:** the court must be a different service from the verifier that ruled, by URL and by
+  id. A route pointed at the court's URL settles its verdicts at once (no window); the default
+  verifier may serve as the court for a routed capability.
+- **`/.well-known/ai-market.json`** lists `pay_on_verified.routes` (`capabilities` → `verifier`);
+  no URL, key name or token.
+
+**A table that cannot be used refuses to verify. It never falls back to the default verifier**,
+which nobody chose for that capability:
+
+| Problem | New verified invokes | Settlements already waiting |
+|---|---|---|
+| unreadable table (bad JSON, unknown or missing field, bad key, URL or id) | refused for **every** capability (`400 verify_unavailable`, before the provider runs); the well-known says `the verifier routing table is invalid` | keep their hold and retry until it is fixed (`AIMARKET_VERIFY_MAX_WAIT_S` then applies the indeterminate policy) |
+| a route's `key_env` unset or empty | refused for the capabilities that route matches | the same |
+| the routed verifier answers 401/400/413 | — | indeterminate, settled by policy (refunded under fail-closed), nobody blamed |
+
+The reason is logged once per process, by setting names; the 400 to the buyer does not name them.
+
+**Trust:** a route can make the seller its own judge — GAIA sells `gaia.actuate@v1` and verifies
+it. That is acceptable only where the verdict is a deterministic check of signed evidence anyone
+can re-run, and the appeal court (a different verifier) stays available to the buyer.
+
 ## Appeals
 
 Off by default. With `AIMARKET_APPEAL_WINDOW_S=0` (the default) nothing below happens and a

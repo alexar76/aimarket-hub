@@ -908,6 +908,7 @@ def _local_plan_verification(d: SimpleNamespace, call: _Call, local: _Local):
             crypto_on=crypto_on,
             sandbox_mode=sandbox_mode,
             channel_id=x_payment_channel,
+            capability_id=body.capability_id,
         )
         if vs_plan.error:
             # Also above the try: a bad verification plan is the hub refusing, and
@@ -1894,7 +1895,7 @@ def _fed_peer(d: SimpleNamespace, call: _Call, fed: _Fed) -> None:
     # silently charging the buyer as if verification applied.
     if body.verify is not None and getattr(body.verify, "requested", False):
         fed.verify_env = verified_settlement.skipped_envelope_for(
-            body.verify, reason="federated_unsupported",
+            body.verify, reason="federated_unsupported", capability_id=body.capability_id,
         )
     peer = db.get_peer(body.source_hub)
     if not peer:

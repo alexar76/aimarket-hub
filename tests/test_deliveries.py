@@ -216,3 +216,16 @@ def test_a_hub_can_say_what_it_is_in_its_signed_well_known(monkeypatch, tmp_path
     monkeypatch.delenv("AIMARKET_HUB_DESCRIPTION")
     with _hub(monkeypatch, tmp_path / "b", []) as (client, _db):
         assert "description" not in client.get("/.well-known/ai-market.json").json()
+
+
+@pytest.mark.parametrize("chain_id", ["not-a-chain", {"id": 8453}, [8453], 8453.9, True, None])
+def test_malformed_chain_id_is_a_client_error_without_chain_lookup(monkeypatch, tmp_path, chain_id):
+    def unexpected_transfer(**kwargs):
+        pytest.fail("malformed receipts must be rejected before any chain lookup")
+    monkeypatch.setattr(settle, "verify_transfer", unexpected_transfer)
+    with _hub(monkeypatch, tmp_path, []) as (client, _db):
+        response = client.post("/ai-market/v2/reputation/deliveries", json={
+            "receipt": _delivery(chain_id=chain_id), "signature": "unused", "transaction": TX,
+        })
+    assert response.status_code == 422
+    assert "receipt.chain_id" in response.json()["detail"]

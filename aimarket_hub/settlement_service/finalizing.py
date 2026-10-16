@@ -28,12 +28,14 @@ class SettlementFinalizingMixin:
     def _is_paid(row: Any) -> bool:
         return bool(row["channel_id"]) and float(row["price_usd"] or 0) > 0
 
-    def _appealable(self, row: Any) -> bool:
+    def _appealable(self, row: Any, judge: Any = None) -> bool:
         """Only a PAID settlement is appealable: an advisory verdict moved no money, so
-        there is nothing a window could protect and no bond rail to take one from."""
-        return self._is_paid(row) and vs.appeals_enabled()
+        there is nothing a window could protect and no bond rail to take one from. The
+        court must be a different service from `judge`, the verifier that ruled."""
+        return self._is_paid(row) and vs.appeals_enabled(judge)
 
-    def _make_provisional(self, row: Any, reading: _Reading, verify_latency_ms: int) -> None:
+    def _make_provisional(self, row: Any, reading: _Reading, verify_latency_ms: int,
+                          *, judge: Any = None) -> None:
         """Record the first-instance verdict and open the appeal window. Money stays held.
 
         The verdict is stored (verdict_json) in the same conditional statement that makes
@@ -45,6 +47,7 @@ class SettlementFinalizingMixin:
         nonce = row["nonce"]
         passed = reading.passed
         delivery = reading.delivery
+        judged_by = vs.verifier_id() if judge is None else judge.verifier_id
         window = vs.appeal_window_s()
         deadline = vs._now_s() + window
         bond = vs.appeal_bond_usd(float(row["price_usd"] or 0))
@@ -61,8 +64,12 @@ class SettlementFinalizingMixin:
                 "reasons": list(delivery.reasons), "source": delivery.source,
             },
             "verify_latency_ms": int(verify_latency_ms),
-            "verifier": vs.verifier_id(),
+            "verifier": judged_by,
         }
+        if judge is not None and judge.routed:
+            # A filed appeal must go to a court that is not this verifier; the route may
+            # have changed by then, so remember which service ruled.
+            first.update(verifier_route=judge.match, verifier_url=judge.url)
         env = json.loads(row["envelope_json"] or "{}")
         env.update(
             status=vs._PROVISIONAL,
@@ -74,6 +81,7 @@ class SettlementFinalizingMixin:
             delivery_reasons=list(delivery.reasons),
             verdict=first["verdict"],
             trace_id=reading.trace_id,
+            verifier=judged_by,
             settled=False,
             reason=first["reason"],
             timestamp=vs._now_iso(),
@@ -154,6 +162,7 @@ class SettlementFinalizingMixin:
         *,
         cause: str = "metis_error",
         force_refund: bool | None = None,
+        judge: Any = None,
     ) -> None:
         """Indeterminate outcome: money moves by operator policy, never by verdict.
 
@@ -191,6 +200,7 @@ class SettlementFinalizingMixin:
             verify_score=0.0,
             trace_id=trace_id, reason=reason, force_refund=refund,
             audit_score=audit_score,
+            verifier=None if judge is None else judge.verifier_id,
         )
 
     def _finalize(
@@ -210,6 +220,7 @@ class SettlementFinalizingMixin:
         appeal: dict[str, Any] | None = None,
         bond: dict[str, Any] | None = None,
         release_orphan_bond: bool = False,
+        verifier: str | None = None,
     ) -> bool:
         """Resolve one settlement row. Returns True iff THIS call won the terminal
         transition (and therefore fired the one-shot side-effects); False if the row
@@ -221,6 +232,10 @@ class SettlementFinalizingMixin:
         'finalizing' path this may be a REPLAY after a crash, so each hold is moved the
         decided way or, if an earlier attempt already moved it that way, left alone
         (`_settle_hold`) — and the appellant's `bond` is resolved with the invoke hold.
+
+        `verifier` names the verifier that ruled on the envelope (None: leave the name the
+        envelope already carries). Recorded with the decision, so a replay after a crash
+        names the same one.
         """
         nonce = row["nonce"]
         if from_status == "verifying":
@@ -235,6 +250,9 @@ class SettlementFinalizingMixin:
                     "reasons": list(delivery.reasons), "source": delivery.source,
                 },
             }}
+            if verifier:
+                # Not "verifier": on the appeal path that key names the court that decided.
+                decision["verdict"]["judged_by"] = verifier
             if not self._transition(
                 "UPDATE verified_settlements SET status = ?, final_json = ? "
                 "WHERE nonce = ? AND status = 'verifying' AND worker_token = ? RETURNING nonce",
@@ -301,6 +319,10 @@ class SettlementFinalizingMixin:
             reason=ledger_note or reason,
             timestamp=vs._now_iso(),
         )
+        if verifier:
+            # Signed (v2 binds `verifier`): the verdict is attributed to the service that
+            # gave it, not to whichever verifier the pending envelope expected.
+            env["verifier"] = verifier
         if appeal is not None:
             appeal = dict(appeal)
             if bond_note:
@@ -403,8 +425,8 @@ class SettlementFinalizingMixin:
         if ev:
             ev.set()
         logger.info(
-            "verified-settlement %s: %s (verdict=%s score=%.4f trace=%s)",
-            nonce, env["status"], verdict, env["verify_score"] or 0.0, trace_id,
+            "verified-settlement %s: %s (verdict=%s score=%.4f trace=%s verifier=%s)",
+            nonce, env["status"], verdict, env["verify_score"] or 0.0, trace_id, env.get("verifier"),
         )
         return True
 
@@ -536,6 +558,7 @@ class SettlementFinalizingMixin:
             from_status=vs._FINALIZING, appeal=decision.get("appeal"),
             bond=decision.get("bond"),
             release_orphan_bond=bool(decision.get("release_orphan_bond")),
+            verifier=v.get("judged_by") or None,
         )
         if won and v["verdict"] in ("passed", "failed"):
             self._emit_reputation(row, passed=passed,

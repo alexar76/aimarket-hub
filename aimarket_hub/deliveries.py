@@ -62,7 +62,9 @@ def check_receipt(receipt: Any) -> dict[str, Any]:
         raise DeliveryError("receipt.product_id is missing or malformed")
     if not _CAPABILITY.match(str(receipt.get("capability") or "")):
         raise DeliveryError("receipt.capability must look like name.verb@v1")
-    if int(receipt.get("chain_id") or 0) != 8453:
+    chain_id = receipt.get("chain_id")
+    if not ((type(chain_id) is int and chain_id == 8453)
+            or (isinstance(chain_id, str) and chain_id == "8453")):
         raise DeliveryError("receipt.chain_id must be 8453 (Base)")
     need = ("payer", "pay_to", "nonce") if kind == "delivery" else ("payer", "refund_from", "refund_nonce")
     for key in need:

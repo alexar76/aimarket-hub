@@ -339,24 +339,38 @@ class SettlementSchedulingMixin:
         engine_attempts = int(row["engine_attempts"] or 0)
         backoff = vs.retry_backoff_s()
         last_env: dict[str, Any] | None = None
+        last_judge: Any = None   # the verifier that produced last_env
 
         while True:
-            t0 = time.time()
-            async with self._concurrency_gate():  # cap simultaneous Metis calls across all rows
-                kind, payload = await self._attempt(row)
-            verify_latency_ms = int((time.time() - t0) * 1000)
+            # Who judges is read per attempt, like every other knob: a route the operator
+            # fixes reaches a settlement already waiting on it. An unusable route is
+            # retried like an unreachable verifier — the hold stays (buyer-safe: nothing
+            # is debited without a verdict) — and is NEVER replaced by the default
+            # verifier, which nobody chose for this capability.
+            try:
+                judge = vs.verifier_route(row["capability_id"])
+            except vs.RouteUnavailable as exc:
+                vs._warn_once(f"route:{exc}", "verified-settlement: verifier routing refused (%s) — "
+                              "routed settlements wait until it is fixed", exc)
+                judge, kind, payload, verify_latency_ms = None, "transport", "route_unavailable", 0
+            else:
+                t0 = time.time()
+                # Cap simultaneous calls per verifier across all rows.
+                async with self._concurrency_gate(judge.gate):
+                    kind, payload = await self._attempt(row, judge)
+                verify_latency_ms = int((time.time() - t0) * 1000)
             attempts += 1
             self._persist_progress(nonce, attempts, engine_attempts)
 
             if kind == "verdict":
-                self._resolve_verdict(row, payload, verify_latency_ms)
+                self._resolve_verdict(row, payload, verify_latency_ms, judge=judge)
                 return
             if kind == "fatal":
                 logger.warning("verified-settlement %s: fatal verify error (%s) — applying policy", nonce, payload)
-                self._resolve_policy(row, last_env)
+                self._resolve_policy(row, last_env, judge=judge)
                 return
             if kind == "engine":
-                last_env = payload
+                last_env, last_judge = payload, judge
                 engine_attempts += 1
                 self._persist_progress(nonce, attempts, engine_attempts)
                 if engine_attempts > vs.engine_retries():
@@ -364,14 +378,14 @@ class SettlementSchedulingMixin:
                         "verified-settlement %s: %d engine-error envelope(s) — applying policy",
                         nonce, engine_attempts,
                     )
-                    self._resolve_policy(row, last_env)
+                    self._resolve_policy(row, last_env, judge=last_judge)
                     return
             # kind in ("transport", "engine"): retry. No overall deadline by default —
             # an unresolved hold is buyer-safe (debit never recorded until a verdict).
             deadline = vs.max_wait_s()
             if deadline > 0 and (time.monotonic() - started) > deadline:
                 logger.warning("verified-settlement %s: max wait %.0fs elapsed — applying policy", nonce, deadline)
-                self._resolve_policy(row, last_env)
+                self._resolve_policy(row, last_env, judge=last_judge)
                 return
             # Jittered backoff de-synchronises a startup herd of re-queued rows so
             # they don't all retry Metis on the same tick.

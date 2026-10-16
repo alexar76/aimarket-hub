@@ -51,7 +51,9 @@ class SettlementAppealsMixin:
         that loses — the window closed, or another appeal won — releases the bond here.
         """
         problem = vs.appeal_court_error()
-        if problem:
+        # With verifier routes the court is checked against whichever verifier ruled on
+        # THIS settlement, which needs the row; without them, exactly as it always was.
+        if problem and not vs.routes_configured():
             raise vs.AppealRefused(503, "appeals_unavailable", problem)
         if len(statement or "") > vs._MAX_APPEAL_STATEMENT_CHARS:
             raise vs.AppealRefused(400, "statement_too_long",
@@ -59,6 +61,11 @@ class SettlementAppealsMixin:
         row = self._row(nonce)
         if not row:
             raise vs.AppealRefused(404, "verification_not_found", "no such verification")
+        ruled = self._first_instance(row)
+        if ruled is not None:
+            problem = vs.appeal_court_error(ruled)
+        if problem:
+            raise vs.AppealRefused(503, "appeals_unavailable", problem)
         self._refuse_unless_open(row)
         env = json.loads(row["envelope_json"] or "{}")
         terms = dict(env.get("appeal") or {})
@@ -115,6 +122,17 @@ class SettlementAppealsMixin:
                     nonce, appellant, bond, rail)
         self._schedule_appeal(nonce)
         return {"appeal": terms, "verification": env}
+
+    @staticmethod
+    def _first_instance(row: Any) -> Any:
+        """The routed verifier that gave this row's first verdict, or None (the default
+        verifier, or no verdict yet)."""
+        first = json.loads(row["verdict_json"] or "{}")
+        if not first.get("verifier_route"):
+            return None
+        return vs.VerifierRoute(url=str(first.get("verifier_url") or ""),
+                                verifier_id=str(first.get("verifier") or ""),
+                                match=str(first["verifier_route"]))
 
     @staticmethod
     def _refuse_unless_open(row: Any) -> None:

@@ -80,6 +80,13 @@ Env knobs are read dynamically (monkeypatchable, hub convention for prod gates):
                                                    0/false/no/off opts into fail-open
     AIMARKET_VERIFY_METIS_URL             http://127.0.0.1:8080   (falls back to METIS_URL)
     AIMARKET_VERIFY_METIS_KEY             —        Bearer key (falls back to METIS_API_KEY)
+    AIMARKET_VERIFY_ROUTES                —        JSON: capability id (or prefix*) → its own
+                                                   verifier {url, verifier_id, key_env}; a
+                                                   capability no route matches uses the
+                                                   default verifier above. An unusable table
+                                                   or route refuses to verify — it never falls
+                                                   back to the default (see "Per-capability
+                                                   verifier routes" below)
 
 Appeals (off by default — AIMARKET_APPEAL_WINDOW_S=0 is exactly the behaviour above):
 
@@ -114,18 +121,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import json
 import logging
 import math
 import os
 import random
+import re
 import secrets
 import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -406,14 +416,18 @@ def verifier_configured() -> bool:
 
 def advertisement() -> dict[str, Any]:
     """What `/.well-known/ai-market.json` says about Pay-on-Verified on this hub."""
-    on = verify_enabled() and verifier_configured()
+    try:
+        routes, table_ok = route_table(), True
+    except RouteUnavailable:
+        routes, table_ok = (), False
+    on = verify_enabled() and table_ok and (verifier_configured() or bool(routes))
     out: dict[str, Any] = {
         "enabled": on,
         "spec": "https://github.com/alexar76/aicom/blob/main/docs/pay-on-verified.md",
     }
     if on:
         out.update({
-            "verifier": verifier_id(),
+            "verifier": verifier_id() if verifier_configured() else None,
             "rail": "payment channel (X-Payment-Channel): the price is held, then captured "
                     "on a passing verdict or released to the buyer on a failing one",
             "scope": "capabilities this hub executes itself (federated invokes are not held)",
@@ -426,8 +440,16 @@ def advertisement() -> dict[str, Any]:
             # Sign escrow debit authorizations to live at least this long on verified calls.
             "authorization_min_lifetime_s": min_authorization_deadline_s(),
         })
+        if routes:
+            # Who judges which capability is part of the offer: a buyer choosing to hold
+            # money on a verdict is entitled to know whose verdict it will be.
+            out["routes"] = [{"capabilities": r.match, "verifier": r.verifier_id} for r in routes]
+    elif not verify_enabled():
+        out["reason"] = "verification is turned off"
+    elif not table_ok:
+        out["reason"] = "the verifier routing table is invalid"
     else:
-        out["reason"] = "verification is turned off" if not verify_enabled() else "no verifier is configured"
+        out["reason"] = "no verifier is configured"
     return out
 
 
@@ -456,6 +478,237 @@ def metis_url() -> str:
 def metis_key() -> str:
     return os.environ.get("AIMARKET_VERIFY_METIS_KEY", "").strip() or \
         os.environ.get("METIS_API_KEY", "").strip()
+
+
+# ── Per-capability verifier routes ────────────────────────────────────────────
+#
+# One verifier does not fit every capability. An LLM jury is the right judge of a
+# translation; it is the wrong judge of "did this plug switch", where GAIA can check the
+# signed command record and the attested meter readings exactly. AIMARKET_VERIFY_ROUTES
+# names, per capability, the verifier that judges it:
+#
+#     {"gaia.actuate@v1": {"url": "https://iot.modelmarket.dev",
+#                          "verifier_id": "gaia.verify@v1",
+#                          "key_env": "AIMARKET_VERIFY_GAIA_TOKEN"}}
+#
+# A key is a capability id, or a prefix ending in `*` ("gaia.*"); an exact id beats any
+# prefix, and the longest prefix wins. A capability no key matches is judged by the
+# default verifier (AIMARKET_VERIFY_METIS_URL) exactly as before. `key_env` is the NAME
+# of the environment variable holding the route's Bearer token, never the token itself,
+# so the table can be read, logged and diffed without exposing a secret.
+#
+# A table that cannot be used refuses to verify — it never falls back to the default
+# verifier. Falling back would hand a capability the operator routed AWAY from an LLM to
+# exactly that LLM, and the buyer's money would be judged by a verifier nobody chose for
+# it. Specifically:
+#   * an unreadable table (bad JSON, an unknown field, a bad key/URL/id) refuses every
+#     verified invoke: which capabilities it meant to route cannot be known;
+#   * a route whose key env is unset refuses the capabilities it matches;
+# in both cases before any work is done (plan() → 400 verify_unavailable), and a
+# settlement already registered keeps its hold and retries, like a transport failure,
+# until the operator fixes the table.
+
+_ROUTE_FIELDS = ("url", "verifier_id", "key_env")
+# The key env must be one of the hub's own verifier settings. The NAME comes from an
+# operator-edited JSON blob, and its VALUE is sent to a remote host as a Bearer token: a
+# typo naming AIMARKET_ADMIN_TOKEN or the escrow signer's token would hand that secret to
+# the verifier. Confining the name to AIMARKET_VERIFY_* makes that typo impossible.
+_ROUTE_KEY_ENV_RE = re.compile(r"AIMARKET_VERIFY_[A-Z0-9_]+")
+# The verifier id goes into every signed envelope it judges; keep it a plain token.
+_ROUTE_VERIFIER_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}")
+_ROUTE_PATTERN_RE = re.compile(r"[^\s*]{1,256}\*?")
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+class RouteUnavailable(Exception):
+    """The verifier routing table cannot say who judges a capability.
+
+    The message names settings (env var NAMES, table keys), never a secret value, so it
+    is safe to log. It is never shown to buyers.
+    """
+
+
+@dataclass(frozen=True)
+class VerifierRoute:
+    """The verifier that judges one capability: where to ask, under which name."""
+
+    url: str
+    verifier_id: str
+    # The routing-table key that matched ("gaia.actuate@v1", "gaia.*"); "" = the default
+    # verifier (AIMARKET_VERIFY_METIS_URL).
+    match: str = ""
+    # NAME of the env var holding this route's Bearer token ("" for the default verifier,
+    # whose key is AIMARKET_VERIFY_METIS_KEY / METIS_API_KEY as always).
+    key_env: str = ""
+
+    @property
+    def routed(self) -> bool:
+        return bool(self.match)
+
+    def key(self) -> str:
+        """The Bearer token, read at call time and never stored on the route."""
+        if not self.routed:
+            return metis_key()
+        return os.environ.get(self.key_env, "").strip()
+
+    @property
+    def gate(self) -> str:
+        """Concurrency-gate key: a fast verifier never queues behind a slow one."""
+        return self.verifier_id if self.routed else ""
+
+
+def _production() -> bool:
+    return os.environ.get("AIFACTORY_PROD", "").strip() == "1"
+
+
+def _check_route_url(pattern: str, raw: Any, *, production: bool) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise RouteUnavailable(f"route {pattern!r}: url must be a non-empty string")
+    url = raw.strip().rstrip("/")
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:
+        raise RouteUnavailable(f"route {pattern!r}: url is not a valid URL") from None
+    if parts.scheme not in ("http", "https") or not host:
+        raise RouteUnavailable(f"route {pattern!r}: url must be http(s)://host[/path]")
+    if parts.username is not None or parts.password is not None:
+        # Credentials in a URL end up in logs; the token belongs in key_env.
+        raise RouteUnavailable(f"route {pattern!r}: url must not carry credentials (use key_env)")
+    if parts.query or parts.fragment:
+        raise RouteUnavailable(f"route {pattern!r}: url must not carry a query or fragment")
+    if production and parts.scheme != "https" and host not in _LOOPBACK_HOSTS:
+        # The Bearer token travels with every request.
+        raise RouteUnavailable(f"route {pattern!r}: url must be https in production")
+    return url
+
+
+@functools.lru_cache(maxsize=8)
+def _parse_route_table(raw: str, production: bool) -> tuple[VerifierRoute, ...]:
+    """Parse AIMARKET_VERIFY_ROUTES strictly. Raises RouteUnavailable on anything off.
+
+    Strict on purpose: this table decides which service's verdict releases a buyer's
+    money, so a duplicated key (JSON keeps the last one silently), a misspelt field
+    (`keyenv`) or two different URLs signing as one verifier id are errors, not guesses.
+    """
+    def no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+        for k, v in pairs:
+            if k in seen:
+                raise RouteUnavailable(f"AIMARKET_VERIFY_ROUTES repeats the key {k!r}")
+            seen[k] = v
+        return seen
+
+    try:
+        table = json.loads(raw, object_pairs_hook=no_duplicates)
+    except RouteUnavailable:
+        raise
+    except (ValueError, RecursionError):
+        raise RouteUnavailable("AIMARKET_VERIFY_ROUTES is not valid JSON") from None
+    if not isinstance(table, dict):
+        raise RouteUnavailable("AIMARKET_VERIFY_ROUTES must be a JSON object")
+    routes: list[VerifierRoute] = []
+    # One service, one name: the id is what a signed envelope attributes the verdict to.
+    url_of: dict[str, str] = {}
+    id_of: dict[str, str] = {}
+    for pattern, entry in table.items():
+        if not _ROUTE_PATTERN_RE.fullmatch(pattern) or pattern == "*":
+            raise RouteUnavailable(
+                f"route key {pattern!r} must be a capability id or a prefix ending in '*' "
+                "(the default verifier is AIMARKET_VERIFY_METIS_URL, not '*')")
+        if not isinstance(entry, dict):
+            raise RouteUnavailable(f"route {pattern!r} must be an object")
+        unknown = sorted(set(entry) - set(_ROUTE_FIELDS))
+        missing = [f for f in _ROUTE_FIELDS if f not in entry]
+        if unknown or missing:
+            raise RouteUnavailable(
+                f"route {pattern!r}: fields must be exactly {', '.join(_ROUTE_FIELDS)}"
+                f" (unknown: {unknown or '-'}, missing: {missing or '-'})")
+        url = _check_route_url(pattern, entry["url"], production=production)
+        verifier = entry["verifier_id"]
+        if not isinstance(verifier, str) or not _ROUTE_VERIFIER_ID_RE.fullmatch(verifier):
+            raise RouteUnavailable(f"route {pattern!r}: verifier_id must be a plain id like gaia.verify@v1")
+        key_env = entry["key_env"]
+        if not isinstance(key_env, str) or not _ROUTE_KEY_ENV_RE.fullmatch(key_env) \
+                or key_env == "AIMARKET_VERIFY_ROUTES":
+            raise RouteUnavailable(
+                f"route {pattern!r}: key_env must NAME an AIMARKET_VERIFY_* variable that holds the token")
+        if url_of.setdefault(verifier, url) != url:
+            raise RouteUnavailable(f"verifier id {verifier!r} is routed to two different URLs")
+        if id_of.setdefault(url, verifier) != verifier:
+            raise RouteUnavailable(f"route {pattern!r}: {url} is already routed under another verifier id")
+        routes.append(VerifierRoute(url=url, verifier_id=verifier, match=pattern, key_env=key_env))
+    return tuple(routes)
+
+
+def routes_configured() -> bool:
+    """Is a routing table set at all (usable or not)?"""
+    return bool(os.environ.get("AIMARKET_VERIFY_ROUTES", "").strip())
+
+
+def route_table() -> tuple[VerifierRoute, ...]:
+    """Every configured route ((): none). Raises RouteUnavailable for an unusable table."""
+    raw = os.environ.get("AIMARKET_VERIFY_ROUTES", "").strip()
+    if not raw:
+        return ()
+    return _parse_route_table(raw, _production())
+
+
+def default_route() -> VerifierRoute:
+    """The verifier for every capability no route matches: today's single verifier."""
+    return VerifierRoute(url=metis_url(), verifier_id=verifier_id())
+
+
+def verifier_route(capability_id: str) -> VerifierRoute:
+    """The verifier that judges `capability_id`.
+
+    Raises RouteUnavailable — never returns the default verifier instead — when the table
+    is unusable, when the matching route's key env is unset, or when a route and the
+    default verifier disagree about who is who: the default's id at another URL (two
+    services, one name in the envelope) or the default's URL under another id (one
+    service, two names).
+    """
+    table = route_table()
+    cap = capability_id or ""
+    entry = next((r for r in table if r.match == cap), None)
+    if entry is None:
+        prefixes = [r for r in table if r.match.endswith("*") and cap.startswith(r.match[:-1])]
+        entry = max(prefixes, key=lambda r: len(r.match)) if prefixes else None
+    if entry is None:
+        return default_route()
+    if not entry.key():
+        raise RouteUnavailable(
+            f"route {entry.match!r} ({entry.verifier_id}): {entry.key_env} is not set")
+    if verifier_configured():
+        same_id, same_url = entry.verifier_id == verifier_id(), entry.url == metis_url()
+        if same_id and not same_url:
+            raise RouteUnavailable(
+                f"route {entry.match!r} signs as the default verifier {entry.verifier_id!r} "
+                "from a different URL — give the routed verifier its own verifier_id")
+        if same_url and not same_id:
+            raise RouteUnavailable(
+                f"route {entry.match!r} sends to the default verifier's URL under another id "
+                f"({entry.verifier_id!r}) — use the default verifier's id, or another verifier")
+    return entry
+
+
+def _judge_name(capability_id: str) -> str:
+    """The verifier a NOT-YET-JUDGED envelope names: the routed one when it resolves, else
+    the default. Only labels a pending or skipped envelope; nothing is judged on it."""
+    try:
+        return verifier_route(capability_id).verifier_id
+    except RouteUnavailable:
+        return verifier_id()
+
+
+def _usable_route(capability_id: str) -> VerifierRoute | None:
+    """`verifier_route`, or None after logging why not (once per problem, setting NAMES
+    only — the problem text never carries a token)."""
+    try:
+        return verifier_route(capability_id)
+    except RouteUnavailable as exc:
+        _warn_once(f"route:{exc}", "Pay-on-Verified verifier routing refused: %s", exc)
+        return None
 
 
 # ── Appeal knobs ──────────────────────────────────────────────────────────────
@@ -487,32 +740,39 @@ def appeal_verifier_id() -> str:
     return os.environ.get("AIMARKET_APPEAL_VERIFIER_ID", "").strip() or APPEAL_VERIFIER_ID
 
 
-def appeal_court_error() -> str:
+def appeal_court_error(first: VerifierRoute | None = None) -> str:
     """"" when an appeal court is configured that can hear appeals, else why not.
 
-    The court must be a DIFFERENT verifier. Pointing it at the first instance's URL, or
-    naming it with the first instance's id, would sell a re-roll of the same judge as an
-    appeal — and sign envelopes saying two verifiers agreed when one did twice.
+    The court must be a DIFFERENT verifier from the first instance — the default verifier,
+    or `first`, the routed verifier that judged. Pointing it at the first instance's URL,
+    or naming it with the first instance's id, would sell a re-roll of the same judge as
+    an appeal — and sign envelopes saying two verifiers agreed when one did twice.
     """
+    first = first or default_route()
     url = appeal_metis_url()
     if not url:
         return "no appeal court is configured (AIMARKET_APPEAL_METIS_URL)"
-    if url == metis_url():
+    if url == first.url:
         return "the appeal court is the first-instance verifier (same URL)"
-    if appeal_verifier_id() == verifier_id():
+    if appeal_verifier_id() == first.verifier_id:
         return "the appeal court carries the first-instance verifier id"
     return ""
 
 
-def appeals_enabled() -> bool:
+def appeals_enabled(first: VerifierRoute | None = None) -> bool:
     """Do NEW genuine paid verdicts become provisional? Needs a window AND a court: a
     window nobody can appeal into would only delay the provider's money."""
     if appeal_window_s() <= 0:
         return False
-    problem = appeal_court_error()
+    problem = appeal_court_error(first)
     if problem:
-        _warn_once("appeal_court",
-                   "AIMARKET_APPEAL_WINDOW_S is set but %s — verdicts settle immediately", problem)
+        if first is None or not first.routed:
+            _warn_once("appeal_court",
+                       "AIMARKET_APPEAL_WINDOW_S is set but %s — verdicts settle immediately", problem)
+        else:
+            _warn_once(f"appeal_court:{first.verifier_id}",
+                       "AIMARKET_APPEAL_WINDOW_S is set but for %s (route %r) %s — its verdicts "
+                       "settle immediately", first.verifier_id, first.match, problem)
         return False
     return True
 
@@ -906,11 +1166,14 @@ def plan(
     crypto_on: bool,
     sandbox_mode: bool,
     channel_id: str | None,
+    capability_id: str = "",
 ) -> VerifyPlan:
     """Decide what the buyer's verify block means for this invoke.
 
     Uses the LIST price for the floor and route tiering (crypto-off advisory runs
-    should tier exactly like their paid twins would).
+    should tier exactly like their paid twins would). `capability_id` picks the verifier
+    (AIMARKET_VERIFY_ROUTES); a capability whose route cannot be used is refused here,
+    before the provider runs, rather than judged by a verifier nobody chose for it.
     """
     if not verify_block.requested:
         return VerifyPlan(active=False)
@@ -942,12 +1205,20 @@ def plan(
         wait_timeout_s=float(verify_block.wait_timeout_s),
     )
     if not verify_enabled():
-        return VerifyPlan(skipped_envelope=_skipped_envelope("verify_disabled", mode), **common)
-    if not verifier_configured():
+        return VerifyPlan(skipped_envelope=_skipped_envelope(
+            "verify_disabled", mode, verifier=_judge_name(capability_id)), **common)
+    route = _usable_route(capability_id)
+    if route is None:
+        # The detail (which setting is wrong) is in the operator's log, not in a reply to
+        # whoever asked.
+        return VerifyPlan(error="verify_unavailable: the verifier for this capability is not "
+                                "available on this hub; retry without the verify block")
+    if not route.routed and not verifier_configured():
         return VerifyPlan(error="verify_unavailable: this hub has no verifier configured "
                                 "(AIMARKET_VERIFY_METIS_URL); retry without the verify block")
     if list_price < min_price_usd():
-        return VerifyPlan(skipped_envelope=_skipped_envelope("below_price_floor", mode), **common)
+        return VerifyPlan(skipped_envelope=_skipped_envelope(
+            "below_price_floor", mode, verifier=route.verifier_id), **common)
 
     paid = bool(crypto_on and not sandbox_mode and channel_id and list_price > 0)
     return VerifyPlan(active=True, paid=paid, **common)
@@ -956,7 +1227,7 @@ def plan(
 # ── Envelope builders ─────────────────────────────────────────────────────────
 
 
-def _base_envelope(mode: str) -> dict[str, Any]:
+def _base_envelope(mode: str, *, verifier: str | None = None) -> dict[str, Any]:
     return {
         "requested": True,
         "status": "pending",
@@ -972,7 +1243,7 @@ def _base_envelope(mode: str) -> dict[str, Any]:
         "verdict": "",
         "threshold": score_threshold(),
         "trace_id": None,
-        "verifier": verifier_id(),
+        "verifier": verifier or verifier_id(),
         "mode": mode,
         "settled": False,
         "reason": None,
@@ -980,14 +1251,14 @@ def _base_envelope(mode: str) -> dict[str, Any]:
     }
 
 
-def _skipped_envelope(reason: str, mode: str) -> dict[str, Any]:
-    env = _base_envelope(mode)
+def _skipped_envelope(reason: str, mode: str, *, verifier: str | None = None) -> dict[str, Any]:
+    env = _base_envelope(mode, verifier=verifier)
     # A skipped verification settles like a legacy invoke: money moves immediately.
     env.update(status="skipped", settled=True, reason=reason)
     return env
 
 
-def skipped_envelope_for(verify_block: Any, *, reason: str) -> dict[str, Any]:
+def skipped_envelope_for(verify_block: Any, *, reason: str, capability_id: str = "") -> dict[str, Any]:
     """Skipped envelope for a verify block outside the local-settlement path.
 
     Used by the federated invoke branch, which has no price context — an `auto`
@@ -996,11 +1267,13 @@ def skipped_envelope_for(verify_block: Any, *, reason: str) -> dict[str, Any]:
     mode = getattr(verify_block, "mode", "fast")
     if mode == "auto":
         mode = "fast"
-    return _skipped_envelope(reason, mode)
+    return _skipped_envelope(reason, mode, verifier=_judge_name(capability_id))
 
 
 def pending_envelope(nonce: str, capability_id: str, mode: str, *, advisory: bool) -> dict[str, Any]:
-    env = _base_envelope(mode)
+    # Names the verifier expected to judge; the one that actually answers is stamped on
+    # the envelope with its verdict (they differ only if the routes changed meanwhile).
+    env = _base_envelope(mode, verifier=_judge_name(capability_id))
     env.update(nonce=nonce, capability_id=capability_id)
     if advisory:
         # Nothing is held (sandbox / crypto off / free capability): the verdict is
@@ -1033,18 +1306,21 @@ class VerifiedSettlementService(SettlementSchedulingMixin, SettlementVerifyingMi
         # constructor succeeds it pins the semaphore to whichever loop existed at build
         # time, which is not the one serving requests.
         self._sem_cap = max(1, int(_env_float("AIMARKET_VERIFY_MAX_CONCURRENCY", 8)))
-        self._sem: Any = None
+        # One gate per verifier: GAIA answering in milliseconds must not queue behind
+        # eight multi-minute jury runs. "" is the default verifier (and appeal court).
+        self._sems: dict[str, Any] = {}
         # Appeal-side work already scheduled in THIS process (deadline timers, appeal
         # workers), so the safety-net sweep does not queue a second copy of it. Across
         # processes the conditional status transitions decide; this only saves a call.
         self._inflight: set[str] = set()
         self._sweeper: asyncio.Task | None = None
 
-    def _concurrency_gate(self) -> Any:
-        """The Metis concurrency cap, created inside the loop that will await it."""
-        if self._sem is None:
-            self._sem = asyncio.Semaphore(self._sem_cap)
-        return self._sem
+    def _concurrency_gate(self, key: str = "") -> Any:
+        """A verifier's concurrency cap, created inside the loop that will await it."""
+        sem = self._sems.get(key)
+        if sem is None:
+            sem = self._sems[key] = asyncio.Semaphore(self._sem_cap)
+        return sem
 
     def attach_supply_security(self, supply_security: Any) -> None:
         """Verify-first escalation hook: genuine verdict failures are reported to
