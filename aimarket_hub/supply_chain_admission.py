@@ -28,6 +28,9 @@ from urllib.parse import urlparse
 import httpx
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from aimarket_hub.database import SUPPLY_AUDITS_PENDING_MAX
+from aimarket_hub.paging import page_limit
+
 
 logger = logging.getLogger(__name__)
 
@@ -794,7 +797,7 @@ class SupplyChainAdmission:
         }, signature
 
     async def refresh_pending(self, limit: int = 5) -> None:
-        for row in self.db.supply_audits_pending(limit=max(1, min(limit, 20))):
+        for row in self.db.supply_audits_pending(limit=page_limit(limit, maximum=SUPPLY_AUDITS_PENDING_MAX)):
             audit_id = str(row.get("audit_id") or "")
             verification_id = str(row.get("metis_verification_id") or "")
             if not audit_id or not verification_id:

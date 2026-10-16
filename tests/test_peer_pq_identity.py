@@ -233,7 +233,7 @@ def test_the_new_status_survives_the_trust_refresh(tmp_path):
 
 
 def test_the_endpoint_accepts_a_pq_only_repin():
-    api = (Path(__file__).resolve().parents[1] / "aimarket_hub" / "api.py").read_text()
+    api = (Path(__file__).resolve().parents[1] / "aimarket_hub" / "hub_routes" / "federation.py").read_text()
     block = api[api.index('@router.post("/federation/peers/repin")'):]
     block = block[:block.index("crawl_stats = None")]
     assert "pq_public_key" in block and "previous_pq_public_key" in block

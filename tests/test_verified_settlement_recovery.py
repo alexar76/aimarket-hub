@@ -12,6 +12,7 @@ other test noticing:
 """
 from __future__ import annotations
 
+import inspect
 import aimarket_hub.channels as channels_mod
 import aimarket_hub.verified_settlement as vs_mod
 import pytest
@@ -75,7 +76,8 @@ def test_a_replayed_policy_refund_still_refunds_under_a_fail_open_policy(tmp_pat
     def killed(*a, **k):
         raise RuntimeError("process killed before the ledger moved")
 
-    real = vs_mod.VerifiedSettlementService.__dict__["_settle_hold"]
+    # The raw staticmethod, wherever the class defines it (a mixin since the service was split).
+    real = inspect.getattr_static(vs_mod.VerifiedSettlementService, "_settle_hold")
     monkeypatch.setattr(vs_mod.VerifiedSettlementService, "_settle_hold", staticmethod(killed))
     with pytest.raises(RuntimeError):
         h.svc._resolve_policy(row, None, cause="pass_below_bar", force_refund=True)

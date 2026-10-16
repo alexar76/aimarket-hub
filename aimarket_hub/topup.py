@@ -50,6 +50,11 @@ from typing import Any, Callable
 
 from aimarket_hub import credits, settle, x402
 from aimarket_hub.db_backend import returning_one
+from aimarket_hub.paging import page_limit
+
+
+# Top-up quotes one account read may return.
+QUOTES_PAGE_MAX = 200
 
 logger = logging.getLogger(__name__)
 
@@ -351,7 +356,7 @@ class TopupStore:
     def for_account(self, account_id: str, limit: int = 50) -> list[Quote]:
         rows = self._conn.execute(
             "SELECT * FROM credit_topup_quotes WHERE account_id = ? ORDER BY created_at DESC LIMIT ?",
-            (account_id, max(1, min(int(limit), 200))),
+            (account_id, page_limit(limit, maximum=QUOTES_PAGE_MAX)),
         ).fetchall()
         return [Quote.from_row(r) for r in rows]
 

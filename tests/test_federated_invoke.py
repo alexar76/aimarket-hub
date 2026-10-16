@@ -15,7 +15,8 @@ provider runs, and every failure path hands the reservation back. The old shape
 the read, so the losers 402'd only after the provider had already done billable work.
 
 Outbound HTTP is stubbed by rebinding the functions on aimarket_hub.outbound_http —
-api.py imports them inside the handler, so the module attribute is what gets used.
+the invoke handler imports them inside the handler, so the module attribute is what gets used.
+Channel ledger calls are patched on aimarket_hub.hub_routes.invoke, where the handler lives.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import aimarket_hub.api as api_mod
+import aimarket_hub.hub_routes.invoke as invoke_routes
 import aimarket_hub.channels as channels_mod
 import aimarket_hub.outbound_http as ohttp
 from aimarket_hub.api import create_app
@@ -1197,7 +1199,7 @@ def test_failed_capture_fails_closed_and_releases(tmp_path, monkeypatch):
     output rather than serving billable work the ledger never recorded as paid."""
     app, db, config = _build(tmp_path, monkeypatch)
     _factory(monkeypatch)
-    monkeypatch.setattr(api_mod, "capture_hold", lambda nonce: {"error": "ledger offline"})
+    monkeypatch.setattr(invoke_routes, "capture_hold", lambda nonce: {"error": "ledger offline"})
     channel_id, secret = _open_channel(deposit=5.0)
     with TestClient(app) as client:
         r = client.post("/ai-market/v2/invoke", headers=_pay_headers(channel_id, secret),
@@ -1564,9 +1566,9 @@ class _AuthorizationSpy:
         return type("Accepted", (), {"row": row})()
 
 
-def _escrow_backed(monkeypatch, api_module, *, binding="0x" + "cd" * 32):
+def _escrow_backed(monkeypatch, *, binding="0x" + "cd" * 32):
     """Make every channel look escrow-backed to the handler."""
-    monkeypatch.setattr(api_module, "channel_escrow_binding", lambda _cid: binding)
+    monkeypatch.setattr(invoke_routes, "channel_escrow_binding", lambda _cid: binding)
 
 
 def _open_channel_via_api(client, deposit=5.0):
@@ -1584,7 +1586,7 @@ def test_federated_escrow_invoke_without_authorization_is_402(tmp_path, monkeypa
     monkeypatch.setattr(config, "sells_on_behalf_of", lambda _url: True)
     outbound = _wire(monkeypatch, _Outbound(
         _Resp(200, _oracle_envelope(price=0.05)), well_known={"mcp_endpoint": MCP_ENDPOINT}))
-    _escrow_backed(monkeypatch, api_mod)
+    _escrow_backed(monkeypatch)
 
     with TestClient(app) as client:
         channel, secret = _open_channel_via_api(client)
@@ -1610,7 +1612,7 @@ def test_federated_escrow_invoke_uses_the_buyers_receipt_id(tmp_path, monkeypatc
     monkeypatch.setattr(config, "sells_on_behalf_of", lambda _url: True)
     outbound = _wire(monkeypatch, _Outbound(
         _Resp(200, _oracle_envelope(price=0.05)), well_known={"mcp_endpoint": MCP_ENDPOINT}))
-    _escrow_backed(monkeypatch, api_mod)
+    _escrow_backed(monkeypatch)
 
     buyer_receipt = "0x" + "77" * 32
     spy = _AuthorizationSpy(receipt_id=buyer_receipt)
@@ -1653,7 +1655,7 @@ def test_a_rejected_authorization_does_not_charge_or_invoke(tmp_path, monkeypatc
     monkeypatch.setattr(config, "sells_on_behalf_of", lambda _url: True)
     outbound = _wire(monkeypatch, _Outbound(
         _Resp(200, _oracle_envelope(price=0.05)), well_known={"mcp_endpoint": MCP_ENDPOINT}))
-    _escrow_backed(monkeypatch, api_mod)
+    _escrow_backed(monkeypatch)
 
     import aimarket_hub.escrow_bridge.authorization as bridge_auth
     monkeypatch.setattr(bridge_auth, "verify_and_store",
@@ -1683,7 +1685,7 @@ def test_a_transfer_funded_channel_is_untouched(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "sells_on_behalf_of", lambda _url: True)
     _wire(monkeypatch, _Outbound(
         _Resp(200, _oracle_envelope(price=0.05)), well_known={"mcp_endpoint": MCP_ENDPOINT}))
-    monkeypatch.setattr(api_mod, "channel_escrow_binding", lambda _cid: "")
+    monkeypatch.setattr(invoke_routes, "channel_escrow_binding", lambda _cid: "")
 
     with TestClient(app) as client:
         channel, secret = _open_channel_via_api(client)
@@ -2174,7 +2176,7 @@ def test_an_escrow_channel_can_pay_the_fee_once_it_authorized_the_total(tmp_path
     _wire(monkeypatch, _Outbound(
         _Resp(200, _oracle_envelope(price=0.75)), well_known={"mcp_endpoint": MCP_ENDPOINT},
     ))
-    _escrow_backed(monkeypatch, api_module)
+    _escrow_backed(monkeypatch)
     spy = _AuthorizationSpy()
     import aimarket_hub.escrow_bridge.authorization as bridge_auth
     monkeypatch.setattr(bridge_auth, "verify_and_store", spy)
@@ -2262,7 +2264,7 @@ def test_one_hold_under_the_signed_receipt_and_no_second_one(tmp_path, monkeypat
     _wire(monkeypatch, _Outbound(
         _Resp(200, _oracle_envelope(price=0.75)), well_known={"mcp_endpoint": MCP_ENDPOINT},
     ))
-    _escrow_backed(monkeypatch, api_module)
+    _escrow_backed(monkeypatch)
     receipt = "0x" + "ab" * 32
     spy = _AuthorizationSpy(receipt_id=receipt)
     import aimarket_hub.escrow_bridge.authorization as bridge_auth
@@ -2275,7 +2277,7 @@ def test_one_hold_under_the_signed_receipt_and_no_second_one(tmp_path, monkeypat
         holds.append((kw.get("receipt_id", ""), amount_usd))
         return real_hold(channel_id, amount_usd, **kw)
 
-    monkeypatch.setattr(api_module, "hold_channel", _record)
+    monkeypatch.setattr(invoke_routes, "hold_channel", _record)
     channel_id, secret = _open_channel(deposit=5.0)
     with TestClient(app) as client:
         r = client.post(
@@ -2680,7 +2682,7 @@ def test_a_peer_failure_withdraws_the_escrow_window(tmp_path, monkeypatch):
     _add_federated_capability(db, ORACLE_PEER, price=0.75)
     _wire(monkeypatch, _Outbound(_Resp(502, {"error": "upstream down"}),
                                  well_known={"mcp_endpoint": MCP_ENDPOINT}))
-    _escrow_backed(monkeypatch, api_module)
+    _escrow_backed(monkeypatch)
     monkeypatch.setattr(bridge_auth, "verify_and_store", _AuthorizationSpy())
     withdrawn = _withdraw_recorder(monkeypatch)
     channel_id, secret = _open_channel(deposit=5.0)
@@ -2709,7 +2711,7 @@ def test_a_delivered_call_keeps_its_escrow_window(tmp_path, monkeypatch):
     _add_federated_capability(db, ORACLE_PEER, price=0.75)
     _wire(monkeypatch, _Outbound(_Resp(200, _oracle_envelope(price=0.75)),
                                  well_known={"mcp_endpoint": MCP_ENDPOINT}))
-    _escrow_backed(monkeypatch, api_module)
+    _escrow_backed(monkeypatch)
     monkeypatch.setattr(bridge_auth, "verify_and_store", _AuthorizationSpy())
     withdrawn = _withdraw_recorder(monkeypatch)
     channel_id, secret = _open_channel(deposit=5.0)

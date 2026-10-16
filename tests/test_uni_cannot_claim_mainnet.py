@@ -106,8 +106,9 @@ def test_the_flag_is_advertisement_only(monkeypatch):
             if "def _advertised" in lines[n - 1]:
                 continue
             uses.append(f"{f.name}:{n}")
-    # config.py declares it; api.py publishes it. Anything else means it acquired behaviour.
-    unexpected = [u for u in uses if not u.startswith(("config.py", "api.py"))]
+    # config.py declares it; the well-known document (hub_routes/wellknown.py) publishes it.
+    # Anything else means it acquired behaviour.
+    unexpected = [u for u in uses if not u.startswith(("config.py", "wellknown.py"))]
     assert not unexpected, (
         f"payment_testnet is now read outside config/api ({unexpected}) — check it does not "
         "gate a payment path before keeping the UNI override"

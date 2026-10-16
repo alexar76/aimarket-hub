@@ -297,6 +297,12 @@ _PIPELINE_TOOLS = {"pipeline_prepare", "pipeline_invoke", "pipeline_status"}
 
 from pydantic import BaseModel as _MCPModel, ConfigDict as _MCPConfig, Field as _MCPField
 from aimarket_hub.pipeline_refunds import RefundApproval
+from aimarket_hub.paging import page_limit
+
+
+# MCP search results: the default page and the most one call may return.
+SEARCH_PAGE = 10
+SEARCH_PAGE_MAX = 50
 
 class RefundToolInput(_MCPModel):
     model_config = _MCPConfig(extra="forbid")
@@ -1154,10 +1160,9 @@ def attach_mcp_routes(
             if not math.isfinite(budget) or budget < 0:
                 raise ValueError("budget must be a finite, non-negative number of USD")
         try:
-            limit = int(arguments.get("limit") or 10)
+            limit = page_limit(arguments.get("limit"), default=SEARCH_PAGE, maximum=SEARCH_PAGE_MAX)
         except (TypeError, ValueError):
-            limit = 10
-        limit = max(1, min(limit, 50))
+            limit = SEARCH_PAGE
 
         rows: list[dict[str, Any]] = []
         if search is not None:

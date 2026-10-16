@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import aimarket_hub.hub_routes.channels as channels_routes
+import aimarket_hub.hub_routes.market_stats as market_stats_routes
 from aimarket_hub.api import create_app
 from aimarket_hub.config import HubConfig
 from aimarket_hub.database import HubDatabase
@@ -757,7 +759,9 @@ class TestStaticHandlersAreThreadpooled:
 
         import aimarket_hub.api as api_mod
 
-        src = inspect.getsource(api_mod.create_app)
+        from aimarket_hub.hub_routes import pages, plugins as plugin_routes
+
+        src = inspect.getsource(pages) + inspect.getsource(plugin_routes)
         # The four file-reading handlers were converted from `async def` to `def`.
         for name in ("landing_page", "live_economy_stream", "plugins_demo",
                      "widget_demo", "plugin_registry"):
@@ -1023,7 +1027,7 @@ class TestStats:
         """
         import aimarket_hub.api as api_mod
 
-        monkeypatch.setattr(api_mod, "channel_stats", lambda: {
+        monkeypatch.setattr(market_stats_routes, "channel_stats", lambda: {
             "open_channels": 2,
             "settled_channels": 1, "settled_volume_usd": 4.0,
             "expired_channels": 1, "expired_volume_usd": 6.0,
@@ -1040,7 +1044,7 @@ class TestStats:
         """The solvency number is public: how much customer money is owed but unpaid."""
         import aimarket_hub.api as api_mod
 
-        monkeypatch.setattr(api_mod, "channel_stats", lambda: {
+        monkeypatch.setattr(market_stats_routes, "channel_stats", lambda: {
             "open_channels": 0, "settled_volume_usd": 0.0, "closed_volume_usd": 0.0,
             "expired_volume_usd": 0.0,
             "outstanding_obligations": 3, "outstanding_obligations_usd": 7.5,
@@ -1072,7 +1076,7 @@ class TestChannelOpenForwardsPayerProof:
             seen.update(kwargs)
             return {"channel": {"channel_id": "ch_x", "balance_usd": 5.0}}
 
-        monkeypatch.setattr(api_mod, "open_channel", _open)
+        monkeypatch.setattr(channels_routes, "open_channel", _open)
         resp = crypto_client.post("/ai-market/v2/channel/open", json={
             "deposit_usd": 5.0,
             "wallet": "0x" + "ab" * 20,
@@ -1088,7 +1092,7 @@ class TestChannelOpenForwardsPayerProof:
         import aimarket_hub.api as api_mod
 
         seen = {}
-        monkeypatch.setattr(api_mod, "open_channel", lambda **kw: (
+        monkeypatch.setattr(channels_routes, "open_channel", lambda **kw: (
             seen.update(kw) or {"channel": {"channel_id": "ch_y"}}
         ))
         resp = crypto_client.post("/ai-market/v2/channel/open", json={"deposit_usd": 1.0})
@@ -1098,7 +1102,7 @@ class TestChannelOpenForwardsPayerProof:
     def test_unproven_open_is_reported_with_the_challenge_to_sign(self, crypto_client, monkeypatch):
         import aimarket_hub.api as api_mod
 
-        monkeypatch.setattr(api_mod, "open_channel", lambda **kw: {
+        monkeypatch.setattr(channels_routes, "open_channel", lambda **kw: {
             "error": "missing or invalid payer proof — ...",
             "challenge": "AIMarket-Payer-Proof/v1\npurpose:channel-open\n...",
         })

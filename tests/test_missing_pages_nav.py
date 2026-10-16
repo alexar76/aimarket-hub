@@ -75,3 +75,32 @@ def test_the_app_itself_drops_what_it_did_not_ship(monkeypatch, tmp_path):
             assert 'href="/developers"' in client.get("/").text
     finally:
         theme.set_missing_pages(())
+
+
+def test_a_hub_without_the_terminal_home_serves_the_developer_page(monkeypatch, tmp_path):
+    """terminal-home.html sits beside the package, so an installed wheel has none. The home
+    page fell back to a DOCS_HTML constant that no longer existed: a NameError, so "/" was a
+    500 on every pip-installed hub."""
+    import os
+
+    from fastapi.testclient import TestClient
+
+    from aimarket_hub import api
+    from aimarket_hub.config import HubConfig
+    from aimarket_hub.database import HubDatabase
+    from aimarket_hub.signing import Signer
+
+    real_isfile = os.path.isfile
+    monkeypatch.setattr(api.os.path, "isfile",
+                        lambda p: False if str(p).endswith("terminal-home.html") else real_isfile(p))
+    config = HubConfig()
+    config.db_path = str(tmp_path / "hub.db")
+    config.signing_key_path = str(tmp_path / "key")
+    app = api.create_app(config=config, db=HubDatabase(tmp_path / "hub.db"), signer=Signer(tmp_path / "key"))
+    try:
+        with TestClient(app) as client:
+            home = client.get("/")
+            assert home.status_code == 200
+            assert home.text == client.get("/developers").text
+    finally:
+        theme.set_missing_pages(())

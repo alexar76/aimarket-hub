@@ -44,6 +44,12 @@ import time
 from typing import Any
 from aimarket_hub import security_posture
 from aimarket_hub.db_backend import returning_one
+from aimarket_hub.paging import page_limit
+
+
+# Ledger entries: the default page and the most one request may read.
+LEDGER_PAGE = 50
+LEDGER_PAGE_MAX = 500
 
 logger = logging.getLogger(__name__)
 
@@ -830,7 +836,7 @@ class CreditsLedger:
         return True, ""
 
     def recent(self, account_id: str = "", limit: int = 50) -> list[dict[str, Any]]:
-        limit = max(1, min(int(limit or 50), 500))
+        limit = page_limit(limit, default=LEDGER_PAGE, maximum=LEDGER_PAGE_MAX)
         if account_id:
             rows = self._conn.execute(
                 "SELECT account_id, kind, amount_mc, receipt_id, note, created_at "

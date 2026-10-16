@@ -27,6 +27,17 @@ from aimarket_hub.models import (
     normalize_purpose,
 )
 from aimarket_hub.semantic_search import SearchMatch, rank_capabilities
+from aimarket_hub.paging import page_limit
+
+
+# Permission-violation reports read for one capability.
+VIOLATION_REPORTS_MAX = 64
+
+# Recent supply-chain audits one read may return.
+SUPPLY_AUDITS_RECENT_MAX = 100
+
+# Pending supply-chain audits one refresh may take.
+SUPPLY_AUDITS_PENDING_MAX = 20
 
 
 def _utc_cutoff(seconds_ago: float) -> str:
@@ -1552,7 +1563,7 @@ class HubDatabase:
             WHERE {where}
             ORDER BY created_at DESC LIMIT ?
             """,
-            (product_id, capability_id, permissions_sha256.lower(), max(1, min(limit, 64))),
+            (product_id, capability_id, permissions_sha256.lower(), page_limit(limit, maximum=VIOLATION_REPORTS_MAX)),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1670,7 +1681,7 @@ class HubDatabase:
     def supply_audits_recent(self, limit: int = 20) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT * FROM supply_chain_audits ORDER BY id DESC LIMIT ?",
-            (max(1, min(int(limit), 100)),),
+            (page_limit(limit, maximum=SUPPLY_AUDITS_RECENT_MAX),),
         ).fetchall()
         return [self._public_supply_audit(row) for row in rows]
 
@@ -1683,7 +1694,7 @@ class HubDatabase:
               AND metis_verification_id <> ''
             ORDER BY id ASC LIMIT ?
             """,
-            (max(1, min(int(limit), 20)),),
+            (page_limit(limit, maximum=SUPPLY_AUDITS_PENDING_MAX),),
         ).fetchall()
         return [dict(row) for row in rows]
 

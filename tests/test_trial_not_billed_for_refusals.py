@@ -180,7 +180,7 @@ def test_api_takes_the_trial_after_validation_not_before():
     """
     from pathlib import Path
 
-    src = Path(__file__).resolve().parents[1] / "aimarket_hub" / "api.py"
+    src = Path(__file__).resolve().parents[1] / "aimarket_hub" / "hub_routes" / "invoke.py"
     text = src.read_text(encoding="utf-8")
 
     consume_at = text.index("trial = consume_sandbox_trial(x_sandbox_visitor or \"\", client_ip=client_ip)")
@@ -213,7 +213,7 @@ def test_the_published_status_matches_what_the_hub_actually_answers(ledger):
     assert "429" in policy["how"]
     assert "402" not in policy["how"]
 
-    api = (Path(__file__).resolve().parents[1] / "aimarket_hub" / "api.py").read_text(encoding="utf-8")
+    api = (Path(__file__).resolve().parents[1] / "aimarket_hub" / "hub_routes" / "invoke.py").read_text(encoding="utf-8")
     assert 'code = 429 if trial["error"] in ("trial_quota_exhausted"' in api, (
         "the invoke path no longer answers 429 for an exhausted trial; the published policy "
         "text and exhausted_status must move with it"
@@ -290,7 +290,7 @@ def test_the_refusal_happens_before_the_trial_is_spent():
     """Structural: discovering that a capability is not free must not cost an allowance."""
     from pathlib import Path
 
-    api = (Path(__file__).resolve().parents[1] / "aimarket_hub" / "api.py").read_text(encoding="utf-8")
+    api = (Path(__file__).resolve().parents[1] / "aimarket_hub" / "hub_routes" / "invoke.py").read_text(encoding="utf-8")
     assert api.count("free_tier_covers(") == 2, "both invoke branches must check"
     for _ in range(2):
         guard_at = api.index("free_tier_covers(")

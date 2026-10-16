@@ -44,6 +44,11 @@ from aimarket_hub.acex_storage import (
     resolve_database_url,
     resolve_sqlite_path,
 )
+from aimarket_hub.paging import page_limit
+
+
+# ACEX listings one read may return.
+LISTINGS_PAGE_MAX = 1000
 
 logger = logging.getLogger(__name__)
 
@@ -607,7 +612,7 @@ class AcexIpoLedger:
         return [{"holder": r["holder"], "amount": int(r["claimable_micro"])} for r in rows]
 
     def list_listings(self, limit: int = 200) -> list[dict[str, Any]]:
-        limit = min(max(1, int(limit)), 1000)
+        limit = page_limit(limit, maximum=LISTINGS_PAGE_MAX)
         with self._lock, self._backend.get_connection() as conn:
             rows = conn.execute(
                 "SELECT listing_id FROM acex_listings ORDER BY listed_at DESC LIMIT ?",
