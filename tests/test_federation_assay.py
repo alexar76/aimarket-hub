@@ -19,8 +19,10 @@ from aimarket_hub.api import create_app
 from aimarket_hub.config import HubConfig
 from aimarket_hub.database import HubDatabase
 from aimarket_hub.federation_assay import (
+    HARD_CHECKS,
     MAX_SANDBOX_BYTES,
     MAX_SANDBOX_CANDIDATES,
+    assay_blockers,
     evidence_bundle,
     parse_judge_text,
     run_assay,
@@ -428,6 +430,116 @@ def test_pending_list_exposes_assay_verdict(monkeypatch, tmp_path, resolvable):
         pending = client.get("/ai-market/v2/federation/peers").json()["pending"][0]
         assert pending["assay_verdict"] == "review"
         assert pending["trusted"] is False
+        client.hub_db.save_peer_assay({  # type: ignore[attr-defined]
+            "url": STRANGER, "verdict": "fail", "sandbox": {}, "ran_at": "2026-10-19T17:39:29Z",
+            "checks": [
+                {"id": "url_public", "ok": True},
+                {"id": "well_known_schema", "ok": False,
+                 "detail": "'signer_public_key' is a required property"},
+            ],
+        })
+        pending = client.get("/ai-market/v2/federation/peers").json()["pending"][0]
+        assert pending["assay_verdict"] == "fail"
+        assert pending["assay_ran_at"] == "2026-10-19T17:39:29Z"
+        assert pending["assay_blockers"] == [{
+            "id": "well_known_schema",
+            "detail": "'signer_public_key' is a required property",
+        }]
+
+
+# ── Why not pass ────────────────────────────────────────────────────────────────
+# The landing page painted FAIL and nothing else. These pin that the blockers it now
+# explains are exactly the checks score_verdict refused on — no more, no fewer.
+
+def _hard_ok() -> list[dict]:
+    return [{"id": h, "ok": True} for h in HARD_CHECKS]
+
+
+def _ids(checks: list[dict], verdict: str | None = None) -> list[str]:
+    verdict = verdict or score_verdict(checks)
+    return [b["id"] for b in assay_blockers({"verdict": verdict, "checks": checks})]
+
+
+def test_blockers_are_empty_for_a_pass_or_no_assay():
+    checks = _hard_ok() + [{"id": "sandbox_receipt_signed", "ok": True}]
+    assert score_verdict(checks) == "pass"
+    assert _ids(checks) == []
+    assert assay_blockers(None) == []
+    assert assay_blockers({"verdict": "alias", "checks": []}) == []
+
+
+def test_blockers_name_every_failed_hard_check_and_where_the_probe_stopped():
+    # mach402.dev on 2026-10-19: no signer key, schema-broken manifest, nothing to probe.
+    checks = [
+        {"id": "llm_verdict", "ok": None},
+        {"id": "url_public", "ok": True},
+        {"id": "well_known_schema", "ok": False, "detail": "x"},
+        {"id": "advertised_key", "ok": False},
+        {"id": "well_known_signed", "ok": None},
+        {"id": "manifest_schema", "ok": False},
+        {"id": "manifest_signed", "ok": False},
+        {"id": "manifest_fresh", "ok": True},
+        {"id": "invoke_same_origin", "ok": True},
+        {"id": "sandbox_probe", "ok": None, "detail": "no publicly offered capability"},
+        {"id": "sandbox_receipt_signed", "ok": None},
+    ]
+    assert score_verdict(checks) == "fail"
+    assert _ids(checks) == [
+        "well_known_schema", "advertised_key", "manifest_schema", "manifest_signed",
+        "sandbox_probe",
+    ]
+
+
+def test_a_check_that_never_ran_is_not_blamed():
+    checks = [{"id": "url_public", "ok": False, "detail": "rejected"}]
+    assert score_verdict(checks) == "fail"
+    assert _ids(checks) == ["url_public"]
+
+
+def test_review_blockers_follow_the_evidence_rules():
+    hard = _hard_ok()
+    # Probe ran, came back unsigned.
+    assert _ids(hard + [
+        {"id": "sandbox_probe", "ok": True},
+        {"id": "sandbox_receipt_signed", "ok": False},
+    ]) == ["sandbox_receipt_signed"]
+    # A 402 door that named no amount.
+    assert _ids(hard + [
+        {"id": "sandbox_probe", "ok": True},
+        {"id": "sandbox_receipt_signed", "ok": None},
+        {"id": "sandbox_price_matches", "ok": None},
+    ]) == ["sandbox_price_matches"]
+    # Signed evidence, vetoed by the judge.
+    assert _ids(hard + [
+        {"id": "sandbox_probe", "ok": True},
+        {"id": "sandbox_receipt_signed", "ok": True},
+        {"id": "sandbox_judge", "ok": False},
+    ]) == ["sandbox_judge"]
+    # A foreign signer fails before anything else is read.
+    assert _ids(hard + [
+        {"id": "sandbox_key_mismatch", "ok": False},
+        {"id": "sandbox_receipt_signed", "ok": False},
+    ])[0] == "sandbox_key_mismatch"
+
+
+def test_every_blocker_id_is_explained_in_every_language():
+    """The explanation is on the PUBLIC landing page; a missing key shows a bare id."""
+    import json
+    from pathlib import Path
+
+    packs = json.loads(
+        (Path(__file__).parents[1] / "hub-ui-i18n.json").read_text(encoding="utf-8")
+    )["ui"]
+    ids = set(HARD_CHECKS) | {
+        "sandbox_key_mismatch", "sandbox_probe", "sandbox_receipt_signed",
+        "sandbox_price_matches", "sandbox_price_enforced", "sandbox_analysis", "sandbox_judge",
+    }
+    needed = {f"why_{i}" for i in ids} | {"why_title", "why_ran_at", "why_said", "why_generic"}
+    for lang, pack in packs.items():
+        missing = needed - set(pack)
+        assert not missing, (lang, sorted(missing))
+        assert all(str(pack[k]).strip() for k in needed), lang
+        assert "{n}" in pack["why_title"] and "{id}" in pack["why_generic"], lang
 
 
 # ── Transport and candidate selection ───────────────────────────────────────────

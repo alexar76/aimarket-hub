@@ -18,6 +18,7 @@ from aimarket_hub import realm
 from aimarket_hub.api_models import AnnounceRequest
 from aimarket_hub.config import HubConfig
 from aimarket_hub.database import HubDatabase
+from aimarket_hub.federation_assay import assay_blockers
 from aimarket_hub.models import Peer
 from aimarket_hub.signing import Signer
 from aimarket_hub.slash_sync import SlashRegistry
@@ -354,11 +355,16 @@ def register(
                     # is indexed either way.
                     "preview_capabilities": db.count_preview_capabilities(p.url),
                     "declared_capabilities": p.capabilities_count,
-                    "assay_verdict": (db.get_peer_assay(p.url) or {}).get("verdict"),
+                    "assay_verdict": assay.get("verdict"),
+                    "assay_ran_at": assay.get("ran_at") or "",
+                    # What keeps it from `pass`, by check id — the page explains each id
+                    # in the reader's language; `detail` is the assay's own words.
+                    "assay_blockers": assay_blockers(assay),
                     **identity_for(p, config),
                     "declared": _peer_declared(p),
                 }
                 for p in pending_rows
+                for assay in (db.get_peer_assay(p.url) or {},)
             ],
             "pending_count": len(pending_rows),
             "open_federation": bool(config.federation_open),

@@ -823,6 +823,20 @@
     text-transform: uppercase; color: #f5a524; margin: 0;
   }
   .knock-rail-head .meta { color: #9aa3b2; font-size: 12px; }
+  .knock-rail.collapsed .knock-rail-head { margin-bottom: 0; }
+  .knock-toggle {
+    display: inline-flex; align-items: baseline; gap: 8px; padding: 0;
+    background: none; border: 0; color: inherit; font: inherit; cursor: pointer;
+  }
+  .knock-toggle .chev { color: #f5a524; font-size: 11px; transition: transform .15s; display: inline-block; }
+  .knock-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+  .knock-toggle:hover h2 { text-decoration: underline; text-underline-offset: 3px; }
+  .knock-count {
+    font-family: var(--mono); font-size: 11px; color: #f5a524;
+    border: 1px solid rgba(245,165,36,.45); border-radius: 99px; padding: 0 7px;
+  }
+  .knock-find-wrap { margin-bottom: 8px; }
+  .knock-found { font-family: var(--mono); font-size: 11px; color: #9aa3b2; margin: -2px 0 8px; }
   .knock-rail-head a { color: #f5a524; }
   .pending-head { font-size: 11px; letter-spacing: .8px; text-transform: uppercase; color: #f5a524; margin-bottom: 8px; }
   .pending-item { border: 1px dashed rgba(245,165,36,.35); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: rgba(245,165,36,.04); }
@@ -842,6 +856,14 @@
   }
   .assay-chip.pass { border-color: rgba(52,211,153,.5); color: #34d399; }
   .assay-chip.fail { border-color: rgba(255,93,138,.45); color: #ff5d8a; }
+  .assay-chip[title] { cursor: help; }
+  .assay-why { margin-top: 7px; font-size: 11.5px; color: #cbd5e1; }
+  .assay-why summary { cursor: pointer; color: #ff8fab; font-size: 11px; letter-spacing: .3px; }
+  .assay-why summary .ran { color: #7e9fd0; }
+  .assay-why ol { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 5px; line-height: 1.45; }
+  .assay-why .why-id { font-family: var(--mono); font-size: 10px; color: #f5a524; }
+  .assay-why .why-said { margin-top: 2px; font-size: 10.5px; color: #7e9fd0; word-break: break-word; }
+  .assay-why code { font-family: var(--mono); color: #9aa3b2; }
   .fed-peers {
     list-style: none; margin: 0 16px 14px; padding: 0;
     display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px;
@@ -1061,12 +1083,23 @@
   </div>
   <noscript id="hub-ssr-noscript"><p>Live ticker: see GET /ai-market/v2/stats/live for invocations, peers and capabilities.</p></noscript>
 
-  <section class="knock-rail empty" id="knock-rail" aria-labelledby="knock-title">
+  <section class="knock-rail empty collapsed" id="knock-rail" aria-labelledby="knock-title">
     <div class="knock-rail-head">
-      <h2 id="knock-title" data-i18n="pending_title">Unapproved hubs</h2>
+      <button type="button" class="knock-toggle" id="knock-toggle" aria-expanded="false" aria-controls="knock-fold">
+        <span class="chev" aria-hidden="true">▸</span>
+        <h2 id="knock-title" data-i18n="pending_title">Unapproved hubs</h2>
+        <span class="knock-count" id="knock-count">0</span>
+      </button>
       <div class="meta" id="knock-meta"></div>
     </div>
-    <div id="knock-body"><div class="cat-empty" data-i18n="knock_empty">Nobody is knocking. New hubs appear here after they announce.</div></div>
+    <div class="knock-fold" id="knock-fold" hidden>
+      <label class="cat-find-wrap knock-find-wrap">
+        <input type="search" class="cat-find" id="knock-find" autocomplete="off" spellcheck="false"
+          data-i18n-placeholder="knock_find" placeholder="Search by name, address or what is missing…">
+      </label>
+      <div class="knock-found" id="knock-found" hidden></div>
+      <div id="knock-body"><div class="cat-empty" data-i18n="knock_empty">Nobody is knocking. New hubs appear here after they announce.</div></div>
+    </div>
   </section>
 
   <div class="cat-drawer" id="cat-drawer" hidden>
@@ -2338,6 +2371,32 @@
     document.getElementById('stat-caps').setAttribute('aria-expanded', open && catMode === 'caps' ? 'true' : 'false');
   }
 
+  // "What is missing" is open once the rail is unfolded; remember only the blocks the
+  // reader closed, so a language switch or a re-render does not reopen them.
+  const whyClosed = new Set();
+  document.addEventListener('toggle', (ev) => {
+    const el = ev.target;
+    if (!el || !el.matches || !el.matches('details[data-why-for]')) return;
+    const url = el.getAttribute('data-why-for');
+    if (el.open) whyClosed.delete(url); else whyClosed.add(url);
+  }, true);
+
+  function whyText(id) {
+    const key = 'why_' + String(id || '');
+    const s = t(key);
+    return s === key ? t('why_generic', { id: String(id || '') }) : s;
+  }
+
+  // A schema error repeats once per capability ("'input_schema' is a required
+  // property" twenty-eight times); say it once with a count.
+  function squashAssayDetail(detail) {
+    const parts = String(detail || '').split('; ').map(s => s.trim()).filter(Boolean);
+    const counts = new Map();
+    for (const part of parts) counts.set(part, (counts.get(part) || 0) + 1);
+    const out = [...counts].map(([s, n]) => n > 1 ? `${s} ×${n}` : s).join('; ');
+    return out.length > 300 ? out.slice(0, 299) + '…' : out;
+  }
+
   function knockItem(p) {
     const url = String(p.url || '');
     const seen = p.first_seen ? esc(String(p.first_seen).replace('T', ' ').replace(/Z$/, ' UTC')) : '—';
@@ -2353,7 +2412,21 @@
       : verdict === 'review' ? t('assay_review')
       : verdict === 'fail' ? t('assay_fail')
       : t('assay_none');
-    return `<div class="pending-item" data-pending-url="${esc(url)}">
+    // A bare FAIL told the peer's operator nothing they could fix. The hub names the
+    // checks that blocked (`assay_blockers`); each id is explained here in the reader's
+    // language, and the assay's own English words follow as evidence.
+    const blockers = Array.isArray(p.assay_blockers) ? p.assay_blockers : [];
+    const ranAt = p.assay_ran_at ? String(p.assay_ran_at).replace('T', ' ').replace(/Z$/, ' UTC') : '';
+    const whyTip = blockers.map(b => '• ' + whyText(b.id)).join('\n');
+    const why = blockers.length ? `<details class="assay-why" data-why-for="${esc(url)}"${whyClosed.has(url) ? '' : ' open'}>
+        <summary>${esc(t('why_title', { n: blockers.length }))}${ranAt ? ` <span class="ran">· ${esc(t('why_ran_at', { time: ranAt }))}</span>` : ''}</summary>
+        <ol>${blockers.map(b => {
+          const said = squashAssayDetail(b.detail);
+          return `<li><span class="why-id">${esc(b.id)}</span> ${esc(whyText(b.id))}${said
+            ? `<div class="why-said">${esc(t('why_said'))}: <code>${esc(said)}</code></div>` : ''}</li>`;
+        }).join('')}</ol>
+      </details>` : '';
+    return `<div class="pending-item" data-pending-url="${esc(url)}" data-search="${esc(knockSearchText(p))}">
       <div class="name">${esc(p.name || url)}</div>
       <div class="url">${esc(url)}</div>
       <div class="pending-meta">
@@ -2361,12 +2434,56 @@
         <span><b>${esc(t('pending_via'))}</b> ${esc(p.discoverer || '—')}</span>
         <span><b>${esc(t('pending_caps'))}</b> ${declared}</span>
         ${previewed ? `<span><b>${esc(t('pending_caps_read'))}</b> ${previewed}</span>` : ''}
-        <span class="assay-chip ${esc(verdict)}">${esc(assayLabel)}</span>
+        <span class="assay-chip ${esc(verdict)}"${whyTip ? ` title="${esc(whyTip)}"` : ''}>${esc(assayLabel)}</span>
       </div>
+      ${why}
       <div class="pending-note">${esc(t('pending_note'))}</div>
       <button class="pending-btn" data-preview-for="${esc(url)}">${esc(t('pending_show'))}</button>
       <div class="preview-list" data-preview-body="${esc(url)}" hidden></div>
     </div>`;
+  }
+
+  // Collapsed by default: two strangers' full assay reports are a lot of page for a
+  // reader who came for the market. The count stays in the header.
+  function setKnockOpen(open) {
+    const rail = document.getElementById('knock-rail');
+    const fold = document.getElementById('knock-fold');
+    const toggle = document.getElementById('knock-toggle');
+    if (!rail || !fold || !toggle) return;
+    rail.classList.toggle('collapsed', !open);
+    fold.hidden = !open;
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function applyKnockFilter() {
+    const input = document.getElementById('knock-find');
+    const found = document.getElementById('knock-found');
+    const q = String((input && input.value) || '').trim().toLowerCase();
+    const items = [...document.querySelectorAll('#knock-body .pending-item')];
+    let shown = 0;
+    for (const el of items) {
+      const hit = !q || q.split(/\s+/).every(w => (el.dataset.search || '').includes(w));
+      el.hidden = !hit;
+      if (hit) shown += 1;
+    }
+    if (found) {
+      found.hidden = !q;
+      found.textContent = q ? t('knock_found', { n: shown, total: items.length }) : '';
+    }
+  }
+
+  // Name, address, who brought it, the verdict, every blocking check id and its
+  // explanation in the current language, and the assay's own words — so "signer"
+  // or "input_schema" finds the hubs that are stuck on exactly that.
+  function knockSearchText(p) {
+    const blockers = Array.isArray(p.assay_blockers) ? p.assay_blockers : [];
+    const verdict = String(p.assay_verdict || '');
+    return [
+      p.name, p.url, p.discoverer, verdict,
+      verdict === 'pass' ? t('assay_pass') : verdict === 'review' ? t('assay_review')
+        : verdict === 'fail' ? t('assay_fail') : t('assay_none'),
+      ...blockers.flatMap(b => [b.id, whyText(b.id), b.detail]),
+    ].map(x => String(x || '')).join(' ').toLowerCase();
   }
 
   function renderKnockRail() {
@@ -2381,12 +2498,15 @@
     if (sub) sub.textContent = n ? t('s_knock_n', { n }) : t('s_knock_none');
     if (tile) tile.classList.toggle('has-knocks', n > 0);
     rail.classList.toggle('empty', n === 0);
+    const count = document.getElementById('knock-count');
+    if (count) count.textContent = String(n);
     meta.innerHTML = n
       ? esc(t('pending_meta', { n })) + ' · <a href="/operator">' + esc(t('knock_operator')) + '</a>'
       : '<a href="/operator">' + esc(t('knock_operator')) + '</a>';
     body.innerHTML = n
       ? pendingCache.map(knockItem).join('')
       : `<div class="cat-empty">${esc(t('knock_empty'))}</div>`;
+    applyKnockFilter();
   }
 
   // Delegated so it survives every re-render of the knock rail.
@@ -2616,8 +2736,13 @@
   document.getElementById('stat-hubs').addEventListener('click', () => openCatalogue('peers'));
   document.getElementById('stat-caps').addEventListener('click', () => openCatalogue('caps'));
   document.getElementById('stat-knock').addEventListener('click', () => {
+    setKnockOpen(true);
     document.getElementById('knock-rail').scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
+  document.getElementById('knock-toggle').addEventListener('click', () => {
+    setKnockOpen(document.getElementById('knock-fold').hidden);
+  });
+  document.getElementById('knock-find').addEventListener('input', applyKnockFilter);
   ['stat-hubs', 'stat-caps'].forEach(id => {
     document.getElementById(id).addEventListener('keydown', ev => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openCatalogue(id === 'stat-hubs' ? 'peers' : 'caps'); }
@@ -2626,6 +2751,7 @@
   document.getElementById('stat-knock').addEventListener('keydown', ev => {
     if (ev.key === 'Enter' || ev.key === ' ') {
       ev.preventDefault();
+      setKnockOpen(true);
       document.getElementById('knock-rail').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   });

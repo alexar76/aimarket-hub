@@ -205,6 +205,61 @@ def score_verdict(checks: list[dict[str, Any]]) -> str:
     return "review"
 
 
+def assay_blockers(dossier: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The checks that keep a verdict from ``pass``, in the order they decided it.
+
+    The public landing page painted FAIL and nothing else, so a peer operator reading it
+    could not tell a missing ``signer_public_key`` from an unreachable well-known. This is
+    ``score_verdict`` read backwards: the same rules, returning what blocked instead of a
+    word. A check that never ran because an earlier one failed is not listed — it is a
+    consequence, and the earlier row already names the cause.
+    """
+    if not isinstance(dossier, dict) or dossier.get("verdict") not in ("fail", "review"):
+        return []
+    checks = [c for c in (dossier.get("checks") or []) if isinstance(c, dict)]
+    by = {str(c.get("id") or ""): c for c in checks}
+    out: list[dict[str, Any]] = []
+
+    def put(check_id: str) -> None:
+        if any(b["id"] == check_id for b in out):
+            return
+        out.append({"id": check_id, "detail": str(by[check_id].get("detail") or "")[:400]})
+
+    mismatch = by.get("sandbox_key_mismatch")
+    if mismatch is not None and mismatch.get("ok") is False:
+        put("sandbox_key_mismatch")
+    for hid in HARD_CHECKS:
+        item = by.get(hid)
+        if item is not None and item.get("ok") is not True:
+            put(hid)
+    receipt = by.get("sandbox_receipt_signed")
+    probe = by.get("sandbox_probe")
+    challenge = by.get("sandbox_payment_challenge") or probe
+    price_check = by.get("sandbox_price_matches")
+    has_receipt = receipt is not None and receipt.get("ok") is True
+    has_challenge = bool(
+        price_check is not None and price_check.get("ok") is True
+        and challenge is not None and challenge.get("ok") is True
+    )
+    if has_receipt or has_challenge:
+        for gate in ("sandbox_analysis", "sandbox_judge", "sandbox_price_matches",
+                     "sandbox_price_enforced"):
+            item = by.get(gate)
+            if item is not None and item.get("ok") is False:
+                put(gate)
+    elif probe is not None:
+        # No evidence of either kind. Name the step where the probe stopped.
+        if probe.get("ok") is not True:
+            put("sandbox_probe")
+        elif receipt is not None and receipt.get("ok") is False:
+            put("sandbox_receipt_signed")
+        elif price_check is not None:
+            put("sandbox_price_matches")
+        elif receipt is not None:
+            put("sandbox_receipt_signed")
+    return out
+
+
 def _add(checks: list[dict[str, Any]], check_id: str, ok: bool | None, detail: str = "") -> None:
     checks.append({
         "id": check_id,

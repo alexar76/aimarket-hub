@@ -224,7 +224,8 @@ def test_the_knock_rail_strings_exist_in_every_pack():
     packs = json.loads(
         (Path(__file__).parents[1] / "hub-ui-i18n.json").read_text(encoding="utf-8")
     )["ui"]
-    needed = {"pending_caps", "pending_caps_read", "pending_show", "pending_note"}
+    needed = {"pending_caps", "pending_caps_read", "pending_show", "pending_note",
+              "knock_find", "knock_found"}
     for lang, pack in packs.items():
         assert needed <= set(pack), lang
         assert all(str(pack[k]).strip() for k in needed), lang
