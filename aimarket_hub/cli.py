@@ -191,8 +191,20 @@ def main(argv: list[str] | None = None) -> int:
     trust_p = sub.add_parser("trust", help="Show trust score")
     trust_p.add_argument("hub_url", help="Hub URL")
 
+    mcp_p = sub.add_parser("mcp", help="Run the local hub's MCP tools over stdio (no HTTP listener)")
+    mcp_p.add_argument("--init", action="store_true", help="Initialize a fresh dev hub, as serve --init does")
+
     args = parser.parse_args(argv)
 
+    if args.command == "mcp":
+        from contextlib import redirect_stdout
+
+        # Preserve the protocol stream before redirecting startup/plugin prints.
+        output = sys.stdout
+        with redirect_stdout(sys.stderr):
+            if args.init:
+                _init_if_new()
+            return _cmd_serve(stdio_output=output)
     if args.command == "quickstart":
         return _cmd_quickstart(args)
     if args.command == "add":
@@ -302,7 +314,7 @@ def _init_if_new() -> None:
     ))
 
 
-def _cmd_serve() -> int:
+def _cmd_serve(*, stdio_output=None) -> int:
     import os
 
     import uvicorn
@@ -385,6 +397,15 @@ def _cmd_serve() -> int:
     proxy_kwargs = uvicorn_proxy_kwargs(
         os.environ.get("AIMARKET_TRUSTED_PROXIES", ""), production=prod
     )
+
+    if stdio_output is not None:
+        from aimarket_hub.mcp_stdio import run
+
+        try:
+            asyncio.run(run(app, output=stdio_output))
+        finally:
+            db.close()
+        return 0
 
     bind_host = os.environ.get("AIMARKET_BIND_HOST", "0.0.0.0").strip() or "0.0.0.0"
     print(f"{GREEN}Hub API starting on http://{bind_host}:9083{RESET}")

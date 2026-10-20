@@ -275,6 +275,11 @@ aimarket serve
 ```
 
 Taking money from the first day: [Running this hub for yourself](https://github.com/alexar76/aimarket-hub/blob/main/docs/operator-quickstart.md)
+
+For a local MCP client or Glama, use `python -m aimarket_hub mcp --init`.
+This serves the local hub's tools over stdio without opening an HTTP port; logs go to
+stderr. The usual hub settings apply. See [Glama build settings](docs/GLAMA.md) for the
+exact build and launch commands.
 (`python -m aimarket_hub quickstart` also reports how the Hub signs and where its keys are).
 
 Verify discovery and search:

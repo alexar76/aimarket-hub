@@ -1,9 +1,17 @@
 {
   "$schema": "https://glama.ai/mcp/schemas/server.json",
-  "maintainers": ["alexar76"],
+  "maintainers": [
+    "alexar76"
+  ],
   "name": "aimarket-hub",
   "description": "AI Market Federation Hub — crawl, index, search, and route AI capabilities across the network.",
   "repository": "https://github.com/alexar76/aimarket-hub",
   "dockerfile": "Dockerfile.standalone",
-  "command": [".venv/bin/python", "-m", "aimarket_hub", "serve", "--init"]
+  "command": [
+    ".venv/bin/python",
+    "-m",
+    "aimarket_hub",
+    "mcp",
+    "--init"
+  ]
 }

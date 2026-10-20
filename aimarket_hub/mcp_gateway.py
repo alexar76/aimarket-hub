@@ -1219,6 +1219,8 @@ def attach_mcp_routes(
     start_url = f"{(hub_url or '').rstrip('/')}/start"
 
     def _internal_base(request: Request) -> str:
+        if getattr(request.app.state, "mcp_stdio", False):
+            return "http://127.0.0.1"
         # Loopback, not hub_url: hub_url is the PUBLIC address, so posting there sends the
         # request out of the container and back in through nginx — a pointless round trip
         # that also destroys the forwarded caller.
@@ -1230,10 +1232,17 @@ def attach_mcp_routes(
         port = server[1] if len(server) >= 2 and server[1] else 9083
         return os.environ.get("AIMARKET_INTERNAL_BASE", f"http://127.0.0.1:{port}").rstrip("/")
 
-    async def _account(request: Request) -> tuple[str, bool]:
-        """The key's own account, read through the hub's HTTP route like every other call."""
+    def _internal_client(request: Request, timeout: float):
         import httpx
 
+        # The stdio process hosts this same app in memory, without a listening socket.
+        # Keep invokes/account reads on its own payment and validation routes.
+        if getattr(request.app.state, "mcp_stdio", False):
+            return httpx.AsyncClient(transport=httpx.ASGITransport(app=request.app), timeout=timeout)
+        return httpx.AsyncClient(timeout=timeout)
+
+    async def _account(request: Request) -> tuple[str, bool]:
+        """The key's own account, read through the hub's HTTP route like every other call."""
         api_key = api_key_of(request)
         if not api_key:
             raise ValueError("this connection carries no API key (X-API-Key header)")
@@ -1241,7 +1250,7 @@ def attach_mcp_routes(
         caller = _caller(request)
         if caller:
             headers["X-Forwarded-For"] = caller
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with _internal_client(request, 15.0) as client:
             resp = await client.get(f"{_internal_base(request)}/ai-market/v2/account", headers=headers)
         payload = _decode(resp)
         signup = _own_signup_open()
@@ -1270,8 +1279,6 @@ def attach_mcp_routes(
     async def _invoke(arguments: dict[str, Any], request: Request,
                       invoke_args: dict[str, Any] | None = None) -> tuple[str, bool]:
         # Delegate to the hub's own HTTP invoke so payment/security paths stay single-sourced.
-        import httpx
-
         product_id = str(arguments.get("product_id") or "").strip()
         capability_id = str(arguments.get("capability_id") or "").strip()
         if not product_id or not capability_id:
@@ -1363,7 +1370,7 @@ def attach_mcp_routes(
 
         url = f"{_internal_base(request)}/ai-market/v2/invoke"
         keyed: dict[str, Any] | None = None
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with _internal_client(request, 60.0) as client:
             resp = None
             if api_key:
                 # A key is a customer: the balance pays first. The visitor header stays off
