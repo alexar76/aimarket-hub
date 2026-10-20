@@ -92,6 +92,13 @@ class InvokeFunding:
             logger.error("subcontract: could not read child receipts of %s: %s", self.job.node, exc)
             return []
 
+    def precise_status(self) -> int:
+        """The HTTP status of that refusal: 402 for a limit, but e.g. 429 for a full approval
+        queue (mandates.md §7)."""
+        if self.admission is not None and self.admission.last_refusal is not None:
+            return int(self.admission.last_refusal.status)
+        return 402
+
     def precise_refusal(self) -> dict[str, Any] | None:
         """The §7 refusal a proxy produced, which the handler reported as a bare 402."""
         if self.admission is not None and self.admission.last_refusal is not None:
@@ -111,13 +118,15 @@ async def prepare(
     store: mandates.MandateStore,
     jobs: subcontract.JobStore,
     resolve_product: Callable[[str, str], str] | None = None,
+    routing_fee_bps: int = 0,
 ) -> InvokeFunding | JSONResponse:
     """Everything that must be decided before the handler reserves a cent.
 
     ``resolve_product`` maps the request's (product_id, capability_id) to the product the hub
     will really execute. The handler falls back to a lookup by capability id alone, so a
     request's own product_id is whatever the caller typed — a per-product limit keyed on it
-    could be dodged by sending a fresh product_id on every call.
+    could be dodged by sending a fresh product_id on every call. ``routing_fee_bps`` is the
+    hub's fee on a routed call, which an owner approval (mandates.md §5.6) has to cover.
     """
     headers = request.headers
     digest = (headers.get(mandates.MANDATE_HEADER) or "").strip()
@@ -172,6 +181,7 @@ async def prepare(
                 store, digest=digest, proof_header=proof, method=request.method,
                 path=mandates.signed_path(request), body=raw_body, capability_id=body.capability_id,
                 product_id=product_id, api_key_account=api_account, other_rail=other_rail,
+                source_hub=body.source_hub or "local", routing_fee_bps=routing_fee_bps,
             )
         elif api_account and not grant and store.account_requires_mandate(api_account):
             raise MandateError(
@@ -526,7 +536,7 @@ def finish(funding: InvokeFunding, result: Any, *, credits_ledger: Any,
     if status == 402:
         refusal = funding.precise_refusal()
         if refusal is not None:
-            return _with_body(result, 402, refusal)
+            return _with_body(result, funding.precise_status(), refusal)
     if job is not None and job.is_root:
         tree = None
         try:

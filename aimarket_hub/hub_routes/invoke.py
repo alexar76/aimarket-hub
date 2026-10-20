@@ -290,7 +290,7 @@ def register(
 
         funding = await invoke_funding.prepare(
             request=request, body=body, credits_ledger=ledger, store=hub_mandates, jobs=hub_jobs,
-            resolve_product=_resolve_product,
+            resolve_product=_resolve_product, routing_fee_bps=config.routing_fee_bps,
         )
         if isinstance(funding, JSONResponse):
             return funding

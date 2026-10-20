@@ -17,7 +17,7 @@ name = "aimarket-hub"
 #        verifier, and the mandates/subcontracting audit fixes (migrations 036-038).
 # 3.8.0: credit accounts bought with USDC (topup.py, migration 041) and a failed A2A Task that
 #        keeps the bill of materials its subcontractors were paid for.
-version = "3.15.28"
+version = "3.16.0"
 description = "AI Market Federation Hub — crawl, index, search, and route AI capabilities across the network"
 license = "Apache-2.0"
 readme = "README.md"

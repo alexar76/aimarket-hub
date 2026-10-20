@@ -4,6 +4,8 @@
 >
 > Код: [`topup.py`](../aimarket_hub/topup.py) · [`credits.py`](../aimarket_hub/credits.py) (`deposit`) · [`settle.py`](../aimarket_hub/settle.py) (`verify_transfer`) · [`channels.py`](../aimarket_hub/channels.py) (`claim_deposit_as`) · SDK [`aimarket_agent/topup.py`](https://github.com/alexar76/aimarket-agent/blob/main/aimarket_agent/topup.py)
 
+Нет кошелька? Те же кредиты человек может купить картой: [card-topup.ru.md](card-topup.ru.md).
+
 Всему, что работает на кредитном рельсе (credits rail) хаба, — [субподряду](subcontracting.ru.md) с
 бюджетом субподряда, [мандатам](mandates.ru.md), платным вызовам (invoke) через REST или [A2A](a2a.md)
 с `X-API-Key`, — нужен кредит на аккаунте. Агент, который не принадлежит оператору, мог открыть

@@ -36,12 +36,15 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import re
+import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 from aimarket_hub.db_backend import returning, returning_one
+from aimarket_hub.paging import page_limit
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +77,22 @@ REQUEST_DOMAIN = "aimarket-mandate-request/1"
 OWNER_LINK_DOMAIN = "aimarket-owner-link/1"
 OWNER_CHANGE_DOMAIN = "aimarket-owner-change/1"
 REVOKE_DOMAIN = "aimarket-mandate-revoke/1"
+APPROVAL_DOMAIN = "aimarket-mandate-approval/1"
 
-LIMIT_FIELDS = ("perCall", "perDay", "total", "perProductPerDay")
+# `approvalAbove` is a limit like the others for delegation (§3.4): a child keeps it and may
+# only lower it. It does not move a counter; it stops one call until an owner signs it (§5.6).
+LIMIT_FIELDS = ("perCall", "perDay", "total", "perProductPerDay", "approvalAbove")
 REQUIRED_LIMITS = ("perCall", "perDay")
+
+APPROVAL_PENDING, APPROVAL_APPROVED, APPROVAL_DENIED = "pending", "approved", "denied"
+APPROVAL_USED, APPROVAL_EXPIRED = "used", "expired"
+#: Open requests one leaf mandate may have at once. An agent stuck in a loop must not be able
+#: to bury its owner in approvals; past this it is refused until the owner answers some.
+MAX_PENDING_APPROVALS = 16
+#: Approval requests one account read may return.
+APPROVALS_PAGE_MAX = 200
+#: Rows read before a status filter is applied (the status a reader sees depends on the clock).
+APPROVALS_SCAN_MAX = 500
 
 _RFC3339_Z = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _URN_UUID = re.compile(
@@ -88,6 +104,7 @@ _ORIGIN = re.compile(r"^https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[A-Za-z0-9._~-]+)*$"
 _PATTERN = re.compile(r"^(\*|[A-Za-z0-9_.@-]+(\.\*)?)$")
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 _SRI = re.compile(r"^sha256-[A-Za-z0-9+/]{43}=$")
+_APPROVAL_ID = re.compile(r"^apr_[0-9a-f]{24}$")
 
 
 class MandateError(Exception):
@@ -199,6 +216,76 @@ def pattern_covers(parent: str, child: str) -> bool:
 
 def scope_allows(scope: Iterable[str], capability_id: str) -> bool:
     return any(pattern_matches(p, capability_id) for p in scope)
+
+
+def approval_threshold(chain: Iterable["Mandate"]) -> int | None:
+    """The strictest ``approvalAbove`` in a chain (µUSD), or None when no link sets one.
+
+    Every link is read, not only the leaf: a parent's threshold binds its children whether
+    or not a child repeats it (check_link makes a registered child keep it, but the hub
+    should not need that rule to be right about money)."""
+    found = [m.limits["approvalAbove"] for m in chain if "approvalAbove" in m.limits]
+    return min(found) if found else None
+
+
+def approval_ttl_s() -> int:
+    """How long an approval request waits for the owner, and an approved one for the agent."""
+    try:
+        value = int(os.getenv("AIMARKET_MANDATE_APPROVAL_TTL_S", "") or 86_400)
+    except ValueError:
+        value = 86_400
+    return max(300, min(value, 7 * 86_400))
+
+
+def new_approval_id() -> str:
+    return f"apr_{secrets.token_hex(12)}"
+
+
+def is_approval_id(value: Any) -> bool:
+    return isinstance(value, str) and bool(_APPROVAL_ID.match(value))
+
+
+def approval_status(row: dict[str, Any], now: float) -> str:
+    """The status a reader sees: an open request past its expiry is expired, whether or not
+    a sweep has written that yet."""
+    status = str(row.get("status") or "")
+    if status in (APPROVAL_PENDING, APPROVAL_APPROVED) and float(row.get("expires_at") or 0) <= now:
+        return APPROVAL_EXPIRED
+    return status
+
+
+def _iso(ts: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts)) if ts else ""
+
+
+def approval_public(row: dict[str, Any], now: float | None = None, *, base_url: str = "") -> dict[str, Any]:
+    """An approval request as the agent and the owner see it, with what an owner signs.
+
+    The funding account is not in it: the id is a bearer capability the agent hands on, and
+    whoever it reaches learns the call and its price, not whose money pays for it."""
+    now = time.time() if now is None else now
+    out: dict[str, Any] = {
+        "approval_id": row["approval_id"],
+        "status": approval_status(row, now),
+        "mandate": row["leaf_digest"],
+        "agent": row["agent"],
+        "capability_id": row["capability_id"],
+        "product_id": row["product_id"],
+        "source_hub": row["source_hub"],
+        "body_sha256": row["body_sha256"],
+        "amount_usd": micro_to_usd(int(row["amount_micro"])),
+        "max_usd": micro_to_usd(int(row["max_micro"])),
+        "max_micro": int(row["max_micro"]),
+        "threshold_usd": micro_to_usd(int(row["threshold_micro"])),
+        "created_at": _iso(float(row["created_at"])),
+        "expires_at": _iso(float(row["expires_at"])),
+    }
+    if row.get("decided_at"):
+        out["decided_at"] = _iso(float(row["decided_at"]))
+        out["decided_by"] = row.get("decided_by") or ""
+    if base_url:
+        out["url"] = f"{normalize_origin(base_url)}/ai-market/v2/mandates/approvals/{row['approval_id']}"
+    return out
 
 
 # ── the document ──────────────────────────────────────────────────────────
@@ -424,6 +511,15 @@ def revoke_message(*, hub_origin: str, digest: str, t: int, nonce: str) -> bytes
                       str(int(t)), nonce]).encode("utf-8")
 
 
+def approval_message(*, hub_origin: str, approval_id: str, decision: str, digest: str,
+                     body_sha256: str, max_micro: int, t: int, nonce: str) -> bytes:
+    """What an owner signs to answer an approval request (§5.6). It names the exact request
+    bytes and the ceiling, so an approval cannot be carried over to another call or a
+    higher amount, and the decision, so a signed "deny" cannot be replayed as "approve"."""
+    return "\n".join([APPROVAL_DOMAIN, normalize_origin(hub_origin), approval_id, decision, digest,
+                      body_sha256, str(int(max_micro)), str(int(t)), nonce]).encode("utf-8")
+
+
 def signed_path(request: Any) -> str:
     """The request path a proof signs (§5.1): relative to the hub's base URL — a mount prefix
     the ASGI server reports as root_path is excluded — percent-decoded, no query string."""
@@ -474,6 +570,9 @@ class MandateStore:
         # entry can never go stale. Revocation and expiry live in the row, which chain()
         # reads every time.
         self._parsed: dict[str, Mandate] = {}
+        # Called with an approval's public form once an owner has answered it (§5.6). The A2A
+        # facade listens, to move the task that waits on it and tell its push subscribers.
+        self.decision_listeners: list[Any] = []
 
     # registration and lookup ------------------------------------------------
 
@@ -733,6 +832,222 @@ class MandateStore:
         self._conn.commit()
         return {"digest": digest, "status": "revoked", "revoked_at": (self.row(digest) or {}).get("revoked_at")}
 
+    # owner approvals (§5.6) -------------------------------------------------
+
+    _APPROVAL_COLUMNS = (
+        "approval_id, account_id, leaf_digest, agent, capability_id, product_id, source_hub, "
+        "body_sha256, amount_micro, max_micro, threshold_micro, status, receipt_id, decided_by, "
+        "created_at, decided_at, expires_at"
+    )
+
+    def approval(self, approval_id: str) -> dict[str, Any] | None:
+        if not is_approval_id(approval_id):
+            return None
+        row = self._conn.execute(
+            f"SELECT {self._APPROVAL_COLUMNS} FROM mandate_approvals WHERE approval_id = ?", (approval_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def approvals_for(self, account_id: str, *, status: str = "", limit: int = 50,
+                      now: float | None = None) -> list[dict[str, Any]]:
+        """An account's approval requests, newest first. ``status`` filters on the status a
+        reader sees, so an expired request is not listed as pending."""
+        now = time.time() if now is None else now
+        rows = self._conn.execute(
+            f"SELECT {self._APPROVAL_COLUMNS} FROM mandate_approvals WHERE account_id = ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (account_id, page_limit(limit, maximum=APPROVALS_PAGE_MAX) if not status else APPROVALS_SCAN_MAX),
+        ).fetchall()
+        out = [dict(r) for r in rows]
+        if status:
+            out = [r for r in out if approval_status(r, now) == status][:page_limit(limit, maximum=APPROVALS_PAGE_MAX)]
+        return out
+
+    def usable_approval(self, *, leaf_digest: str, body_sha256: str, need_micro: int,
+                        now: float | None = None) -> dict[str, Any] | None:
+        """An approved, unused, unexpired answer for exactly this request that covers
+        ``need_micro``."""
+        now = time.time() if now is None else now
+        row = self._conn.execute(
+            f"SELECT {self._APPROVAL_COLUMNS} FROM mandate_approvals WHERE leaf_digest = ? AND body_sha256 = ? "
+            "AND status = ? AND expires_at > ? AND max_micro >= ? ORDER BY created_at LIMIT 1",
+            (leaf_digest, body_sha256, APPROVAL_APPROVED, now, int(need_micro)),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def denied_approval(self, *, leaf_digest: str, body_sha256: str,
+                        now: float | None = None) -> dict[str, Any] | None:
+        """An owner's unexpired "no" to exactly this request. It stands until it expires: a
+        retry is the same call, and asking the owner again would turn a refusal into a nag."""
+        now = time.time() if now is None else now
+        row = self._conn.execute(
+            f"SELECT {self._APPROVAL_COLUMNS} FROM mandate_approvals WHERE leaf_digest = ? AND body_sha256 = ? "
+            "AND status = ? AND expires_at > ? ORDER BY decided_at DESC LIMIT 1",
+            (leaf_digest, body_sha256, APPROVAL_DENIED, now),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def claim_approval(self, approval_id: str, *, receipt_id: str, need_micro: int,
+                       now: float | None = None) -> bool:
+        """Use an approval for one hold: one conditional statement, so two concurrent copies
+        of an approved call cannot both spend on one signature."""
+        now = time.time() if now is None else now
+        won = returning_one(
+            self._conn,
+            "UPDATE mandate_approvals SET status = ?, receipt_id = ? WHERE approval_id = ? AND status = ? "
+            "AND expires_at > ? AND max_micro >= ? RETURNING approval_id",
+            (APPROVAL_USED, receipt_id, approval_id, APPROVAL_APPROVED, now, int(need_micro)),
+            commit=True,
+        )
+        return won is not None
+
+    def unclaim_approval(self, receipt_id: str) -> None:
+        """The hold that used an approval was released: the call did not happen, so the
+        owner's answer stands for an identical retry (until it expires)."""
+        if not receipt_id:
+            return
+        self._conn.execute(
+            "UPDATE mandate_approvals SET status = ?, receipt_id = '' WHERE receipt_id = ? AND status = ?",
+            (APPROVAL_APPROVED, receipt_id, APPROVAL_USED),
+        )
+        self._conn.commit()
+
+    def request_approval(self, admission: "Admission", *, amount_micro: int, max_micro: int,
+                         threshold_micro: int, now: float | None = None) -> dict[str, Any]:
+        """The pending request for this exact call, opened if there is none (§5.6).
+
+        A retry of the same call before the owner answered gets the same request, not a new
+        one. A request whose call has grown since (a routing fee the first estimate did not
+        cover) has its ceiling raised: the owner has not signed it yet, and a signature over
+        the old ceiling no longer verifies, so nothing is approved that the owner did not see.
+        """
+        now = time.time() if now is None else now
+        leaf = admission.leaf
+        sha = admission.body_sha256
+        # Expired requests leave the pending index, so the call can be asked about again.
+        self._conn.execute(
+            "UPDATE mandate_approvals SET status = ? WHERE leaf_digest = ? AND status IN (?, ?) AND expires_at <= ?",
+            (APPROVAL_EXPIRED, leaf.digest, APPROVAL_PENDING, APPROVAL_APPROVED, now),
+        )
+        self._conn.commit()
+
+        def pending() -> dict[str, Any] | None:
+            row = self._conn.execute(
+                f"SELECT {self._APPROVAL_COLUMNS} FROM mandate_approvals WHERE leaf_digest = ? "
+                "AND body_sha256 = ? AND status = ?",
+                (leaf.digest, sha, APPROVAL_PENDING),
+            ).fetchone()
+            return dict(row) if row else None
+
+        existing = pending()
+        if existing is None:
+            open_count = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM mandate_approvals WHERE leaf_digest = ? AND status = ?",
+                (leaf.digest, APPROVAL_PENDING),
+            ).fetchone()
+            if int((dict(open_count) if open_count else {}).get("n") or 0) >= MAX_PENDING_APPROVALS:
+                raise MandateError(
+                    429, "approval_queue_full",
+                    f"mandate {leaf.digest} already has {MAX_PENDING_APPROVALS} calls waiting for its owner; "
+                    "the owner must answer some before more can be asked",
+                    mandate=leaf.digest,
+                )
+            approval_id = new_approval_id()
+            returning_one(
+                self._conn,
+                "INSERT INTO mandate_approvals (approval_id, account_id, leaf_digest, agent, capability_id, "
+                "product_id, source_hub, body_sha256, amount_micro, max_micro, threshold_micro, status, "
+                "created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT DO NOTHING RETURNING approval_id",
+                (approval_id, admission.account_id, leaf.digest, leaf.subject, admission.capability_id,
+                 admission.product_id, admission.source_hub or "local", sha, int(amount_micro), int(max_micro),
+                 int(threshold_micro), APPROVAL_PENDING, now, now + approval_ttl_s()),
+                commit=True,
+            )
+            existing = pending()
+            if existing is None:  # pragma: no cover - answered and closed between two statements
+                raise MandateError(409, "approval_required", "the approval request changed; retry the call")
+        elif int(existing["max_micro"]) < int(max_micro):
+            self._conn.execute(
+                "UPDATE mandate_approvals SET amount_micro = ?, max_micro = ? WHERE approval_id = ? AND status = ?",
+                (int(amount_micro), int(max_micro), existing["approval_id"], APPROVAL_PENDING),
+            )
+            self._conn.commit()
+            existing = self.approval(existing["approval_id"]) or existing
+        return existing
+
+    def decide_approval(self, approval_id: str, *, decision: str, by: str = "", proof: Any = None,
+                        account_id: str = "", now: float | None = None) -> dict[str, Any]:
+        """An owner's answer (§5.6).
+
+        Approving moves money, so it needs the signature of an owner DID linked to the
+        funding account — the API key is what leaks, and an agent that held it could
+        otherwise approve itself. Denying moves nothing: the account's API key may do it, as
+        it may revoke a mandate (§5.5).
+        """
+        now = time.time() if now is None else now
+        if decision not in ("approve", "deny"):
+            raise MandateError(400, "mandate_malformed", "decision must be approve or deny")
+        row = self.approval(approval_id)
+        if row is None:
+            raise MandateError(404, "approval_unknown", "no such approval request")
+        target = APPROVAL_APPROVED if decision == "approve" else APPROVAL_DENIED
+        current = approval_status(row, now)
+        if current == target or (current == APPROVAL_USED and target == APPROVAL_APPROVED):
+            return {**approval_public(row, now), "unchanged": True}
+        if current != APPROVAL_PENDING:
+            raise MandateError(409, "approval_closed", f"this request is already {current}")
+        if account_id and not (isinstance(proof, dict) and proof.get("s")):
+            if row["account_id"] != account_id:
+                raise MandateError(403, "owner_authorization_required", "this account does not fund that mandate")
+            if decision == "approve":
+                raise MandateError(
+                    403, "owner_authorization_required",
+                    "approving spends the account's money: sign it with an owner key "
+                    "({decision, by, t, n, s}); the API key alone may only deny",
+                )
+            by = f"account:{account_id}"
+        else:
+            owners = {o["did"] for o in self.owners_of(row["account_id"])}
+            if by not in owners:
+                raise MandateError(403, "owner_authorization_required",
+                                   "by is not an owner of the account that funds this mandate")
+            t, nonce, sig = self._signed_fields(proof)
+            self._check_freshness(t, now)
+            message = approval_message(hub_origin=self.hub_origin, approval_id=approval_id, decision=decision,
+                                       digest=row["leaf_digest"], body_sha256=row["body_sha256"],
+                                       max_micro=int(row["max_micro"]), t=t, nonce=nonce)
+            if not verify_did_signature(by, message, sig):
+                raise MandateError(401, "mandate_proof_invalid",
+                                   "the approval signature does not verify (it signs the request's current max_micro)")
+            self._consume_nonce(by, nonce, now)
+        won = returning_one(
+            self._conn,
+            "UPDATE mandate_approvals SET status = ?, decided_by = ?, decided_at = ? "
+            "WHERE approval_id = ? AND status = ? AND expires_at > ? AND max_micro = ? RETURNING approval_id",
+            (target, by[:200], now, approval_id, APPROVAL_PENDING, now, int(row["max_micro"])),
+            commit=True,
+        )
+        latest = self.approval(approval_id) or row
+        if won is None:
+            # Answered by someone else meanwhile, expired, or its ceiling was raised after the
+            # owner read it — in which case the signature was over a figure that is gone.
+            state = approval_status(latest, now)
+            if state == target:
+                return {**approval_public(latest, now), "unchanged": True}
+            if state == APPROVAL_PENDING:
+                raise MandateError(409, "approval_changed",
+                                   "the call's ceiling was raised after you read it; read the request and sign again")
+            raise MandateError(409, "approval_closed", f"this request is already {state}")
+        return approval_public(latest, now)
+
+    def notify_decision(self, approval: dict[str, Any]) -> None:
+        for listener in list(self.decision_listeners):
+            try:
+                listener(approval)
+            except Exception as exc:  # noqa: BLE001 - the answer is recorded; telling is best effort
+                logger.error("mandates: approval listener failed for %s: %s", approval.get("approval_id"), exc)
+
     def _issuers_up_from(self, digest: str) -> set[str]:
         issuers: set[str] = set()
         cursor = digest
@@ -855,6 +1170,12 @@ class MandateStore:
         if "total" in mandate.limits:
             out["total_usd"] = micro_to_usd(mandate.limits["total"])
             out["remaining_total_usd"] = micro_to_usd(max(0, mandate.limits["total"] - spent_total))
+        try:
+            threshold = approval_threshold(self.chain(digest, now=now))
+        except MandateError:
+            threshold = approval_threshold([mandate])
+        if threshold is not None:
+            out["approval_above_usd"] = micro_to_usd(threshold)
         return out
 
     def _counter(self, digest: str, period: str) -> int:
@@ -1021,6 +1342,10 @@ class MandateStore:
                         (give_back, row["digest"], period),
                     )
         self._conn.commit()
+        if rows and keep_micro <= 0:
+            # Only a hold THIS settle released: a hold that was captured keeps its approval
+            # spent, whatever a late release says.
+            self.unclaim_approval(receipt_id)
 
     def give_back(self, receipt_id: str, amount_micro: int) -> None:
         """Return part of an already SETTLED hold to its counters.
@@ -1079,6 +1404,14 @@ class Admission:
     # The last refusal the ledger proxy produced. The invoke path turns any failed hold into
     # a generic 402; the route puts the precise mandates.md §7 refusal back (see api.py).
     last_refusal: MandateError | None = None
+    # What an owner approval (§5.6) is about: the capability, where it runs, and the exact
+    # request bytes the agent's proof signed (lowercase hex SHA-256).
+    capability_id: str = ""
+    source_hub: str = "local"
+    body_sha256: str = ""
+    # The hub's routing fee, so an approval asked for a routed call's price also covers the
+    # fee the hub reserves right after it (§5.3 counts both against one call).
+    routing_fee_bps: int = 0
 
     @property
     def leaf(self) -> Mandate:
@@ -1102,7 +1435,8 @@ class Admission:
 
 def admit(store: MandateStore, *, digest: str, proof_header: str, method: str, path: str,
           body: bytes, capability_id: str, product_id: str, api_key_account: str = "",
-          other_rail: bool = False, now: float | None = None) -> Admission:
+          other_rail: bool = False, source_hub: str = "local", routing_fee_bps: int = 0,
+          now: float | None = None) -> Admission:
     """§5.2: everything a mandated invoke must pass before any money is reserved."""
     now = time.time() if now is None else now
     digest = (digest or "").strip()
@@ -1134,7 +1468,10 @@ def admit(store: MandateStore, *, digest: str, proof_header: str, method: str, p
             403, "mandate_invalid",
             "X-API-Key names a different account from the one this mandate spends from",
         )
-    return Admission(chain=chain, account_id=account_id, product_id=product_id, store=store)
+    return Admission(chain=chain, account_id=account_id, product_id=product_id, store=store,
+                     capability_id=capability_id, source_hub=(source_hub or "local"),
+                     body_sha256=hashlib.sha256(body or b"").hexdigest(),
+                     routing_fee_bps=max(0, int(routing_fee_bps)))
 
 
 # ── the per-request ledger proxy ──────────────────────────────────────────
@@ -1152,6 +1489,8 @@ class MandatedCredits:
         self._admission = admission
         # What this CALL has reserved so far, for perCall (a price hold, then a fee hold).
         self._call_micro = 0
+        # The ceiling of the owner approval this call has used, once it has used one (§5.6).
+        self._approved_max: int | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -1164,26 +1503,95 @@ class MandatedCredits:
 
         return usd_to_mc(amount_usd) * 10
 
+    def _ceiling(self, total_micro: int) -> int:
+        """What an owner is asked to approve for a call that has reserved ``total_micro``.
+
+        A routed call reserves its price and then the hub's routing fee (§5.3); the request
+        is opened at the first of the two, so its ceiling adds the fee — or the second hold
+        would need a second approval for the same call. The fee is a share of the price the
+        hub published, which can differ from what the peer charges, so the estimate gets one
+        more millicent and, should it still fall short, the larger figure is asked for."""
+        if self._admission.source_hub in ("", "local") or self._admission.routing_fee_bps <= 0:
+            return total_micro
+        fee = -(-total_micro * self._admission.routing_fee_bps // 10_000)
+        fee = -(-fee // 10) * 10 + 10
+        return total_micro + fee
+
+    def _needs_approval(self, total_micro: int) -> str | None:
+        """For a per-call hold that would bring the call to ``total_micro``: None when no
+        approval is needed, the id of an approved request to use, or a raised refusal that
+        carries the request the owner must answer."""
+        admission = self._admission
+        threshold = approval_threshold(admission.chain)
+        if threshold is None or total_micro <= threshold:
+            return None
+        if self._approved_max is not None and total_micro <= self._approved_max:
+            return None   # covered by the approval this call already used
+        store = admission.store
+        if self._approved_max is None:
+            found = store.usable_approval(leaf_digest=admission.leaf.digest, body_sha256=admission.body_sha256,
+                                          need_micro=total_micro)
+            if found is not None:
+                return str(found["approval_id"])
+            denied = store.denied_approval(leaf_digest=admission.leaf.digest, body_sha256=admission.body_sha256)
+            if denied is not None:
+                raise MandateError(
+                    402, "approval_denied",
+                    f"the owner denied this call (request {denied['approval_id']}); it is not asked again "
+                    f"before {approval_public(denied)['expires_at']}",
+                    limit="approvalAbove", mandate=admission.leaf.digest,
+                    approval=approval_public(denied, base_url=store.hub_origin),
+                )
+        ceiling = max(total_micro, self._ceiling(total_micro) if self._approved_max is None else total_micro)
+        request = store.request_approval(admission, amount_micro=total_micro, max_micro=ceiling,
+                                         threshold_micro=threshold)
+        raise MandateError(
+            402, "approval_required",
+            f"this call costs {micro_to_usd(total_micro)} USD, over the {micro_to_usd(threshold)} USD the "
+            "mandate may spend on one call without its owner: an owner of the funding account must approve "
+            f"request {request['approval_id']}, then send the same request again",
+            limit="approvalAbove", mandate=admission.leaf.digest,
+            approval=approval_public(request, base_url=store.hub_origin),
+        )
+
     def _reserved_hold(self, account_id: str, amount_usd: float, receipt_id: str, *,
                        per_call: bool) -> dict[str, Any]:
         micro = self._micro(amount_usd)
+        store = self._admission.store
+        approval_id: str | None = None
         try:
-            self._admission.store.reserve(
+            if per_call:
+                approval_id = self._needs_approval(self._call_micro + micro)
+            store.reserve(
                 self._admission.chain, receipt_id=receipt_id, amount_micro=micro,
                 product_id=self._admission.product_id,
                 per_call_before=self._call_micro, check_per_call=per_call,
             )
+            if approval_id is not None:
+                if not store.claim_approval(approval_id, receipt_id=receipt_id,
+                                            need_micro=self._call_micro + micro):
+                    # Another copy of this call used the approval first, or it just expired.
+                    store.release(receipt_id)
+                    approval_id = self._needs_approval(self._call_micro + micro)
+                    raise MandateError(402, "approval_required", "the approval was used by another call; retry")
+                approved = store.approval(approval_id) or {}
+                self._approved_max = int(approved.get("max_micro") or 0)
         except MandateError as exc:
             self._admission.last_refusal = exc
             return {"error": exc.detail}
         try:
             result = self._inner.hold(account_id, amount_usd, receipt_id)
         except Exception:
-            # The limit must not stay reserved for money that was never held.
-            self._admission.store.release(receipt_id)
+            # The limit must not stay reserved for money that was never held — and an
+            # approval this hold claimed goes back with it (settle() → unclaim_approval).
+            store.release(receipt_id)
+            if approval_id is not None:
+                self._approved_max = None
             raise
         if result.get("error"):
-            self._admission.store.release(receipt_id)
+            store.release(receipt_id)
+            if approval_id is not None:
+                self._approved_max = None
         elif per_call:
             self._call_micro += micro
         return result

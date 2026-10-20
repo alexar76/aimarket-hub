@@ -33,7 +33,7 @@ import secrets
 import time
 from typing import Any
 
-from aimarket_hub.db_backend import returning_one
+from aimarket_hub.db_backend import returning, returning_one
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +204,7 @@ class A2ATaskStore:
                artifacts: list[dict[str, Any]] | None = None, metadata: dict[str, Any] | None = None,
                history_add: list[dict[str, Any]] | None = None, x402_nonce: str | None = None,
                invoke_b64: str | None = None, invoke_sha256: str | None = None,
+               awaiting: str = "", waits_until: float | None = None,
                now: float | None = None) -> dict[str, Any]:
         """Record the outcome of the round this caller claimed (``row`` is the claimed row).
 
@@ -211,6 +212,10 @@ class A2ATaskStore:
         replacement a follow-up brought) and restarts the waiting clock. Conditional on the
         revision the claim produced, so a sweep that expired the task meanwhile is not
         overwritten by a late answer.
+
+        ``awaiting`` names an owner approval the task now waits on (mandates.md §5.6), and
+        ``waits_until`` replaces the waiting clock with that approval's own expiry: an owner
+        has a day to answer, not the fifteen minutes a payment gets.
         """
         now = time.time() if now is None else now
         history = load_json(row.get("history_json"), [])
@@ -218,16 +223,20 @@ class A2ATaskStore:
         keep_body = state in INTERRUPTED
         body = (invoke_b64 if invoke_b64 is not None else str(row.get("invoke_body") or "")) if keep_body else ""
         digest = invoke_sha256 if invoke_sha256 is not None else str(row.get("invoke_sha256") or "")
+        if keep_body:
+            expires = max(now + self.interrupted_ttl_s, float(waits_until or 0))
+        else:
+            expires = float(row.get("expires_at") or now)
         won = returning_one(
             self._conn,
             "UPDATE a2a_tasks SET task_state = ?, status_json = ?, artifacts_json = ?, metadata_json = ?, "
-            "history_json = ?, x402_nonce = ?, invoke_body = ?, invoke_sha256 = ?, "
+            "history_json = ?, x402_nonce = ?, invoke_body = ?, invoke_sha256 = ?, awaiting = ?, "
             "revision = revision + 1, updated_at = ?, expires_at = ? "
             "WHERE task_id = ? AND task_state = ? AND revision = ? RETURNING task_id",
             (state, _dumps(status), _dumps(artifacts or []), _dumps(metadata or {}),
              _dumps(history[-MAX_HISTORY:]),
              str(row.get("x402_nonce") or "") if x402_nonce is None else x402_nonce,
-             body, digest, now, now + self.interrupted_ttl_s if keep_body else float(row.get("expires_at") or now),
+             body, digest, awaiting if keep_body else "", now, expires,
              row["task_id"], WORKING, int(row.get("revision") or 0)),
         )
         self._conn.commit()
@@ -247,10 +256,43 @@ class A2ATaskStore:
         won = returning_one(
             self._conn,
             f"UPDATE a2a_tasks SET task_state = ?, status_json = ?, history_json = ?, invoke_body = '', "
-            f"revision = revision + 1, updated_at = ? "
+            f"awaiting = '', revision = revision + 1, updated_at = ? "
             f"WHERE task_id = ? AND task_state IN {_INTERRUPTED_SQL} AND revision = ? RETURNING task_id",
             (CANCELED, _dumps(status), _dumps(history[-MAX_HISTORY:]), now, row["task_id"],
              int(row.get("revision") or 0)),
+        )
+        self._conn.commit()
+        return self.get(row["task_id"]) if won is not None else None
+
+    def waiting_on(self, approval_id: str) -> list[dict[str, Any]]:
+        """Tasks still waiting on an owner approval (mandates.md §5.6)."""
+        if not approval_id:
+            return []
+        rows = self._conn.execute(
+            f"SELECT * FROM a2a_tasks WHERE awaiting = ? AND task_state IN {_INTERRUPTED_SQL}", (approval_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def resolve_waiting(self, row: dict[str, Any], *, state: str, status: dict[str, Any],
+                        history_add: list[dict[str, Any]] | None = None, metadata: dict[str, Any] | None = None,
+                        now: float | None = None) -> dict[str, Any] | None:
+        """Move a task that waits on its owner, without a client message: to a terminal state
+        (the owner said no) or to the same waiting state with a new status (the owner said yes
+        and the client may now continue). Conditional on the revision ``row`` was read at, like
+        every other change. None when the task moved meanwhile."""
+        now = time.time() if now is None else now
+        history = load_json(row.get("history_json"), [])
+        history.extend(history_add or [])
+        terminal = state in TERMINAL
+        won = returning_one(
+            self._conn,
+            f"UPDATE a2a_tasks SET task_state = ?, status_json = ?, history_json = ?, metadata_json = ?, "
+            f"invoke_body = CASE WHEN ? = 1 THEN '' ELSE invoke_body END, awaiting = '', "
+            f"revision = revision + 1, updated_at = ? "
+            f"WHERE task_id = ? AND task_state IN {_INTERRUPTED_SQL} AND revision = ? RETURNING task_id",
+            (state, _dumps(status), _dumps(history[-MAX_HISTORY:]),
+             _dumps(metadata if metadata is not None else load_json(row.get("metadata_json"), {})),
+             1 if terminal else 0, now, row["task_id"], int(row.get("revision") or 0)),
         )
         self._conn.commit()
         return self.get(row["task_id"]) if won is not None else None
@@ -265,11 +307,11 @@ class A2ATaskStore:
         """
         now = time.time() if now is None else now
         if not force and now - self._swept_at < _SWEEP_EVERY_S:
-            return {"expired": 0, "orphaned": 0, "deleted": 0}
+            return {"expired": 0, "orphaned": 0, "deleted": 0, "task_ids": []}
         self._swept_at = now
         expired_status = _dumps({
             "state": FAILED, "timestamp": iso(now),
-            "message": _agent_note("The task expired waiting for a payment or credentials; "
+            "message": _agent_note("The task expired waiting for a payment, credentials or its owner's approval; "
                                    "its input was deleted. Send a new message to try again."),
         })
         orphaned_status = _dumps({
@@ -278,16 +320,21 @@ class A2ATaskStore:
                                    "was not recorded here. A charge, if any, is on your receipts "
                                    "and balance; do not assume the call ran."),
         })
-        expired = self._conn.execute(
-            f"UPDATE a2a_tasks SET task_state = ?, status_json = ?, invoke_body = '', "
+        # RETURNING the ids, so the facade can tell these tasks' push subscribers (a2a_push).
+        expired = returning(
+            self._conn,
+            f"UPDATE a2a_tasks SET task_state = ?, status_json = ?, invoke_body = '', awaiting = '', "
             f"revision = revision + 1, updated_at = ? "
-            f"WHERE task_state IN {_INTERRUPTED_SQL} AND expires_at < ?",
+            f"WHERE task_state IN {_INTERRUPTED_SQL} AND expires_at < ? RETURNING task_id",
             (FAILED, expired_status, now, now),
+            commit=True,
         )
-        orphaned = self._conn.execute(
+        orphaned = returning(
+            self._conn,
             "UPDATE a2a_tasks SET task_state = ?, status_json = ?, invoke_body = '', "
-            "revision = revision + 1, updated_at = ? WHERE task_state = ? AND updated_at < ?",
+            "revision = revision + 1, updated_at = ? WHERE task_state = ? AND updated_at < ? RETURNING task_id",
             (FAILED, orphaned_status, now, WORKING, now - WORKING_STALE_S),
+            commit=True,
         )
         deleted = self._conn.execute(
             f"DELETE FROM a2a_tasks WHERE (task_state IN {_TERMINAL_SQL} AND updated_at < ?) "
@@ -302,7 +349,8 @@ class A2ATaskStore:
             except (TypeError, ValueError):
                 return 0
 
-        return {"expired": _count(expired), "orphaned": _count(orphaned), "deleted": _count(deleted)}
+        return {"expired": len(expired), "orphaned": len(orphaned), "deleted": _count(deleted),
+                "task_ids": [str(r["task_id"]) for r in [*expired, *orphaned]]}
 
 
 def _agent_note(text: str) -> dict[str, Any]:

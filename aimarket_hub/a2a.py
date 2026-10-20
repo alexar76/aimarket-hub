@@ -33,12 +33,17 @@ Payment rides the request the way each rail already does (docs/a2a.md):
   per-caller identity the MCP gateway uses (``mcp_gateway.visitor_for``), so one caller has
   one allowance whichever protocol it speaks.
 
-Streaming and push notifications stay off: SendMessage blocks until the task is finished or
-waiting for the client.
+SendMessage blocks until the task is finished or waiting for the client, unless the client
+sends ``returnImmediately``: then the task is answered WORKING at once and runs on. Either way a
+client may register push notification webhooks (``a2a_push.py``) and hear about every change
+without polling — including the ones no request of its own causes: an owner answering an
+approval (mandates.md §5.6), a task that runs on after the answer, the sweep expiring a task.
+Streaming stays off.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -56,6 +61,7 @@ from typing import Any
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse, Response
 
+from aimarket_hub import a2a_push
 from aimarket_hub import a2a_tasks as tasks_mod
 from aimarket_hub.a2a_tasks import (
     AUTH_REQUIRED, CANCELED, COMPLETED, FAILED, INPUT_REQUIRED, INTERRUPTED, REJECTED, TERMINAL,
@@ -71,6 +77,9 @@ MAX_A2A_PART_BYTES = 64 * 1024
 MAX_A2A_QUERY_CHARS = 2_000
 MAX_A2A_RESULTS = 20
 MAX_LIST_PAGE = 100
+#: Tasks running after their answer (returnImmediately) at once. Past it the next one runs
+#: before answering, as if the client had not asked: a burst cannot pile up unbounded work.
+MAX_BACKGROUND_INVOKES = 32
 #: The x402 payment payload is forwarded as a header; the MCP gateway caps it the same way.
 MAX_PAYMENT_CHARS = 8192
 
@@ -118,6 +127,9 @@ class InvokeBridge:
     #: secret of THAT task's invoice, so the client never handles it and a task that was not
     #: quoted an invoice cannot redeem one.
     payment_secret: Callable[[str], str] = lambda nonce: ""
+    #: Push notifications (a2a_push.py). None: the card says pushNotifications false and the
+    #: push methods answer PushNotificationNotSupported.
+    push: a2a_push.PushDispatcher | None = None
 
 
 def _signed_path(request: Request) -> str:
@@ -132,7 +144,7 @@ def _signed_path(request: Request) -> str:
 
 
 def build_agent_card(*, hub_name: str, hub_url: str, hub_version: str,
-                     invoke: bool = False) -> dict[str, Any]:
+                     invoke: bool = False, push: bool = False) -> dict[str, Any]:
     """Return an A2A 1.0 AgentCard containing only implemented capabilities."""
     base = hub_url.rstrip("/")
     skills: list[dict[str, Any]] = [
@@ -172,7 +184,7 @@ def build_agent_card(*, hub_name: str, hub_url: str, hub_version: str,
         "documentationUrl": f"{base}/developers",
         "capabilities": {
             "streaming": False,
-            "pushNotifications": False,
+            "pushNotifications": bool(push and invoke),
             "extendedAgentCard": False,
         },
         "defaultInputModes": ["text/plain", "application/json"],
@@ -194,7 +206,9 @@ def build_agent_card(*, hub_name: str, hub_url: str, hub_version: str,
             "(X-API-Key header), an owner's mandate (X-AIMarket-Mandate + X-AIMarket-Mandate-Proof "
             "headers; the invoke then goes in one raw application/json part holding the exact "
             "signed bytes) or x402 (a2a-x402 v0.2; the payload must include the settle txHash). "
-            "The first few priced calls per caller are a free trial."
+            "The first few priced calls per caller are a free trial. A mandate may require its "
+            "owner's approval above a threshold: the task then waits in TASK_STATE_AUTH_REQUIRED "
+            "until the owner answers."
         ),
         "tags": ["ai-marketplace", "paid-invoke", "x402", "receipts", "agent-mandates"],
         "examples": [
@@ -657,6 +671,18 @@ class _Outcome:
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     nonce: str | None = None
+    #: The owner approval the task now waits on (mandates.md §5.6), and until when.
+    awaiting: str = ""
+    waits_until: float | None = None
+
+
+def _expiry(value: Any) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def _agent_message(task_id: str, context_id: str, text: str, *, data: Any = None,
@@ -777,7 +803,8 @@ def _outcome(*, status_code: int, headers: Mapping[str, str], body: Any, task_id
     aimarket: dict[str, Any] = {"error": error or f"http_{status_code}"}
     if detail:
         aimarket["detail"] = detail
-    for key in ("needed", "balance", "limit", "mandate", "payment_ways", "missing", "accepts", "sandbox"):
+    for key in ("needed", "balance", "limit", "mandate", "payment_ways", "missing", "accepts", "sandbox",
+                "approval"):
         if key in body and not (key == "accepts" and status_code == 402):
             aimarket[key] = body[key]
     if trial_exhausted:
@@ -800,8 +827,28 @@ def _outcome(*, status_code: int, headers: Mapping[str, str], body: Any, task_id
                    "x402.payment.required (a fresh nonce), or reply with x402.payment.status "
                    "payment-rejected to cancel.", data=refusal, metadata=meta, nonce=nonce or None)
 
+    if status_code == 402 and error == "approval_required" and isinstance(body.get("approval"), dict):
+        # mandates.md §5.6: nothing is wrong with the call; it waits for the person whose money
+        # it spends. The task waits as long as the request does, and moves on its own when the
+        # owner answers (approval_listener), telling the client's webhooks.
+        approval = body["approval"]
+        outcome = say(AUTH_REQUIRED,
+                      f"{cap} costs ${_usd(approval.get('amount_usd')):g}, over what the mandate may spend "
+                      f"without its owner. Waiting for an owner of the funding account to approve request "
+                      f"{approval.get('approval_id')} (up to ${_usd(approval.get('max_usd')):g}). Once approved, "
+                      "send a follow-up on this task with a fresh mandate proof over the same invoke bytes.",
+                      data=refusal, metadata={"aimarket": aimarket})
+        outcome.awaiting = str(approval.get("approval_id") or "")
+        outcome.waits_until = _expiry(approval.get("expires_at"))
+        return outcome
+
+    if error == "approval_queue_full":
+        # Not a retry-later: only the owner answering waiting requests makes room.
+        return say(REJECTED, f"{error}: {detail}", data=refusal, metadata={"aimarket": aimarket})
+
     if status_code == 402:
-        if error in ("mandate_limit", "mandate_unfunded", "allowance_exhausted", "listing_not_sellable"):
+        if error in ("mandate_limit", "mandate_unfunded", "allowance_exhausted", "listing_not_sellable",
+                     "approval_denied"):
             return say(REJECTED, f"{error}: {detail}".strip(": "), data=refusal, metadata={"aimarket": aimarket})
         if mandated:
             # A mandate spends the owner's credits and cannot be combined with an x402 payment
@@ -1013,8 +1060,10 @@ def attach_a2a_routes(
     Without a ``bridge`` the endpoint is discovery-only: no skill creates a Task, so the task
     methods answer honestly (not found / an empty list) and the card lists search alone.
     """
+    push = bridge.push if bridge is not None else None
     card = build_agent_card(hub_name=hub_name, hub_url=hub_url, hub_version=hub_version,
-                            invoke=bridge is not None)
+                            invoke=bridge is not None, push=push is not None)
+    background: set[Any] = set()
     card_bytes = json.dumps(
         card, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
@@ -1141,14 +1190,30 @@ def attach_a2a_routes(
                     request_id, -32602, "Invalid parameters", reason="INVALID_CONFIGURATION",
                 )
             configuration = configuration or {}
+            asks_invoke = bridge is not None and _asks_for_invoke(params.get("message"))
+            push_config: dict[str, str] | None = None
             if configuration.get("taskPushNotificationConfig") is not None:
-                return _json_error(
-                    request_id, -32003, "Push notifications are not supported",
-                    reason="PUSH_NOTIFICATION_NOT_SUPPORTED",
-                )
-            if configuration.get("returnImmediately"):
-                return _json_error(request_id, -32004, "returnImmediately is not supported",
-                                   reason="UNSUPPORTED_OPERATION")
+                if push is None:
+                    return _json_error(
+                        request_id, -32003, "Push notifications are not supported",
+                        reason="PUSH_NOTIFICATION_NOT_SUPPORTED",
+                    )
+                if not asks_invoke:
+                    # A search is answered with a Message: no task, so a webhook would never be
+                    # called. Accepting it silently would let the client wait for nothing.
+                    return _json_error(
+                        request_id, -32602,
+                        "push notifications are for tasks; marketplace-search answers with a Message",
+                        reason="INVALID_CONFIGURATION",
+                    )
+                try:
+                    push_config = a2a_push.parse_config(configuration["taskPushNotificationConfig"])
+                except a2a_push.PushConfigError as exc:
+                    return _json_error(request_id, -32602, str(exc), reason="INVALID_CONFIGURATION")
+            immediate = configuration.get("returnImmediately", False)
+            if not isinstance(immediate, bool):
+                return _json_error(request_id, -32602, "returnImmediately must be a boolean",
+                                   reason="INVALID_CONFIGURATION")
             accepted = configuration.get("acceptedOutputModes")
             if accepted is not None and (
                 not isinstance(accepted, list)
@@ -1158,12 +1223,14 @@ def attach_a2a_routes(
                     request_id, -32005, "Requested output content type is not supported",
                     reason="CONTENT_TYPE_NOT_SUPPORTED",
                 )
-            if bridge is not None and _asks_for_invoke(params.get("message")):
+            if asks_invoke:
                 try:
                     history_length = _optional_int(configuration.get("historyLength"), "historyLength", low=0)
                 except ValueError as exc:
                     return _json_error(request_id, -32602, str(exc), reason="INVALID_CONFIGURATION")
-                return await _send_invoke(request, request_id, params, history_length)
+                return await _send_invoke(request, request_id, params, history_length,
+                                          push_config=push_config, immediate=immediate)
+            # A search is answered with a Message at once: returnImmediately is moot for it.
             try:
                 intent, kwargs = _search_args(params)
             except LookupError:
@@ -1230,6 +1297,16 @@ def attach_a2a_routes(
         if method in {
             "CreateTaskPushNotificationConfig", "GetTaskPushNotificationConfig",
             "ListTaskPushNotificationConfigs", "DeleteTaskPushNotificationConfig",
+        } and push is not None:
+            try:
+                return await _push_method(request, request_id, method, params, raw)
+            except a2a_push.PushConfigError as exc:
+                return _json_error(request_id, -32602, str(exc), reason="INVALID_PARAMS")
+            except ValueError as exc:
+                return _json_error(request_id, -32602, str(exc), reason="INVALID_PARAMS")
+        if method in {
+            "CreateTaskPushNotificationConfig", "GetTaskPushNotificationConfig",
+            "ListTaskPushNotificationConfigs", "DeleteTaskPushNotificationConfig",
         }:
             return _json_error(
                 request_id, -32003, "Push notifications are not supported",
@@ -1243,9 +1320,30 @@ def attach_a2a_routes(
         # Housekeeping runs on the request path, and must never be the reason a call fails.
         assert bridge is not None
         try:
-            bridge.tasks.sweep(force=force)
+            swept = bridge.tasks.sweep(force=force)
         except Exception as exc:  # noqa: BLE001
             logger.warning("a2a: task sweep failed: %s", exc)
+            return
+        for task_id in swept.get("task_ids") or []:
+            _notify(bridge.tasks.get(task_id))
+        if push is not None and swept.get("deleted"):
+            try:
+                push.store.prune()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("a2a: pruning push configs failed: %s", exc)
+
+    def _notify(row: dict[str, Any] | None) -> None:
+        """Tell a task's webhooks its state (a2a_push). Never fails the caller."""
+        if push is None or not row:
+            return
+        try:
+            push.notify(tasks_mod.render(row, history_length=0, include_artifacts=False))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("a2a: push for task %s failed: %s", row.get("task_id"), exc)
+
+    def _subscribe(row: dict[str, Any], push_config: dict[str, str] | None) -> None:
+        if push is not None and push_config is not None:
+            push.store.create(row["task_id"], push_config)
 
     def _send_principal(request: Request, caller: str) -> str:
         """Who a SendMessage is on behalf of. A binding, not an authentication: the invoke
@@ -1298,7 +1396,8 @@ def attach_a2a_routes(
         return out
 
     async def _send_invoke(request: Request, request_id: str | int, params: dict[str, Any],
-                           history_length: int | None) -> JSONResponse:
+                           history_length: int | None, *, push_config: dict[str, str] | None = None,
+                           immediate: bool = False) -> JSONResponse:
         assert bridge is not None
         caller = bridge.client_address(request) or ""
         if not bridge.allow_request(caller):
@@ -1325,7 +1424,8 @@ def attach_a2a_routes(
                                reason="TASK_NOT_FOUND")
         _sweep()
         if incoming.task_id is not None:
-            return await _follow_up(request, request_id, incoming, history_length, caller, mandated)
+            return await _follow_up(request, request_id, incoming, history_length, caller, mandated,
+                                    push_config=push_config, immediate=immediate)
         try:
             invoke = _invoke_from(incoming, mandated=mandated, required=True)
         except ValueError as exc:
@@ -1350,6 +1450,10 @@ def attach_a2a_routes(
                     request_id, -32602, "this messageId was already used for a different request",
                     reason="INVALID_PARAMS",
                 )
+            try:
+                _subscribe(row, push_config)
+            except a2a_push.PushConfigError as exc:
+                return _json_error(request_id, -32602, str(exc), reason="INVALID_CONFIGURATION")
             if principal.startswith("anon:"):
                 # An anonymous principal is an address, and an address is shared (NAT, a
                 # proxy pool): a second caller who guessed the messageId and resent the same
@@ -1357,18 +1461,46 @@ def attach_a2a_routes(
                 # the task and its state — never a second run — but not the artifacts.
                 return _task_answer(request_id, row, history_length=0, include_artifacts=False)
             return _task_answer(request_id, row, history_length=history_length)
+        try:
+            _subscribe(row, push_config)
+        except a2a_push.PushConfigError as exc:  # pragma: no cover - a fresh task has no configs yet
+            return _json_error(request_id, -32602, str(exc), reason="INVALID_CONFIGURATION")
         user = _history_user(incoming, invoke, task_id=row["task_id"], context_id=context_id)
-        row = await _run(row, invoke, request=request, caller=caller, payment=None, history_user=user)
-        return _task_answer(request_id, row, history_length=history_length)
+        return await _answer_run(request_id, row, invoke, headers=_forwarded(request), caller=caller,
+                                 payment=None, history_user=user, history_length=history_length,
+                                 immediate=immediate)
+
+    async def _answer_run(request_id: str | int, row: dict[str, Any], invoke: _Invoke, *,
+                          headers: dict[str, str], caller: str, payment: _Payment | None,
+                          history_user: dict[str, Any], history_length: int | None, immediate: bool,
+                          nonce: str = "") -> JSONResponse:
+        """Run the claimed task and answer with its outcome — or, with returnImmediately,
+        answer WORKING now and let it run on (its webhooks hear the outcome)."""
+        assert bridge is not None
+        if immediate and len(background) < MAX_BACKGROUND_INVOKES:
+            job = asyncio.get_running_loop().create_task(_run(
+                row, invoke, headers=headers, caller=caller, payment=payment,
+                history_user=history_user, nonce=nonce))
+            background.add(job)
+            job.add_done_callback(background.discard)
+            return _task_answer(request_id, bridge.tasks.get(row["task_id"]) or row, history_length=history_length)
+        finished = await _run(row, invoke, headers=headers, caller=caller, payment=payment,
+                              history_user=history_user, nonce=nonce)
+        return _task_answer(request_id, finished, history_length=history_length)
 
     async def _follow_up(request: Request, request_id: str | int, incoming: _Incoming,
-                         history_length: int | None, caller: str, mandated: bool) -> JSONResponse:
+                         history_length: int | None, caller: str, mandated: bool, *,
+                         push_config: dict[str, str] | None = None, immediate: bool = False) -> JSONResponse:
         assert bridge is not None
         row = bridge.tasks.get(incoming.task_id or "")
         if row is None or not _may_see(row, _send_principal(request, caller)):
             return _json_error(request_id, -32001, "Task not found", reason="TASK_NOT_FOUND")
         if incoming.context_id and incoming.context_id != row["context_id"]:
             return _json_error(request_id, -32602, "contextId does not match the task", reason="INVALID_PARAMS")
+        try:
+            _subscribe(row, push_config)
+        except a2a_push.PushConfigError as exc:
+            return _json_error(request_id, -32602, str(exc), reason="INVALID_CONFIGURATION")
         state = str(row["task_state"])
         if incoming.message_id == row.get("last_message_id") or state == WORKING:
             # The same follow-up again, or one arriving while the invoke still runs: the
@@ -1386,6 +1518,7 @@ def attach_a2a_routes(
                 history_add=[_history_user(incoming, None, task_id=row["task_id"], context_id=row["context_id"]),
                              note],
             )
+            _notify(canceled)
             return _task_answer(request_id, canceled or bridge.tasks.get(row["task_id"]) or row,
                                 history_length=history_length)
 
@@ -1441,16 +1574,20 @@ def attach_a2a_routes(
                 history_add=[user, note],
                 invoke_b64=invoke.b64, invoke_sha256=invoke.sha256,
             )
+            _notify(finished)
             return _task_answer(request_id, finished, history_length=history_length)
-        finished = await _run(claimed, invoke, request=request, caller=caller, payment=payment,
-                              history_user=user, nonce=str(claimed.get("x402_nonce") or ""))
-        return _task_answer(request_id, finished, history_length=history_length)
+        return await _answer_run(request_id, claimed, invoke, headers=_forwarded(request), caller=caller,
+                                 payment=payment, history_user=user, history_length=history_length,
+                                 immediate=immediate, nonce=str(claimed.get("x402_nonce") or ""))
 
-    async def _run(row: dict[str, Any], invoke: _Invoke, *, request: Request, caller: str,
+    async def _run(row: dict[str, Any], invoke: _Invoke, *, headers: dict[str, str], caller: str,
                    payment: _Payment | None, history_user: dict[str, Any], nonce: str = "") -> dict[str, Any]:
-        """One invoke through the app, and its outcome recorded on the claimed task."""
+        """One invoke through the app, and its outcome recorded on the claimed task.
+
+        ``headers`` are the caller's forwarded headers, read before the answer went: with
+        returnImmediately this runs after it, when nothing of the request should be touched."""
         assert bridge is not None
-        headers = _forwarded(request)
+        headers = dict(headers)
         if payment is not None:
             headers["PAYMENT-SIGNATURE"] = payment.header
             # The invoice this task was quoted, unless the payload names its own.
@@ -1502,13 +1639,16 @@ def attach_a2a_routes(
                 row["task_id"], row["context_id"],
                 f"The hub answered HTTP {status_code} in a form this bridge could not read; check your "
                 "receipts and balance before retrying."))
-        return bridge.tasks.finish(
+        finished = bridge.tasks.finish(
             row, state=outcome.state,
             status={"state": outcome.state, "timestamp": tasks_mod.iso(time.time()), "message": outcome.message},
             artifacts=outcome.artifacts, metadata=outcome.metadata,
             history_add=[history_user, outcome.message],
             x402_nonce=outcome.nonce, invoke_b64=invoke.b64, invoke_sha256=invoke.sha256,
+            awaiting=outcome.awaiting, waits_until=outcome.waits_until,
         )
+        _notify(finished)
+        return finished
 
     async def _task_method(request: Request, request_id: str | int, method: str, params: dict[str, Any],
                            raw: bytes) -> JSONResponse:
@@ -1574,9 +1714,81 @@ def attach_a2a_routes(
                 history_add=[note],
             )
             if canceled is not None:
+                _notify(canceled)
                 return _task_answer(request_id, canceled, history_length=None, envelope=False)
         return _json_error(request_id, -32002, f"task {task_id} cannot be canceled in its current state",
                            reason="TASK_NOT_CANCELABLE")
+
+    async def _push_method(request: Request, request_id: str | int, method: str, params: dict[str, Any],
+                           raw: bytes) -> JSONResponse:
+        """The four push notification config methods, under GetTask's rule of who may see a
+        task: its authenticated principal, or whoever holds an anonymous task's id."""
+        assert bridge is not None and push is not None
+        task_id = params.get("taskId")
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError("taskId is required")
+        row = bridge.tasks.get(task_id)
+        if row is None or not _may_see(row, _read_principal(request, raw)):
+            return _json_error(request_id, -32001, "Task not found", reason="TASK_NOT_FOUND")
+        if method == "CreateTaskPushNotificationConfig":
+            if row["task_state"] in TERMINAL:
+                # Nothing will change any more; a webhook would never be called.
+                return _json_error(request_id, -32004, f"task {task_id} is already {row['task_state']}",
+                                   reason="UNSUPPORTED_OPERATION")
+            stored = push.store.create(task_id, a2a_push.parse_config(params))
+            return _ok(request_id, a2a_push.render(stored))
+        if method == "ListTaskPushNotificationConfigs":
+            configs = push.store.list(task_id)
+            return _ok(request_id, {"configs": [a2a_push.render(c) for c in configs], "nextPageToken": ""})
+        config_id = params.get("id")
+        if not isinstance(config_id, str) or not config_id:
+            raise ValueError("id is required")
+        if method == "GetTaskPushNotificationConfig":
+            stored = push.store.get(task_id, config_id)
+            if stored is None:
+                return _json_error(request_id, -32001, "Push notification config not found",
+                                   reason="TASK_NOT_FOUND")
+            return _ok(request_id, a2a_push.render(stored))
+        if not push.store.delete(task_id, config_id):
+            return _json_error(request_id, -32001, "Push notification config not found", reason="TASK_NOT_FOUND")
+        return _ok(request_id, {})
+
+
+def approval_listener(bridge: InvokeBridge) -> Callable[[dict[str, Any]], None]:
+    """What the mandate store calls once an owner answers an approval (mandates.md §5.6).
+
+    Every task waiting on that request moves without its client asking: a "no" ends it
+    REJECTED; a "yes" leaves it waiting, with a status that says the client may now continue
+    (the run itself still needs the agent's own fresh proof — an owner's signature alone never
+    makes the hub spend). Either way the task's webhooks are told.
+    """
+
+    def on_decision(approval: dict[str, Any]) -> None:
+        approval_id = str(approval.get("approval_id") or "")
+        status = str(approval.get("status") or "")
+        if status not in ("approved", "denied"):
+            return
+        for row in bridge.tasks.waiting_on(approval_id):
+            metadata = tasks_mod.load_json(row.get("metadata_json"), {})
+            block = metadata.get("aimarket") if isinstance(metadata.get("aimarket"), dict) else {}
+            metadata["aimarket"] = {**block, "approval": approval}
+            if status == "approved":
+                state = AUTH_REQUIRED
+                text = (f"The owner approved request {approval_id}. Send a follow-up on this task with a fresh "
+                        "mandate proof over the same invoke bytes to run it (before "
+                        f"{approval.get('expires_at') or 'the approval expires'}).")
+            else:
+                state = REJECTED
+                text = f"The owner denied request {approval_id}; the call was not made and nothing was charged."
+            note = _agent_message(row["task_id"], row["context_id"], text, metadata={"aimarket": {"approval": approval}})
+            moved = bridge.tasks.resolve_waiting(
+                row, state=state, status={"state": state, "timestamp": tasks_mod.iso(time.time()), "message": note},
+                history_add=[note], metadata=metadata,
+            )
+            if moved is not None and bridge.push is not None:
+                bridge.push.notify(tasks_mod.render(moved, history_length=0, include_artifacts=False))
+
+    return on_decision
 
 
 def _lower(headers: Mapping[str, str]) -> dict[str, str]:

@@ -71,6 +71,7 @@ def register(
     # existing public search handler rather than duplicating its fulfillment, route-freshness
     # and supply-security policy in an adapter.
     from aimarket_hub import a2a as a2a_facade
+    from aimarket_hub import a2a_push
     from aimarket_hub.a2a_tasks import A2ATaskStore
 
     a2a_bridge: a2a_facade.InvokeBridge | None = None
@@ -149,7 +150,12 @@ def register(
             is_priced=_a2a_is_priced,
             allow_request=lambda caller: _check_invoke_rate("a2a:" + caller),
             payment_secret=hub_invoices.secret_for,
+            # On by default (AIMARKET_A2A_PUSH_ENABLED=0 turns it off): webhooks are the
+            # caller's own https URLs, held to the outbound SSRF rules (a2a_push.py).
+            push=a2a_push.PushDispatcher(a2a_push.PushStore(db._conn)) if a2a_push.enabled() else None,
         )
+        # An owner's answer to an approval moves the task waiting on it (mandates.md §5.6).
+        hub_mandates.decision_listeners.append(a2a_facade.approval_listener(a2a_bridge))
 
     a2a_router = APIRouter(tags=["a2a"])
     a2a_facade.attach_a2a_routes(

@@ -143,7 +143,8 @@ first day.
   another hub's capability adds `AIMARKET_ROUTING_FEE_BPS`. A seller who lists with its own
   wallet is paid seller-direct over x402 and you take nothing from that sale — that door
   stays theirs.
-- **Buyers top up with USDC** to a wallet of yours ([credits top-up](credits-topup.md)), or
+- **Buyers top up with USDC** to a wallet of yours ([credits top-up](credits-topup.md)), **or
+  with a card** through your Stripe account ([card top-up](card-topup.md), off by default), or
   you credit them after any payment you take yourself.
 
 What stays with you, not with the software:

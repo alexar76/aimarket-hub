@@ -125,6 +125,55 @@ Revoke with `POST /ai-market/v2/mandates/revoke` — signed by any issuer in the
 account's `X-API-Key` as a kill switch. Revoking a mandate revokes everything re-delegated from it.
 Holds already taken settle normally.
 
+### Owner approval above a threshold
+
+Add `approvalAbove` (µUSD) to a mandate's `limits` and any single call that would cost more
+waits for you instead of spending ([spec §5.6](../../aimarket-protocol/mandates.md)). Small
+calls keep running unattended; a big one needs your signature on **that** call.
+
+```python
+from aimarket_agent import approval_payload, issue_mandate
+
+doc = issue_mandate(owner, agent.did, audience=[HUB], scope=["*"],
+                    per_call_usd=50, per_day_usd=100, approval_above_usd=10)   # aimarket-agent ≥ 2.6.0
+```
+
+1. The agent's call over the threshold answers `402 approval_required` with an `approval`
+   block: `approval_id`, `capability_id`, `amount_usd`, `max_usd` (the ceiling you approve; a
+   routed call includes the routing fee), `body_sha256` (the exact request), `expires_at`
+   (24 h) and `url`. Nothing is reserved. Asking again before you answer returns the same request.
+2. You see what waits: `GET /ai-market/v2/mandates/approvals?status=pending` with the funding
+   account's `X-API-Key`.
+3. You answer: `POST /ai-market/v2/mandates/approvals/{approval_id}` with
+   `{"decision": "approve", "by": <your DID>, "t", "n", "s"}`, where `s` is your Ed25519
+   signature over
+
+   ```
+   aimarket-mandate-approval/1
+   <hub base URL>
+   <approval_id>
+   approve
+   <mandate digest>
+   <body_sha256>
+   <max_micro>
+   <t>
+   <n>
+   ```
+
+   With the SDK: `httpx.post(approval["url"], json=approval_payload(owner, hub_origin=HUB,
+   approval=approval))`. Any owner DID linked to the account may sign (a second owner — say a
+   finance key — works).
+   The API key alone can only **deny** (`{"decision": "deny"}`): approving spends money, and a
+   key is what leaks.
+4. The agent sends the same request again with a fresh proof. It runs once; the approval is
+   spent with it, or given back if the call fails before it is charged. A denial stands until
+   the request expires (`402 approval_denied`), so a looping agent cannot nag you.
+
+An agent may have at most 16 requests waiting (`429 approval_queue_full`). Re-delegated
+mandates keep the parent's threshold and may only lower it. Over A2A the task waits in
+`AUTH_REQUIRED` and moves when you answer, with a push to the agent's webhook
+([a2a.md](a2a.md#paid-with-a-mandate)).
+
 ### Reading a mandate's status
 
 `GET /ai-market/v2/mandates/{digest}` answers anyone who holds the digest (an unknown one:
@@ -388,6 +437,7 @@ the real hub app.
 | `AIMARKET_HISTOR_URL` | unset | Where the provenance plugin anchors receipt digests; unset = anchoring off. |
 | `AIMARKET_HISTOR_FLUSH_S` | `30` | How often the outbox sends pending anchors (backs off to 10 min while HISTOR fails or defers). |
 | `AIMARKET_HISTOR_OUTBOX_RETAIN_DAYS` | `30` | Days an anchored row stays in the outbox; after that the status route asks HISTOR. `0` keeps every row. |
+| `AIMARKET_MANDATE_APPROVAL_TTL_S` | `86400` | How long an owner-approval request stays open (300 s – 7 days). An approved one must be used within the same window. |
 
 The image already installs `awr` (the provenance plugin needs it). A hub installed without it
 starts normally and answers `503 mandates_unavailable` to mandated calls.

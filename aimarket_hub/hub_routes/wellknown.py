@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from aimarket_hub import (
+    card_topup,
     contracts_declaration,
     credits,
     deposit_watch,
@@ -418,6 +419,9 @@ def register(
                     # gets money onto this rail at all (docs/credits-topup.md).
                     "topup": {**topup.well_known(),
                               "deposit_watch": deposit_watch.well_known(hub_deposits, config.hub_url)},
+                    # The same credit bought with a card (Stripe Checkout) — for a person
+                    # who has no wallet. Off unless the operator configures it.
+                    "topup_card": card_topup.well_known(),
                 },
                 "channel": {
                     "enabled": payment_ready,

@@ -4,6 +4,8 @@
 >
 > 代码：[`topup.py`](../aimarket_hub/topup.py) · [`credits.py`](../aimarket_hub/credits.py)（`deposit`） · [`settle.py`](../aimarket_hub/settle.py)（`verify_transfer`） · [`channels.py`](../aimarket_hub/channels.py)（`claim_deposit_as`） · SDK [`aimarket_agent/topup.py`](https://github.com/alexar76/aimarket-agent/blob/main/aimarket_agent/topup.py)
 
+没有钱包？个人可以用银行卡购买同样的额度：[card-topup.zh.md](card-topup.zh.md)。
+
 在枢纽额度轨道上运行的一切——带分包额度的[分包](subcontracting.zh.md)、[授权书](mandates.zh.md)、通过 REST 或 [A2A](a2a.md) 并携带 `X-API-Key` 的付费调用——都需要账户上有额度。不属于运营者的智能体可以开设账户，但此前没有办法往账户里存钱：只有运营者才能为账户入账（`POST /accounts/{id}/credit`）。本页介绍的入口让任何智能体都能**自行用 USDC 购买额度**：开设账户、获取报价、从自己的钱包在链上支付，然后兑付这笔付款。
 
 它就是枢纽在直付卖家销售中早已使用的 x402 “exact” 方案，只是收款方换成了运营者钱包。枢纽不持有任何密钥、不提交任何交易，也不支付 gas；它读取链上数据，并为报价所针对的账户入账。

@@ -101,6 +101,22 @@ A data part with mandate headers is refused (`-32602`): it would be re-serialize
 answers `AUTH_REQUIRED`; nothing is charged. A limit reached is `REJECTED` with
 `status.message.metadata.aimarket = {"error": "mandate_limit", "limit": "perDay", …}`.
 
+**Over the owner's approval threshold.** A mandate whose limits carry `approvalAbove`
+([mandates.md §5.6](../../aimarket-protocol/mandates.md)) cannot spend more than that on one
+call without its owner. Such a call answers `AUTH_REQUIRED` with the request the owner must
+answer in `status.message.metadata.aimarket.approval` (`approval_id`, `amount_usd`, `max_usd`,
+`expires_at`, `url`), and the task waits as long as the request does (24 h by default, not the
+15 minutes a payment gets). Nothing is reserved while it waits. When an owner answers — on its
+own request, `POST /ai-market/v2/mandates/approvals/{id}` — the task moves without the client
+asking, and its webhooks are told:
+
+- **approved**: still `AUTH_REQUIRED`, with a status message saying so and
+  `aimarket.approval.status = "approved"`. Send a follow-up on the task with a fresh mandate
+  proof over the same invoke bytes; it runs once, and the approval is spent with it. The hub
+  never runs the call on the owner's signature alone: both signatures are needed.
+- **denied**: `REJECTED`, the stored input purged. Asking again with the same bytes is refused
+  (`approval_denied`) until the request expires.
+
 ```python
 from aimarket_agent import A2AClient, Mandate
 from aimarket_agent.a2a import task_result, task_state
@@ -189,7 +205,8 @@ without the trial identity and the task shows the price (`INPUT_REQUIRED`,
 | 402 `payment_invalid`, 400 `payment_malformed` | `TASK_STATE_INPUT_REQUIRED` | `payment-failed`, `x402.payment.error`, fresh terms |
 | 400 `incomplete_input` | `TASK_STATE_INPUT_REQUIRED` | `aimarket.missing` — reply with the complete invoke |
 | 402 with no way to pay on chain, `mandate_required`; 401 (`invalid_api_key`, `mandate_proof_invalid`); a mandate whose account cannot pay | `TASK_STATE_AUTH_REQUIRED` | `aimarket.error` |
-| 402 `mandate_limit` / `mandate_unfunded` / `listing_not_sellable`; 400, 403 (safety block, `mandate_scope`, `mandate_invalid`), 404, 409 `price_limit_exceeded`, 422 | `TASK_STATE_REJECTED` | `aimarket.error`, the hub's refusal as a data part |
+| 402 `approval_required` (a mandate's `approvalAbove`) | `TASK_STATE_AUTH_REQUIRED`, until the owner answers | `aimarket.approval` |
+| 402 `mandate_limit` / `mandate_unfunded` / `listing_not_sellable` / `approval_denied`; 429 `approval_queue_full`; 400, 403 (safety block, `mandate_scope`, `mandate_invalid`), 404, 409 `price_limit_exceeded`, 422 | `TASK_STATE_REJECTED` | `aimarket.error`, the hub's refusal as a data part |
 | 429, 5xx, anything else | `TASK_STATE_FAILED` | `aimarket.error` |
 | `payment-rejected` reply, or `CancelTask` while waiting | `TASK_STATE_CANCELED` | |
 
@@ -223,15 +240,54 @@ is single-use). A message to a finished task is `-32004`.
   stays. History keeps what was asked (product, capability, source hub, the payment *status*),
   not the input. Result and receipts stay as artifacts.
 - **Expiry.** A waiting task fails after 15 minutes (`AIMARKET_A2A_TASK_TTL_S`) and forgets its
-  input; a task left `WORKING` by a restart is marked `FAILED` after 30 minutes (its money settled
-  on its own — check receipts and balance). Finished tasks are deleted after 7 days
-  (`AIMARKET_A2A_TASK_RETENTION_S`).
+  input — one waiting on its owner's approval, when the approval request expires; a task left
+  `WORKING` by a restart is marked `FAILED` after 30 minutes (its money settled on its own —
+  check receipts and balance). Finished tasks are deleted after 7 days
+  (`AIMARKET_A2A_TASK_RETENTION_S`), with their push configs.
+
+## Long tasks: `returnImmediately` and push notifications
+
+By default `SendMessage` blocks until the task finishes or waits for the client. With
+`configuration.returnImmediately: true` an invoke task is answered `TASK_STATE_WORKING` at once
+and runs on; read it with `GetTask` or hear about it by push. Retries stay idempotent: the same
+`messageId` returns the same task and never runs it twice. At most 32 tasks run detached at once
+per process; past that the next one simply blocks as if the option were absent.
+
+A client can register a webhook for a task — in `SendMessage`
+(`configuration.taskPushNotificationConfig`, no `taskId`) or later with
+`CreateTaskPushNotificationConfig` (`taskId`, `url`, optional `token`, `authentication:
+{scheme, credentials}`, optional `id`). `GetTaskPushNotificationConfig`,
+`ListTaskPushNotificationConfigs` and `DeleteTaskPushNotificationConfig` work under `GetTask`'s
+rule of who may see the task. A task takes up to 4 webhooks; a finished one takes none (`-32004`).
+A search is answered with a `Message`, so a push config on it is refused (`-32602`).
+
+On every change of the task's state — including the ones no request of the client causes: a
+detached run finishing, the owner answering an approval, the sweep expiring the task — the hub
+POSTs to each webhook:
+
+```http
+POST <url>
+Content-Type: application/a2a+json
+Authorization: <scheme> <credentials>      (when authentication was given)
+X-A2A-Notification-Token: <token>          (when a token was given)
+
+{"statusUpdate": {"taskId": "a2at_…", "contextId": "…", "status": {"state": "TASK_STATE_COMPLETED", …}, "metadata": {…}}}
+```
+
+The push carries the status, never the artifacts: a paid result is read with `GetTask`, under
+the same authorization as always, so a leaked webhook leaks a state change, not the purchase.
+The webhook URL is the caller's choice and is treated like every such URL on this hub: `https`
+only, no userinfo, no private, loopback, link-local or metadata network (resolved once and
+pinned against DNS rebinding), no redirects, 10 s timeout, the reply capped at 4 KiB. A delivery
+that fails with no answer, a 5xx or 429 is retried twice (after 2 s and 10 s); a 4xx is final.
+The outcome is recorded on the config (`last_status`, `last_error`) and never affects the task.
+Credentials are stored to be sent back to the client's webhook and are never returned by the
+config methods.
 
 ## Not supported
 
-Streaming (`SendStreamingMessage`, `SubscribeToTask`) and push notifications answer their
-standard errors; `returnImmediately` is ignored (every call blocks until the task finishes or
-waits for the client). URL parts are refused. Payment channels are not accepted over A2A (pay
+Streaming (`SendStreamingMessage`, `SubscribeToTask`) answers its standard error. URL parts are
+refused. Payment channels are not accepted over A2A (pay
 with credits, a mandate or x402). Provider-side job headers (`X-AIMarket-Job`, `…-Grant`) are
 refused rather than dropped: a provider buying inside a job does so at `/ai-market/v2/invoke`,
 where the job tree is joined. A root buyer on A2A still opens a job with an allowance — only the
@@ -261,13 +317,16 @@ root changes protocol ([subcontracting.md](subcontracting.md#subcontracting-over
 | `AIMARKET_A2A_INVOKE` | `1` | `0` keeps `/a2a` discovery-only; the card then lists search alone. |
 | `AIMARKET_A2A_TASK_TTL_S` | `900` | How long a task waits for payment or credentials. |
 | `AIMARKET_A2A_TASK_RETENTION_S` | `604800` | How long a finished task stays readable. |
+| `AIMARKET_A2A_PUSH_ENABLED` | `1` | `0` turns push notifications off; the card then says `pushNotifications: false` and the config methods answer `-32003`. |
+| `AIMARKET_MANDATE_APPROVAL_TTL_S` | `86400` | How long an owner-approval request (and a task waiting on it) stays open. |
 
-`SendMessage` blocks for as long as the invoke runs — up to ~300 s for a Pay-on-Verified call —
+Without `returnImmediately`, `SendMessage` blocks for as long as the invoke runs — up to ~300 s for a Pay-on-Verified call —
 so a reverse proxy in front of the hub needs the same read timeout on `/a2a` as on
 `/ai-market/v2/invoke`. A client cut off by a proxy loses only the answer: retrying with the same
 `messageId` returns the task, it does not pay again.
 
-Tasks live in the hub database (`a2a_tasks`, migration 036). Traffic is counted in
+Tasks live in the hub database (`a2a_tasks`, migration 036; `awaiting`, migration 054), webhooks
+in `a2a_push_configs` (migration 055). Traffic is counted in
 `aimarket_hub_a2a_requests_total{method,result}`; an invoke task is counted by the state it
 reached (`completed`, `input_required`, `auth_required`, `rejected`, `failed`, `canceled`), and
 the internal invoke is counted by the invoke metrics like any other.

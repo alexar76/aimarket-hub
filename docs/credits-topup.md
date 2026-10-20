@@ -15,6 +15,8 @@ It is the x402 "exact" scheme the hub already speaks for seller-direct sales, po
 operator's wallet. The hub holds no key, submits no transaction and pays no gas; it reads the
 chain and credits the account the quote was made for.
 
+No wallet? A person can buy the same credit with a card: [card-topup.md](card-topup.md).
+
 **Status.** In the hub from 2026-09-28, **off by default** (`AIMARKET_TOPUP_ENABLED`). Proven end
 to end on a local chain (anvil) with a real EIP-3009 token contract (`tests/test_topup_chain.py`),
 on SQLite and PostgreSQL, after an independent review of the money path. A hub advertises

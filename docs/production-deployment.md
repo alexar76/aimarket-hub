@@ -135,6 +135,14 @@ AIMARKET_SIGNUP_GRANT_USD=0
 AIMARKET_SIGNUP_GRANT_DAILY_USD=2.00
 AIMARKET_SIGNUP_GRANT_TOTAL_USD=50.00
 
+# Selling credit for a card through Stripe Checkout (docs/card-topup.md). Off by default; both
+# secrets as docker secrets. The webhook endpoint is <hub>/ai-market/v2/stripe/webhook.
+# AIMARKET_CARD_TOPUP_ENABLED=1
+# STRIPE_SECRET_KEY_FILE=/run/secrets/stripe_secret_key
+# STRIPE_WEBHOOK_SECRET_FILE=/run/secrets/stripe_webhook_secret
+# Who owes the sales tax (docs/card-topup.md "Sales tax"): off | stripe_tax | managed_payments.
+# AIMARKET_CARD_TOPUP_TAX=off
+
 # Selling credit for USDC (5.3 below; docs/credits-topup.md). Off by default.
 AIMARKET_TOPUP_ENABLED=1
 # A wallet that receives top-ups AND NOTHING ELSE (its address only, never its key). Then the

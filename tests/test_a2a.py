@@ -58,7 +58,7 @@ class TestAgentCard:
         extensions = capabilities.pop("extensions")
         assert capabilities == {
             "streaming": False,
-            "pushNotifications": False,
+            "pushNotifications": True,
             "extendedAgentCard": False,
         }
         # x402 is offered, never demanded: credits, mandates and the trial work without it.
@@ -166,7 +166,10 @@ class TestA2AJsonRpc:
             ("SendStreamingMessage", {}, -32004),
             ("SubscribeToTask", {}, -32004),
             ("GetExtendedAgentCard", {}, -32004),
-            ("CreateTaskPushNotificationConfig", {}, -32003),
+            ("CreateTaskPushNotificationConfig", {}, -32602),
+            ("CreateTaskPushNotificationConfig",
+             {"taskId": "a2at_" + "0" * 24, "url": "https://client.example/hook"}, -32001),
+            ("ListTaskPushNotificationConfigs", {"taskId": "a2at_" + "0" * 24}, -32001),
             ("UnknownMethod", {}, -32601),
         ],
     )
@@ -196,11 +199,25 @@ class TestA2AJsonRpc:
         })
         assert _post(client, file_request).json()["error"]["code"] == -32005
 
+        # A search creates no task, so a webhook for it could never fire: refused, not ignored.
         push_request = _request()
         push_request["params"]["configuration"] = {
             "taskPushNotificationConfig": {"url": "https://attacker.example/callback"}
         }
-        assert _post(client, push_request).json()["error"]["code"] == -32003
+        error = _post(client, push_request).json()["error"]
+        assert error["code"] == -32602 and "for tasks" in error["message"]
+
+    def test_push_switched_off_says_so(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AIMARKET_A2A_PUSH_ENABLED", "0")
+        config = HubConfig()
+        config.hub_url = "https://independent.example/hub"
+        config.db_path = str(tmp_path / "off.db")
+        config.signing_key_path = str(tmp_path / "off-key")
+        app = create_app(config=config, db=HubDatabase(config.db_path), signer=Signer(config.signing_key_path))
+        with TestClient(app) as off:
+            assert off.get("/.well-known/agent-card.json").json()["capabilities"]["pushNotifications"] is False
+            body = _post(off, _request(method="CreateTaskPushNotificationConfig", params={})).json()
+            assert body["error"]["code"] == -32003
 
     @pytest.mark.parametrize(
         "options",

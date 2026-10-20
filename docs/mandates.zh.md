@@ -94,6 +94,17 @@ owner_unlink_payload(old_owner.did, hub_origin=HUB, account_id=ACCOUNT_ID, autho
 
 使用 `POST /ai-market/v2/mandates/revoke` 撤销——由链中任一签发方签名（`revoke_payload(owner, hub_origin=HUB, digest=digest)`），或者作为紧急开关，只带 `{"digest"}` 和出资账户的 `X-API-Key`。撤销一份授权书会撤销从它再授权出去的一切。已经做出的预留照常结算。
 
+### 超过阈值需所有者批准
+
+在授权书的 `limits` 中加入 `approvalAbove`（µUSD），任何超过该金额的单次调用都不会直接支出，而是等待您的答复（[规范 §5.6](../../aimarket-protocol/mandates.md)）。小额调用照常无人值守运行；大额调用需要您对**这一次**调用签名。
+
+1. 智能体超过阈值的调用返回 `402 approval_required`，附带 `approval` 块：`approval_id`、`capability_id`、`amount_usd`、`max_usd`（您批准的上限；路由调用包含路由费）、`body_sha256`（确切的请求）、`expires_at`（24 小时）和 `url`。不会预留任何资金。
+2. 待处理的请求：用出资账户的 `X-API-Key` 调用 `GET /ai-market/v2/mandates/approvals?status=pending`。
+3. 答复：`POST /ai-market/v2/mandates/approvals/{approval_id}`，正文 `{"decision": "approve", "by": <您的 DID>, "t", "n", "s"}`；`s` 是您对以下各行（以 `\n` 分隔）的 Ed25519 签名：`aimarket-mandate-approval/1`、枢纽基础 URL、`approval_id`、`approve`、授权书摘要、`body_sha256`、`max_micro`、`t`、`n`。账户的任一所有者 DID 都可签名。仅凭 API 密钥只能**拒绝**（`{"decision": "deny"}`）。
+4. 智能体用新的证明再次发送同一请求。调用只执行一次；批准随之消耗，若调用在扣款前失败则退回。拒绝在请求到期前一直有效（`402 approval_denied`）。
+
+每份授权书最多 16 个待处理请求（`429 approval_queue_full`）。再委托的授权书保留父级阈值，只能调低。通过 A2A 时，任务（Task）在 `AUTH_REQUIRED` 中等待，您答复后即推进，并向智能体的 webhook 发送推送通知。
+
 ### 读取授权书的状态
 
 `GET /ai-market/v2/mandates/{digest}` 回应任何持有该摘要的人（未知摘要：`404 mandate_unknown`）。`status` 是授权书**作为一条链**的状态——父授权书已被撤销的再授权不能使用，无论它自己的记录看起来多么干净：
@@ -258,6 +269,7 @@ SUBCONTRACT_CANARY_API_KEY=aimk_… scripts/subcontract_canary.py --a2a      # t
 | `AIMARKET_HISTOR_URL` | 未设置 | provenance 插件锚定收据摘要的位置；未设置 = 锚定关闭。 |
 | `AIMARKET_HISTOR_FLUSH_S` | `30` | 发件箱（outbox）发送待处理锚点的频率（HISTOR 失败或推迟期间，间隔会退避增长到 10 分钟）。 |
 | `AIMARKET_HISTOR_OUTBOX_RETAIN_DAYS` | `30` | 已锚定行在 outbox 中保留的天数；之后状态路由改为询问 HISTOR。`0` 表示全部保留。 |
+| `AIMARKET_MANDATE_APPROVAL_TTL_S` | `86400` | 所有者批准请求保持开放的时长（300 秒至 7 天）；已批准的请求须在同一时间窗内使用。 |
 
 镜像已安装 `awr`（provenance 插件需要它）。未安装它的枢纽可以正常启动，但对凭授权书的调用回答 `503 mandates_unavailable`。
 

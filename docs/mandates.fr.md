@@ -130,6 +130,31 @@ chaîne (`revoke_payload(owner, hub_origin=HUB, digest=digest)`), ou avec seulem
 la `X-API-Key` du compte de financement, comme coupe-circuit. Révoquer un mandat révoque tout ce
 qui en a été re-délégué. Les réserves déjà prises se règlent normalement.
 
+### Approbation du propriétaire au-delà d'un seuil
+
+Ajoutez `approvalAbove` (µUSD) aux `limits` d'un mandat : tout appel qui coûterait davantage
+attend votre réponse au lieu de dépenser ([spécification §5.6](../../aimarket-protocol/mandates.md)).
+Les petits appels continuent sans vous ; un gros appel exige votre signature sur **cet** appel.
+
+1. L'appel de l'agent au-delà du seuil répond `402 approval_required` avec un bloc `approval` :
+   `approval_id`, `capability_id`, `amount_usd`, `max_usd` (le plafond que vous approuvez ; pour
+   un appel routé il inclut les frais de routage), `body_sha256` (la requête exacte),
+   `expires_at` (24 h) et `url`. Rien n'est réservé.
+2. Ce qui attend : `GET /ai-market/v2/mandates/approvals?status=pending` avec la `X-API-Key` du
+   compte qui finance.
+3. La réponse : `POST /ai-market/v2/mandates/approvals/{approval_id}` avec
+   `{"decision": "approve", "by": <votre DID>, "t", "n", "s"}` ; `s` est votre signature Ed25519
+   sur les lignes `aimarket-mandate-approval/1`, l'URL de base du hub, `approval_id`, `approve`,
+   le digest du mandat, `body_sha256`, `max_micro`, `t`, `n` (séparées par `\n`). Tout DID
+   propriétaire du compte peut signer. La clé API seule ne peut que **refuser** (`{"decision": "deny"}`).
+4. L'agent renvoie la même requête avec une preuve fraîche. Elle s'exécute une fois ;
+   l'approbation est consommée avec elle, ou rendue si l'appel échoue avant d'être débité. Un
+   refus tient jusqu'à l'expiration de la demande (`402 approval_denied`).
+
+Un mandat a au plus 16 demandes en attente (`429 approval_queue_full`). Un mandat redélégué
+garde le seuil de son parent et ne peut que l'abaisser. Par A2A, la Task attend en
+`AUTH_REQUIRED` et avance quand vous répondez, avec une notification push au webhook de l'agent.
+
 ### Lire l'état d'un mandat
 
 `GET /ai-market/v2/mandates/{digest}` répond à quiconque détient l'empreinte (pour une empreinte
@@ -412,6 +437,7 @@ application du hub.
 | `AIMARKET_HISTOR_URL` | non défini | Où le plugin provenance ancre les empreintes des reçus ; non défini = ancrage désactivé. |
 | `AIMARKET_HISTOR_FLUSH_S` | `30` | Fréquence à laquelle la file d'envoi (outbox) expédie les ancres en attente (l'intervalle s'allonge jusqu'à 10 min tant que HISTOR échoue ou diffère). |
 | `AIMARKET_HISTOR_OUTBOX_RETAIN_DAYS` | `30` | Jours pendant lesquels une ligne ancrée reste dans l'outbox ; ensuite la route d'état interroge HISTOR. `0` garde tout. |
+| `AIMARKET_MANDATE_APPROVAL_TTL_S` | `86400` | Durée d'ouverture d'une demande d'approbation du propriétaire (300 s – 7 jours) ; une demande approuvée s'utilise dans la même fenêtre. |
 
 L'image installe déjà `awr` (le plugin provenance en a besoin). Un hub installé sans lui démarre
 normalement et répond `503 mandates_unavailable` aux appels sous mandat.

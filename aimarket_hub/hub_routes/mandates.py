@@ -72,6 +72,72 @@ def register(
             return JSONResponse(status_code=401, content={"success": False, "error": "invalid_api_key"})
         return {"account_id": account, "owners": hub_mandates.owners_of(account), "protocol_version": "v2"}
 
+    # ── Owner approvals (§5.6) ───────────────────────────────────────────────
+    # Registered before /mandates/{digest:path}, which would otherwise take these paths.
+
+    @router.get("/mandates/approvals")
+    async def list_mandate_approvals(
+        status: str = "",
+        limit: int = 50,
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    ):
+        """The funding account's approval requests, newest first — what its owner has to
+        answer (``?status=pending``) and what was answered."""
+        account = _api_key_account(x_api_key)
+        if not account:
+            return JSONResponse(status_code=401, content={"success": False, "error": "invalid_api_key"})
+        if status and status not in (mandates.APPROVAL_PENDING, mandates.APPROVAL_APPROVED, mandates.APPROVAL_DENIED,
+                                     mandates.APPROVAL_USED, mandates.APPROVAL_EXPIRED):
+            return JSONResponse(status_code=400, content={
+                "success": False, "error": "mandate_malformed",
+                "detail": "status is pending, approved, denied, used or expired"})
+        rows = hub_mandates.approvals_for(account, status=status, limit=limit)
+        return {"account_id": account,
+                "approvals": [mandates.approval_public(r, base_url=hub_mandates.hub_origin) for r in rows],
+                "protocol_version": "v2"}
+
+    @router.get("/mandates/approvals/{approval_id}")
+    async def mandate_approval(approval_id: str):
+        """One request. Its id is an unguessable capability (like a job id): the agent hands
+        it to its owner, and either can read where it stands."""
+        row = hub_mandates.approval(approval_id)
+        if row is None:
+            return JSONResponse(status_code=404, content={"success": False, "error": "approval_unknown"})
+        return {**mandates.approval_public(row, base_url=hub_mandates.hub_origin), "protocol_version": "v2"}
+
+    @router.post("/mandates/approvals/{approval_id}")
+    async def decide_mandate_approval(
+        approval_id: str,
+        request: Request,
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    ):
+        """An owner's answer: ``{decision, by, t, n, s}`` signed by an owner DID of the funding
+        account, or ``{"decision": "deny"}`` with the account's API key."""
+        if not _check_invoke_rate(_client_address(request, _TRUSTED_PROXIES) or "anonymous"):
+            return JSONResponse(status_code=429, content={"success": False, "error": "rate_limited"})
+        try:
+            payload = await _json_body(request, limit=4096)
+            if not isinstance(payload, dict):
+                raise mandates.MandateError(400, "mandate_malformed", "body must be an object")
+            signed = bool(payload.get("s"))
+            account = "" if signed else _api_key_account(x_api_key)
+            if not signed and not account:
+                raise mandates.MandateError(
+                    401, "mandate_proof_invalid",
+                    "sign the decision with an owner key ({decision, by, t, n, s}), or deny with X-API-Key",
+                )
+            result = hub_mandates.decide_approval(
+                approval_id, decision=str(payload.get("decision") or ""), by=str(payload.get("by") or ""),
+                proof={"t": payload.get("t"), "n": payload.get("n"), "s": payload.get("s")} if signed else None,
+                account_id=account,
+            )
+        except mandates.MandateError as exc:
+            return _mandate_refusal(exc)
+        if not result.get("unchanged"):
+            hub_mandates.notify_decision(result)
+        return {**result, "url": f"{hub_mandates.hub_origin}/ai-market/v2/mandates/approvals/{approval_id}",
+                "protocol_version": "v2"}
+
     @router.get("/mandates/{digest:path}")
     async def mandate_status(
         digest: str,

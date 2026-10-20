@@ -14,6 +14,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from aimarket_hub import (
+    card_topup,
     consumer_labels,
     credits,
     deposit_watch,
@@ -448,7 +449,7 @@ def register(
 
     @router.get("/account/topups")
     async def list_topups(limit: int = 50, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
-        """The caller's own top-ups, newest first."""
+        """The caller's own top-ups, newest first: USDC quotes, and card checkouts beside them."""
         ledger = hub_credits
         if not credits.enabled() or ledger is None:
             raise HTTPException(status_code=503, detail="credit accounts are off on this hub")
@@ -458,7 +459,86 @@ def register(
         decimals = int((x402.asset_profile() or {}).get("decimals") or 6)
         return {"success": True, "account_id": account_id,
                 "topups": [q.public(decimals, owner=True) for q in hub_topups.for_account(account_id, limit)],
+                "card_topups": [card_topup.public(r, owner=True, hub_url=config.hub_url)
+                                for r in hub_card_topups.for_account(account_id, limit)],
                 "protocol_version": "v2"}
+
+    # ── Card top-ups (card_topup.py): Stripe Checkout onto the same credits rail ──
+    hub_card_topups = card_topup.CardTopupStore(db._conn)
+
+    @router.post("/account/topup/card")
+    async def card_topup_open(
+        request: Request,
+        body: dict | None = None,
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    ):
+        """Open a Stripe Checkout for ``{"amount_usd": N}`` of credit on the key's account and
+        answer its ``checkout_url``. A person pays there; the credit lands when Stripe confirms."""
+        ledger = hub_credits
+        if not credits.enabled() or ledger is None:
+            return JSONResponse(status_code=503, content=topup.TopupError(
+                503, "topup_unavailable", "credit accounts are off on this hub").body())
+        account_id = ledger.resolve(x_api_key or "")
+        if not account_id:
+            return JSONResponse(status_code=401, content=topup.TopupError(
+                401, "api_key_required",
+                "send the X-API-Key of the account to credit (open one with POST /ai-market/v2/accounts)",
+            ).body())
+        # Each checkout is a call to Stripe on the operator's key: a budget per account.
+        if not topup.verify_allowed(f"card-open:{account_id}", per_minute=6):
+            return JSONResponse(status_code=429, content=topup.TopupError(
+                429, "too_many_attempts", "too many checkouts opened; retry in a minute", retryable=True).body())
+        answer = await _topup_offloaded(lambda: card_topup.create(
+            store=hub_card_topups, account_id=account_id, amount_usd=(body or {}).get("amount_usd"),
+            hub_url=config.hub_url))
+        if isinstance(answer, JSONResponse):
+            return answer
+        return JSONResponse(status_code=201, content=answer)
+
+    @router.get("/card-topups/{topup_id}")
+    async def card_topup_read(topup_id: str, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+        """Where a card top-up stands — also the page Stripe sends the buyer back to. The id
+        is unguessable; the account it funds is shown only to that account's key."""
+        row = hub_card_topups.get(topup_id)
+        if row is None:
+            return JSONResponse(status_code=404, content=topup.TopupError(
+                404, "topup_unknown", "no card top-up with that id on this hub").body())
+        owner = bool(x_api_key) and hub_credits is not None and hub_credits.resolve(x_api_key) == row["account_id"]
+        return {"success": True, **card_topup.public(row, owner=owner, hub_url=config.hub_url),
+                "protocol_version": "v2"}
+
+    @router.post("/card-topups/{topup_id}/refresh")
+    async def card_topup_refresh(topup_id: str, request: Request):
+        """Ask Stripe where this checkout stands and credit it if paid: the recovery path for
+        a webhook that never arrived. Open to whoever holds the id — the credit can only go to
+        the account bound when the checkout was opened."""
+        if not topup.verify_allowed(_topup_limit_key(request)):
+            return JSONResponse(status_code=429, content=topup.TopupError(
+                429, "too_many_attempts", "too many checks from this caller; retry in a minute",
+                retryable=True).body())
+        result = await _topup_offloaded(lambda: card_topup.refresh(
+            store=hub_card_topups, ledger=hub_credits, topup_id=topup_id))
+        if isinstance(result, JSONResponse):
+            return result
+        row = hub_card_topups.get(topup_id)
+        return {"success": True, "outcome": result.get("outcome"),
+                **(card_topup.public(row, hub_url=config.hub_url) if row else {}), "protocol_version": "v2"}
+
+    @router.post("/stripe/webhook")
+    async def stripe_webhook(request: Request):
+        """Stripe's events. Verified by Stripe-Signature before anything is read; the figures
+        that matter are checked against the checkout the hub opened (card_topup.settle_session)."""
+        payload = await request.body()
+        if len(payload) > 256 * 1024:
+            return JSONResponse(status_code=413, content={"success": False, "error": "event_too_large"})
+        if not card_topup.webhook_secret() or not credits.enabled() or hub_credits is None:
+            return JSONResponse(status_code=503, content={"success": False, "error": "card_topup_unavailable"})
+        result = await _topup_offloaded(lambda: card_topup.handle_webhook(
+            store=hub_card_topups, ledger=hub_credits, payload=payload,
+            signature=request.headers.get("Stripe-Signature", "")))
+        if isinstance(result, JSONResponse):
+            return result
+        return {"received": True, "outcome": result.get("outcome")}
 
     @router.get("/account/ledger")
     async def read_credit_ledger(

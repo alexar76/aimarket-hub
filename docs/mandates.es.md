@@ -130,6 +130,31 @@ Se revoca con `POST /ai-market/v2/mandates/revoke`, firmado por cualquier emisor
 de la cuenta de financiación, como interruptor de emergencia. Revocar un mandato revoca todo lo
 redelegado a partir de él. Las reservas ya tomadas se liquidan con normalidad.
 
+### Aprobación del propietario por encima de un umbral
+
+Añada `approvalAbove` (µUSD) a los `limits` de un mandato y cualquier llamada que cueste más
+espera por usted en lugar de gastar ([especificación §5.6](../../aimarket-protocol/mandates.md)).
+Las llamadas pequeñas siguen sin usted; una grande necesita su firma sobre **esa** llamada.
+
+1. La llamada del agente por encima del umbral responde `402 approval_required` con un bloque
+   `approval`: `approval_id`, `capability_id`, `amount_usd`, `max_usd` (el techo que usted
+   aprueba; en una llamada enrutada incluye la comisión de enrutamiento), `body_sha256` (la
+   petición exacta), `expires_at` (24 h) y `url`. No se reserva nada.
+2. Lo pendiente: `GET /ai-market/v2/mandates/approvals?status=pending` con el `X-API-Key` de la
+   cuenta que financia.
+3. La respuesta: `POST /ai-market/v2/mandates/approvals/{approval_id}` con
+   `{"decision": "approve", "by": <su DID>, "t", "n", "s"}`; `s` es su firma Ed25519 sobre las
+   líneas `aimarket-mandate-approval/1`, la URL base del hub, `approval_id`, `approve`, el digest
+   del mandato, `body_sha256`, `max_micro`, `t`, `n` (separadas por `\n`). Puede firmar cualquier
+   DID propietario de la cuenta. La clave API sola solo puede **denegar** (`{"decision": "deny"}`).
+4. El agente repite la misma petición con una prueba nueva. Se ejecuta una vez; la aprobación se
+   gasta con ella, o vuelve si la llamada falla antes del cobro. Una denegación se mantiene hasta
+   que la solicitud expira (`402 approval_denied`).
+
+Un mandato puede tener como máximo 16 solicitudes esperando (`429 approval_queue_full`). Un
+mandato redelegado conserva el umbral del padre y solo puede bajarlo. Por A2A la tarea espera
+en `AUTH_REQUIRED` y avanza cuando usted responde, con una notificación push al webhook del agente.
+
 ### Leer el estado de un mandato
 
 `GET /ai-market/v2/mandates/{digest}` responde a cualquiera que tenga el digest (a uno
@@ -406,6 +431,7 @@ hub.
 | `AIMARKET_HISTOR_URL` | sin definir | Dónde ancla el plugin de provenance los digests de los recibos; sin definir = anclaje apagado. |
 | `AIMARKET_HISTOR_FLUSH_S` | `30` | Cada cuánto la bandeja de salida (outbox) envía las anclas pendientes (el intervalo crece hasta 10 min mientras HISTOR falla o aplaza). |
 | `AIMARKET_HISTOR_OUTBOX_RETAIN_DAYS` | `30` | Días que una fila anclada queda en el outbox; después la ruta de estado pregunta a HISTOR. `0` las conserva todas. |
+| `AIMARKET_MANDATE_APPROVAL_TTL_S` | `86400` | Cuánto queda abierta una solicitud de aprobación del propietario (300 s – 7 días); una aprobada se usa en la misma ventana. |
 
 La imagen ya instala `awr` (lo necesita el plugin de provenance). Un hub instalado sin él arranca
 con normalidad y responde `503 mandates_unavailable` a las llamadas con mandato.

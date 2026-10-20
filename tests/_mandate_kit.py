@@ -52,7 +52,8 @@ _START = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=5
 
 def issue(issuer: SigningKey, subject: str, *, scope=("*",), audience=(HUB,), per_call=20_000,
           per_day=1_000_000, total=None, per_product=None, subcontract=None, parent="",
-          valid_from: datetime | None = None, days: int = 30, extra: dict | None = None) -> dict:
+          valid_from: datetime | None = None, days: int = 30, extra: dict | None = None,
+          approval_above: int | None = None) -> dict:
     now = datetime.now(timezone.utc).replace(microsecond=0)
     start = valid_from or _START
     limits: dict[str, int] = {"perCall": per_call, "perDay": per_day}
@@ -60,6 +61,8 @@ def issue(issuer: SigningKey, subject: str, *, scope=("*",), audience=(HUB,), pe
         limits["total"] = total
     if per_product is not None:
         limits["perProductPerDay"] = per_product
+    if approval_above is not None:
+        limits["approvalAbove"] = approval_above
     body: dict[str, Any] = {"version": 1, "audience": list(audience), "scope": list(scope), "limits": limits}
     if subcontract is not None:
         body["subcontract"] = subcontract
@@ -225,6 +228,17 @@ def mandated_invoke(client: TestClient, m: dict, payload: dict, *, agent: Signin
 
 
 ECHO = {"product_id": "demo-echo", "capability_id": "demo.echo@v1", "input": {"text": "hi"}, "source_hub": "local"}
+
+
+def approval_payload(by: SigningKey, approval: dict, decision: str = "approve", *,
+                     max_micro: int | None = None, n: str | None = None) -> dict:
+    """An owner's signed answer to an approval request (mandates.md §5.6)."""
+    t, n = int(time.time()), n or nonce()
+    message = "\n".join([
+        "aimarket-mandate-approval/1", HUB, approval["approval_id"], decision, approval["mandate"],
+        approval["body_sha256"], str(approval["max_micro"] if max_micro is None else max_micro), str(t), n,
+    ]).encode()
+    return {"decision": decision, "by": by.did, "t": t, "n": n, "s": b64url(by.sign(message))}
 
 
 def owner_change(by: SigningKey, account_id: str, action: str, did: str, require_mandate: bool = False) -> dict:

@@ -1396,6 +1396,111 @@ _register(53, "053_delivery_confirmations", """
     DROP TABLE IF EXISTS delivery_confirmations;
 """)
 
+# 054: Owner approval above a threshold (mandates.md §5.6). A mandate whose limits carry
+# `approvalAbove` cannot spend more than that on one call until an owner of its funding
+# account signs THAT call: these rows are the requests and the owners' answers.
+#   * leaf_digest + body_sha256 — what was asked: the exact invoke bytes under the exact
+#                                 mandate. At most one pending request per pair (partial index).
+#   * max_micro                 — the ceiling the owner signs; the call may not reserve more.
+#   * receipt_id                — the hold that used an approved request. Released with that
+#                                 hold (the call did not happen), kept when it is captured.
+# a2a_tasks.awaiting names the approval a task waits on, so the owner's answer can reach the
+# task (and its push subscribers) without the agent asking.
+_register(54, "054_mandate_approvals", """
+    CREATE TABLE IF NOT EXISTS mandate_approvals (
+        approval_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        leaf_digest TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        capability_id TEXT NOT NULL,
+        product_id TEXT NOT NULL DEFAULT '',
+        source_hub TEXT NOT NULL DEFAULT '',
+        body_sha256 TEXT NOT NULL,
+        amount_micro BIGINT NOT NULL,
+        max_micro BIGINT NOT NULL,
+        threshold_micro BIGINT NOT NULL,
+        status TEXT NOT NULL,
+        receipt_id TEXT NOT NULL DEFAULT '',
+        decided_by TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        decided_at REAL NOT NULL DEFAULT 0,
+        expires_at REAL NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_mandate_approvals_pending
+        ON mandate_approvals(leaf_digest, body_sha256) WHERE status = 'pending';
+    CREATE INDEX IF NOT EXISTS idx_mandate_approvals_account ON mandate_approvals(account_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_mandate_approvals_receipt ON mandate_approvals(receipt_id);
+    ALTER TABLE a2a_tasks ADD COLUMN awaiting TEXT NOT NULL DEFAULT '';
+""", """
+    ALTER TABLE a2a_tasks DROP COLUMN awaiting;
+    DROP INDEX IF EXISTS idx_mandate_approvals_receipt;
+    DROP INDEX IF EXISTS idx_mandate_approvals_account;
+    DROP INDEX IF EXISTS idx_mandate_approvals_pending;
+    DROP TABLE IF EXISTS mandate_approvals;
+""")
+
+# 055: A2A push notifications (docs/a2a.md "Push notifications"). One row per webhook a
+# client registered for one of its tasks. The token and credentials are the client's own
+# secrets for its webhook, kept only to be sent back to it; they leave with the task.
+_register(55, "055_a2a_push_configs", """
+    CREATE TABLE IF NOT EXISTS a2a_push_configs (
+        task_id TEXT NOT NULL,
+        config_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        token TEXT NOT NULL DEFAULT '',
+        auth_scheme TEXT NOT NULL DEFAULT '',
+        auth_credentials TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        last_status INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT NOT NULL DEFAULT '',
+        last_sent_at REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (task_id, config_id)
+    );
+""", """
+    DROP TABLE IF EXISTS a2a_push_configs;
+""")
+
+# 056: Card top-ups through Stripe Checkout (card_topup.py, docs/credits-topup.md). One row
+# per checkout the hub opened: the account it credits is bound here, never taken from Stripe's
+# event, and the ledger line is referenced by the session id so a redelivered event credits once.
+_register(56, "056_card_topups", """
+    CREATE TABLE IF NOT EXISTS card_topups (
+        topup_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        amount_cents BIGINT NOT NULL,
+        charge_cents BIGINT NOT NULL,
+        status TEXT NOT NULL,
+        session_id TEXT NOT NULL DEFAULT '',
+        checkout_url TEXT NOT NULL DEFAULT '',
+        payment_intent TEXT NOT NULL DEFAULT '',
+        livemode INTEGER NOT NULL DEFAULT 0,
+        credited_mc BIGINT NOT NULL DEFAULT 0,
+        detail TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        expires_at REAL NOT NULL,
+        credited_at REAL NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_card_topups_account ON card_topups(account_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_card_topups_intent ON card_topups(payment_intent);
+""", """
+    DROP INDEX IF EXISTS idx_card_topups_intent;
+    DROP INDEX IF EXISTS idx_card_topups_account;
+    DROP TABLE IF EXISTS card_topups;
+""")
+
+# 057: Who owed the sales tax on a card top-up (AIMARKET_CARD_TOPUP_TAX), kept on the row it was
+# opened under, and the tax Stripe computed. A hub that changes the setting must not re-check an
+# older checkout's figures under the new rule.
+_register(57, "057_card_topup_tax", """
+    ALTER TABLE card_topups ADD COLUMN tax_mode TEXT NOT NULL DEFAULT 'off';
+    ALTER TABLE card_topups ADD COLUMN tax_behavior TEXT NOT NULL DEFAULT '';
+    ALTER TABLE card_topups ADD COLUMN tax_cents BIGINT NOT NULL DEFAULT 0;
+""", """
+    ALTER TABLE card_topups DROP COLUMN tax_cents;
+    ALTER TABLE card_topups DROP COLUMN tax_behavior;
+    ALTER TABLE card_topups DROP COLUMN tax_mode;
+""")
+
 def channel_ledger_versions() -> list[int]:
     """Migration versions whose DDL touches a channel-ledger table.
 
