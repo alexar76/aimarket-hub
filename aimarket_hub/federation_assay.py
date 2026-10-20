@@ -73,6 +73,16 @@ def sandbox_input_for_tool(tool: dict[str, Any]) -> dict[str, Any]:
     for key in required:
         name = str(key)
         spec = props.get(name) if isinstance(props.get(name), dict) else {}
+        # The publisher's own example or default first: a placeholder like "sandbox" is not a
+        # legal value for a field such as a domain name, and an honest 400 for it failed the
+        # assay of a working domain seller (domains.modelmarket.dev, 2026-10-20).
+        examples = spec.get("examples")
+        if isinstance(examples, list) and examples:
+            out[name] = examples[0]
+            continue
+        if "default" in spec:
+            out[name] = spec["default"]
+            continue
         enum = spec.get("enum")
         if isinstance(enum, list) and enum:
             out[name] = enum[0]

@@ -55,6 +55,15 @@ def test_sandbox_input_fills_required_from_schema():
     }
 
 
+def test_sandbox_input_prefers_the_publishers_example_or_default():
+    tool = {"input_schema": {"type": "object", "required": ["domain", "period", "tld"], "properties": {
+        "domain": {"type": "string", "examples": ["example.com", "example.org"]},
+        "period": {"type": "integer", "default": 1},
+        "tld": {"type": "string", "enum": ["com", "net"]},
+    }}}
+    assert sandbox_input_for_tool(tool) == {"domain": "example.com", "period": 1, "tld": "com"}
+
+
 def test_sandbox_input_stays_empty_without_required():
     assert sandbox_input_for_tool({"input_schema": {"type": "object", "properties": {}}}) == {}
 
