@@ -142,7 +142,7 @@ Stripe 调用 `POST /ai-market/v2/stripe/webhook`。在读取事件的任何内�
 |---|---|---|
 | `AIMARKET_CARD_TOPUP_MIN_USD` | `5` | 最小充值额（不低于 Stripe 的 0.50 美元）。 |
 | `AIMARKET_CARD_TOPUP_MAX_USD` | `100` | 单笔最大充值额。 |
-| `AIMARKET_CARD_TOPUP_DAILY_USD` | `200` | 单个账户 24 小时内可用银行卡购买的最高额度。未到期的支付（1 小时）也计入，因为其中任何一笔仍可能被付款。 |
+| `AIMARKET_CARD_TOPUP_DAILY_USD` | `200` | 单个账户 24 小时内可用银行卡购买的最高额度。未到期的支付（1 小时）也计入，因为其中任何一笔仍可能被付款；已退款或有争议的充值继续计入，因为其额度仍留在账户上。同一时刻发起的支付会相互核对：合计不能超过限额。 |
 | `AIMARKET_CARD_TOPUP_FEE_PCT` | `0` | 按百分比的附加费，付款前显示，不计入额度。`0`：银行卡手续费由运营者承担。在限制对银行卡收取附加费的地区，请保持 `0`。 |
 | `AIMARKET_CARD_TOPUP_FEE_FIXED_USD` | `0` | 每笔支付的固定附加费。 |
 | `AIMARKET_CARD_TOPUP_TAX` | `off` | `off`、`stripe_tax` 或 `managed_payments`（[见上文](#销售税三种模式)）。 |

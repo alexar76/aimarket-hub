@@ -345,6 +345,11 @@ class TestJobTree:
                 subcontract.JOB_HEADER: stash[subcontract.JOB_HEADER], "X-API-Key": provider_key})
             assert late.status_code == 403 and late.json()["error"] == "job_invalid", late.text
             assert "finished" in late.json()["detail"]
+            # The refusal leaves no write pending. On PostgreSQL one did: the request's
+            # connection stayed "idle in transaction", and the next write to the row hung.
+            raw = getattr(db._conn, "_conn", None)
+            if raw is not None and hasattr(raw, "in_transaction"):
+                assert not raw.in_transaction
 
     def test_a_child_refused_after_joining_gives_its_slots_back(self, world):
         client, db, providers = world

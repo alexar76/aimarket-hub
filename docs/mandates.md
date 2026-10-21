@@ -142,6 +142,9 @@ doc = issue_mandate(owner, agent.did, audience=[HUB], scope=["*"],
    block: `approval_id`, `capability_id`, `amount_usd`, `max_usd` (the ceiling you approve; a
    routed call includes the routing fee), `body_sha256` (the exact request), `expires_at`
    (24 h) and `url`. Nothing is reserved. Asking again before you answer returns the same request.
+   A call that another of the mandate's limits (`perCall`, `perDay`, `total`, a product's daily
+   limit) would refuse anyway is refused at once with `402 mandate_limit` — you are never asked
+   to sign what could not run.
 2. You see what waits: `GET /ai-market/v2/mandates/approvals?status=pending` with the funding
    account's `X-API-Key`.
 3. You answer: `POST /ai-market/v2/mandates/approvals/{approval_id}` with
@@ -173,6 +176,48 @@ An agent may have at most 16 requests waiting (`429 approval_queue_full`). Re-de
 mandates keep the parent's threshold and may only lower it. Over A2A the task waits in
 `AUTH_REQUIRED` and moves when you answer, with a push to the agent's webhook
 ([a2a.md](a2a.md#paid-with-a-mandate)).
+
+### Being told when a call waits for you
+
+Without a channel an owner learns about a request only by asking (step 2 above). Register
+channels on the funding account and the hub sends each new request — and the answer to it —
+there. A notification only tells: approving still needs an owner key's signature, which no
+chat, channel or ticket holds, and every message says how to approve and how to deny.
+
+```bash
+# Telegram through the hub's bot (when the operator runs one): press Start with it, then give your chat id
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "telegram", "chat_id": "123456789"}'
+# … or through your own bot: add "bot_token": "123456789:AA…"
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "slack", "webhook_url": "https://hooks.slack.com/services/T…/B…/…"}'
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "jira", "base_url": "https://acme.atlassian.net", "email": "ops@acme.example",
+       "api_token": "…", "project_key": "OPS", "issue_type": "Task"}'
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "webhook", "url": "https://ops.acme.example/hooks/aimarket", "secret": "…"}'
+# send a test message now and see what the channel answered
+curl -X POST "$HUB/ai-market/v2/mandates/notify/<channel_id>/test" -H "X-API-Key: $KEY"
+```
+
+| `kind` | What you give | What arrives |
+|---|---|---|
+| `telegram` | `chat_id` (a number, or `@channel` where the bot is an admin). `bot_token` for your own bot; without it the hub's bot is used, if the operator runs one (`GET …/notify` names it in `telegram_bot`). | A message: which capability, how much, the ceiling, until when, how to approve and how to deny. HTML, or the same words as plain text if Telegram refuses the markup. |
+| `slack` | `webhook_url` of an incoming webhook (`https://hooks.slack.com/services/…` or `/triggers/…`). | The same text. |
+| `jira` | Jira Cloud `base_url` (https), `email`, `api_token` (id.atlassian.com → Security → API tokens), `project_key`, `issue_type` (default `Task`). | One issue per request; the answer is added to it as a comment. |
+| `webhook` | `url` (https), optional `secret`. | `POST` of `{"event": "mandate.approval.requested" \| "….approved" \| "….denied", "approval": {…}, "title", "text"}` with `X-AIMarket-Event`; with a secret also `X-AIMarket-Signature: t=<unix>,v1=<hex HMAC-SHA256 of "<t>.<body>">`. |
+
+- `GET /ai-market/v2/mandates/notify` lists the account's channels with the outcome of each
+  one's last delivery. Secrets — a bot token, the Slack URL, a Jira token, a webhook secret —
+  are stored to be used and never returned (the Slack URL shows its last four characters).
+- `POST …/notify/{channel_id}/test` sends a test message at once and answers `delivered` and
+  what the channel said; `DELETE …/notify/{channel_id}` removes a channel. Up to 8 per account.
+- A channel belongs to the funding account, so it hears about every mandate that account
+  funds. The account's API key manages channels: the same key already lists its pending requests.
+- Every address is checked like any address a caller gives this hub: https only, no private
+  or metadata networks, resolved once and pinned, no redirects. Delivery runs off the request
+  path, retries twice (after 2 s and 10 s) on no answer, a 5xx or a 429, and never changes the
+  request it reports on.
 
 ### Reading a mandate's status
 
@@ -438,6 +483,8 @@ the real hub app.
 | `AIMARKET_HISTOR_FLUSH_S` | `30` | How often the outbox sends pending anchors (backs off to 10 min while HISTOR fails or defers). |
 | `AIMARKET_HISTOR_OUTBOX_RETAIN_DAYS` | `30` | Days an anchored row stays in the outbox; after that the status route asks HISTOR. `0` keeps every row. |
 | `AIMARKET_MANDATE_APPROVAL_TTL_S` | `86400` | How long an owner-approval request stays open (300 s – 7 days). An approved one must be used within the same window. |
+| `AIMARKET_NOTIFY_TELEGRAM_BOT_TOKEN` (or `…_FILE`) | unset | The hub's own Telegram bot for approval notifications: owners then give only a chat id. Unset, a Telegram channel needs the owner's own `bot_token`. Never logged. |
+| `AIMARKET_NOTIFY_TELEGRAM_BOT_NAME` | unset | That bot's @name, returned by `GET /mandates/notify` so owners know whom to press Start with. |
 
 The image already installs `awr` (the provenance plugin needs it). A hub installed without it
 starts normally and answers `503 mandates_unavailable` to mandated calls.

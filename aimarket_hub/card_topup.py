@@ -278,17 +278,23 @@ class CardTopupStore:
     def __init__(self, conn: Any):
         self._conn = conn
 
+    def _write(self, sql: str, params: tuple) -> bool:
+        """One statement and its commit in ONE critical section of the shared connection.
+        Taken as two, another thread's failing statement between them rolls the write back:
+        a checkout handed to its buyer whose row never learned its session id could never be
+        credited, however the payment went."""
+        return returning_one(self._conn, f"{sql} RETURNING topup_id", params, commit=True) is not None
+
     def open_new(self, *, account_id: str, amount_cents: int, charge_cents: int, tax: str = TAX_OFF,
                  behavior: str = "", now: float | None = None) -> dict[str, Any]:
         now = time.time() if now is None else now
         topup_id = f"{_ID_PREFIX}{secrets.token_hex(12)}"
-        self._conn.execute(
+        self._write(
             "INSERT INTO card_topups (topup_id, account_id, amount_cents, charge_cents, status, created_at, "
             "expires_at, tax_mode, tax_behavior) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (topup_id, account_id, int(amount_cents), int(charge_cents), NEW, now, now + SESSION_TTL_S,
              tax, behavior),
         )
-        self._conn.commit()
         row = self.get(topup_id)
         assert row is not None
         return row
@@ -308,19 +314,21 @@ class CardTopupStore:
         return dict(row) if row else None
 
     def opened(self, topup_id: str, *, session_id: str, checkout_url: str, livemode: bool) -> None:
-        self._conn.execute(
+        self._write(
             "UPDATE card_topups SET status = ?, session_id = ?, checkout_url = ?, livemode = ? "
             "WHERE topup_id = ? AND status = ?",
             (OPEN, session_id, checkout_url, 1 if livemode else 0, topup_id, NEW),
         )
-        self._conn.commit()
 
     def failed(self, topup_id: str, detail: str) -> None:
-        self._conn.execute(
+        self._write(
             "UPDATE card_topups SET status = ?, detail = ? WHERE topup_id = ? AND status = ?",
             (FAILED, detail[:300], topup_id, NEW),
         )
-        self._conn.commit()
+
+    def discard(self, topup_id: str) -> None:
+        """A row that never reached Stripe and never will (refused before opening)."""
+        self._write("DELETE FROM card_topups WHERE topup_id = ? AND status = ?", (topup_id, NEW))
 
     def credited(self, topup_id: str, *, payment_intent: str, credited_mc: int, tax_cents: int = 0,
                  detail: str = "", now: float | None = None) -> bool:
@@ -335,31 +343,26 @@ class CardTopupStore:
         return won is not None
 
     def expired(self, topup_id: str) -> None:
-        self._conn.execute(
-            "UPDATE card_topups SET status = ? WHERE topup_id = ? AND status = ?", (EXPIRED, topup_id, OPEN),
-        )
-        self._conn.commit()
+        self._write("UPDATE card_topups SET status = ? WHERE topup_id = ? AND status = ?", (EXPIRED, topup_id, OPEN))
 
     def disputed(self, topup_id: str, detail: str) -> None:
-        self._conn.execute(
-            "UPDATE card_topups SET status = ?, detail = ? WHERE topup_id = ?", (DISPUTED, detail[:300], topup_id),
-        )
-        self._conn.commit()
+        self._write("UPDATE card_topups SET status = ?, detail = ? WHERE topup_id = ?",
+                    (DISPUTED, detail[:300], topup_id))
 
     def refunded(self, topup_id: str, detail: str) -> None:
-        self._conn.execute(
-            "UPDATE card_topups SET status = ?, detail = ? WHERE topup_id = ?", (REFUNDED, detail[:300], topup_id),
-        )
-        self._conn.commit()
+        self._write("UPDATE card_topups SET status = ?, detail = ? WHERE topup_id = ?",
+                    (REFUNDED, detail[:300], topup_id))
 
     def committed_cents(self, account_id: str, *, hours: float = 24.0, now: float | None = None) -> int:
         """What this account has bought by card in the window, plus checkouts still open:
-        the daily limit is checked against both, since an open checkout may be paid."""
+        the daily limit is checked against both, since an open checkout may be paid. A
+        refunded or disputed top-up still counts — its credit stays on the account, and the
+        limit bounds what a stolen card can turn into credit, not what the hub kept."""
         now = time.time() if now is None else now
         row = self._conn.execute(
             "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM card_topups WHERE account_id = ? AND ("
-            "(status IN (?, ?) AND credited_at >= ?) OR (status IN (?, ?) AND expires_at > ?))",
-            (account_id, CREDITED, DISPUTED, now - hours * 3600, NEW, OPEN, now),
+            "(status IN (?, ?, ?) AND credited_at >= ?) OR (status IN (?, ?) AND expires_at > ?))",
+            (account_id, CREDITED, DISPUTED, REFUNDED, now - hours * 3600, NEW, OPEN, now),
         ).fetchone()
         return int((dict(row) if row else {}).get("total") or 0)
 
@@ -427,17 +430,29 @@ def create(*, store: CardTopupStore, account_id: str, amount_usd: Any, hub_url: 
     if amount < round(min_usd() * 100) or amount > round(max_usd() * 100):
         raise TopupError(400, "amount_out_of_range",
                          f"a card top-up is {min_usd():.2f}-{max_usd():.2f} USD", min_usd=min_usd(), max_usd=max_usd())
+    limit = round(daily_usd() * 100)
+
+    def over_limit(committed: int) -> TopupError:
+        return TopupError(429, "daily_topup_limit",
+                          f"this account may buy at most {daily_usd():.2f} USD by card in 24 hours "
+                          "(open checkouts count until they expire)", retryable=True,
+                          daily_usd=daily_usd(), committed_usd=committed / 100)
+
     committed = store.committed_cents(account_id, now=now)
-    if committed + amount > round(daily_usd() * 100):
-        raise TopupError(429, "daily_topup_limit",
-                         f"this account may buy at most {daily_usd():.2f} USD by card in 24 hours "
-                         "(open checkouts count until they expire)", retryable=True,
-                         daily_usd=daily_usd(), committed_usd=committed / 100)
+    if committed + amount > limit:
+        raise over_limit(committed)
     fee = fee_cents(amount)
     mode = tax_mode()
     behavior = tax_behavior() if mode != TAX_OFF else ""
     row = store.open_new(account_id=account_id, amount_cents=amount, charge_cents=amount + fee, tax=mode,
                          behavior=behavior, now=now)
+    # Checked again with this row in the sum: two requests that both passed the check above
+    # would otherwise both open, past the limit. Each now sees the other's row, so at worst
+    # both are refused (and may retry); never are both let through.
+    committed = store.committed_cents(account_id, now=now)
+    if committed > limit:
+        store.discard(row["topup_id"])
+        raise over_limit(committed - amount)
     base = hub_url.rstrip("/")
     status_url = f"{base}/ai-market/v2/card-topups/{row['topup_id']}"
     host = base.split("://", 1)[-1].split("/", 1)[0] or "AIMarket hub"

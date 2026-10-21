@@ -23,11 +23,10 @@ def descriptor(cap):
 
 
 async def request_status(spec, operation_id):
-    from aimarket_hub.outbound_http import (resolve_invoke_url, assert_invoke_url_safe,
-        _pin_target, _invoke_allow_hosts, invoke_gateway_hosts)
+    from aimarket_hub.outbound_http import (resolve_invoke_url, prepare_safe_request_async,
+        invoke_gateway_hosts)
     url = resolve_invoke_url(spec['invoke_url'].rstrip('/') + '/operations/' + operation_id)
-    assert_invoke_url_safe(url)
-    target, headers, extensions = _pin_target(url, allow_hosts=_invoke_allow_hosts())
+    target, headers, extensions = await prepare_safe_request_async(url, invoke=True)
     token = os.getenv('AIMARKET_CAPABILITY_TOKEN', '').strip()
     if token and (urlparse(url).hostname or '').lower() in set(invoke_gateway_hosts()):
         headers['X-AIMarket-Internal-Token'] = token

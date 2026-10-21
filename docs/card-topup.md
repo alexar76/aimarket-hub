@@ -192,7 +192,7 @@ checkout was bound to. A paid top-up is therefore never stranded by a lost deliv
 |---|---|---|
 | `AIMARKET_CARD_TOPUP_MIN_USD` | `5` | Smallest top-up (never under Stripe's $0.50). |
 | `AIMARKET_CARD_TOPUP_MAX_USD` | `100` | Largest single top-up. |
-| `AIMARKET_CARD_TOPUP_DAILY_USD` | `200` | Most one account may buy by card in 24 hours. Open checkouts count until they expire (1 hour), since any of them may still be paid. |
+| `AIMARKET_CARD_TOPUP_DAILY_USD` | `200` | Most one account may buy by card in 24 hours. Open checkouts count until they expire (1 hour), since any of them may still be paid; a refunded or disputed top-up keeps counting, since its credit stays on the account. Checkouts opened at the same instant are checked against each other: they cannot together pass the limit. |
 | `AIMARKET_CARD_TOPUP_FEE_PCT` | `0` | A surcharge in percent, shown before paying and not credited. `0`: the operator absorbs the card fee. Where surcharging cards is restricted, keep `0`. |
 | `AIMARKET_CARD_TOPUP_FEE_FIXED_USD` | `0` | A fixed surcharge per checkout. |
 | `AIMARKET_CARD_TOPUP_TAX` | `off` | `off`, `stripe_tax` or `managed_payments` ([above](#sales-tax-three-modes)). |

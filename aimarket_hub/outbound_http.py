@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from ipaddress import ip_address
 from urllib.parse import urlparse, urlunparse
@@ -118,11 +119,10 @@ def _pin_target(url: str, *, allow_hosts: set[str] | None = None) -> tuple[str, 
             addr = ip_address(sockaddr[0])
         except ValueError:
             continue
-        blocked = any(addr in net for net in _crawler._BLOCKED_NETS)
-        mapped = getattr(addr, "ipv4_mapped", None)
-        if not blocked and mapped is not None:
-            blocked = any(mapped in net for net in _crawler._BLOCKED_NETS)
-        if blocked:
+        # The same rule as the validation lookup (crawler._addr_is_blocked), not a shorter
+        # list: this is the answer actually connected to, so a name that answered a public
+        # address first and 198.18.0.10 now must be refused here, not only there.
+        if _crawler._addr_is_blocked(addr):
             raise ValueError(f"host {host} resolves to a blocked network ({sockaddr[0]})")
         if safe_ip is None:
             safe_ip = sockaddr[0]
@@ -136,10 +136,31 @@ def _pin_target(url: str, *, allow_hosts: set[str] | None = None) -> tuple[str, 
     return urlunparse(parsed._replace(netloc=netloc)), headers, extensions
 
 
+def _checked_target(url: str, *, invoke: bool = False) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Validate an outbound URL and pin it (``_pin_target``). Both steps resolve the host
+    with a blocking getaddrinfo, so async callers run this off the event loop."""
+    target = resolve_invoke_url(url) if invoke else url
+    if invoke:
+        assert_invoke_url_safe(target)
+    else:
+        assert_url_safe(target)
+    # Pin the validated IP (http + https) to defeat DNS rebinding. On the invoke path
+    # the intentionally-allowed localhost / host-gateway targets are exempted so dev
+    # and Docker gateways keep working; every other target (federation + external
+    # providers) is pinned.
+    return _pin_target(target, allow_hosts=_invoke_allow_hosts() if invoke else None)
+
+
 def prepare_safe_request(url: str) -> tuple[str, dict[str, str], dict[str, str]]:
     """Validate an attacker-influenced URL and return its pinned request target."""
-    assert_url_safe(url)
-    return _pin_target(url)
+    return _checked_target(url)
+
+
+async def prepare_safe_request_async(url: str, *, invoke: bool = False) -> tuple[str, dict[str, str], dict[str, str]]:
+    """``prepare_safe_request`` off the event loop. The name is often the caller's own (a
+    webhook, a peer, a provider): on the loop, its slow nameserver would stall every
+    request the hub is serving until it answered."""
+    return await asyncio.to_thread(_checked_target, url, invoke=invoke)
 
 
 def _invoke_allow_hosts() -> set[str]:
@@ -195,7 +216,7 @@ async def get_configured(url: str, *, timeout: float = 30.0) -> httpx.Response:
 
 
 async def safe_get(url: str, *, timeout: float = 10.0) -> httpx.Response:
-    target, pin_headers, ext = prepare_safe_request(url)
+    target, pin_headers, ext = await prepare_safe_request_async(url)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         return await client.get(target, headers=pin_headers or None, extensions=ext or None)
 
@@ -208,20 +229,8 @@ async def safe_post(
     timeout: float = 30.0,
     invoke: bool = False,
 ) -> httpx.Response:
-    target = resolve_invoke_url(url) if invoke else url
-    if invoke:
-        assert_invoke_url_safe(target)
-    else:
-        assert_url_safe(target)
-    out_headers = dict(headers or {})
-    # Pin the validated IP (http + https) to defeat DNS rebinding. On the invoke path
-    # the intentionally-allowed localhost / host-gateway targets are exempted so dev
-    # and Docker gateways keep working; every other target (federation + external
-    # providers) is pinned.
-    target, pin_headers, ext = _pin_target(
-        target, allow_hosts=_invoke_allow_hosts() if invoke else None
-    )
-    out_headers.update(pin_headers)
+    target, pin_headers, ext = await prepare_safe_request_async(url, invoke=invoke)
+    out_headers = {**(headers or {}), **pin_headers}
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         return await client.post(target, json=json, headers=out_headers, extensions=ext or None)
 
@@ -263,16 +272,8 @@ async def safe_post_capped(
     Declared Content-Length is checked first and a stream that overruns the budget is cut
     off mid-body — an honest header is a cheap refusal, a dishonest one costs `max_bytes`.
     """
-    target = resolve_invoke_url(url) if invoke else url
-    if invoke:
-        assert_invoke_url_safe(target)
-    else:
-        assert_url_safe(target)
-    out_headers = dict(headers or {})
-    target, pin_headers, ext = _pin_target(
-        target, allow_hosts=_invoke_allow_hosts() if invoke else None
-    )
-    out_headers.update(pin_headers)
+    target, pin_headers, ext = await prepare_safe_request_async(url, invoke=invoke)
+    out_headers = {**(headers or {}), **pin_headers}
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         request = client.build_request(
             "POST", target, json=json, headers=out_headers, extensions=ext or None

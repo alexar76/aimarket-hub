@@ -194,7 +194,7 @@ cuenta vinculada al pago. Así, una recarga pagada nunca se pierde por una entre
 |---|---|---|
 | `AIMARKET_CARD_TOPUP_MIN_USD` | `5` | Recarga mínima (nunca por debajo de los $0.50 de Stripe). |
 | `AIMARKET_CARD_TOPUP_MAX_USD` | `100` | Recarga máxima por pago. |
-| `AIMARKET_CARD_TOPUP_DAILY_USD` | `200` | Lo máximo que una cuenta puede comprar con tarjeta en 24 h. Los pagos abiertos cuentan hasta que caducan (1 hora), porque cualquiera puede pagarse aún. |
+| `AIMARKET_CARD_TOPUP_DAILY_USD` | `200` | Lo máximo que una cuenta puede comprar con tarjeta en 24 h. Los pagos abiertos cuentan hasta que caducan (1 hora), porque cualquiera puede pagarse aún; una recarga reembolsada o disputada sigue contando, porque su crédito sigue en la cuenta. Los pagos abiertos en el mismo instante se comprueban entre sí: juntos no pueden superar el límite. |
 | `AIMARKET_CARD_TOPUP_FEE_PCT` | `0` | Recargo en porcentaje, mostrado antes de pagar y no acreditado. `0`: el operador asume la comisión de la tarjeta. Donde los recargos por tarjeta estén restringidos, deje `0`. |
 | `AIMARKET_CARD_TOPUP_FEE_FIXED_USD` | `0` | Recargo fijo por pago. |
 | `AIMARKET_CARD_TOPUP_TAX` | `off` | `off`, `stripe_tax` o `managed_payments` ([arriba](#impuesto-sobre-las-ventas-tres-modos)). |

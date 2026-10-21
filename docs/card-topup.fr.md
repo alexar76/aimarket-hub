@@ -198,7 +198,7 @@ livraison perdue.
 |---|---|---|
 | `AIMARKET_CARD_TOPUP_MIN_USD` | `5` | Recharge minimale (jamais sous les 0,50 $ de Stripe). |
 | `AIMARKET_CARD_TOPUP_MAX_USD` | `100` | Recharge maximale par paiement. |
-| `AIMARKET_CARD_TOPUP_DAILY_USD` | `200` | Le plus qu'un compte peut acheter par carte en 24 h. Les paiements ouverts comptent jusqu'à expiration (1 heure), car chacun peut encore être payé. |
+| `AIMARKET_CARD_TOPUP_DAILY_USD` | `200` | Le plus qu'un compte peut acheter par carte en 24 h. Les paiements ouverts comptent jusqu'à expiration (1 heure), car chacun peut encore être payé ; une recharge remboursée ou contestée continue de compter, car son crédit reste sur le compte. Des paiements ouverts au même instant sont vérifiés les uns contre les autres : ensemble, ils ne peuvent pas dépasser la limite. |
 | `AIMARKET_CARD_TOPUP_FEE_PCT` | `0` | Supplément en pourcentage, affiché avant paiement et non crédité. `0` : l'opérateur absorbe les frais de carte. Là où les suppléments carte sont restreints, gardez `0`. |
 | `AIMARKET_CARD_TOPUP_FEE_FIXED_USD` | `0` | Supplément fixe par paiement. |
 | `AIMARKET_CARD_TOPUP_TAX` | `off` | `off`, `stripe_tax` ou `managed_payments` ([plus haut](#taxe-sur-les-ventes--trois-modes)). |

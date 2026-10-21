@@ -15,7 +15,7 @@ import tempfile
 
 import pytest
 
-from aimarket_hub.signing import Signer, decode_b64, same_key
+from aimarket_hub.signing import Signer, decode_b64, same_key, signature_shape_problem
 
 
 @pytest.fixture
@@ -62,3 +62,45 @@ def test_the_same_key_in_two_alphabets_is_not_a_rotation(signer):
     other = Signer(str(pathlib.Path(tempfile.mkdtemp()) / "key2"))
     assert not same_key(signer.public_key_b64, other.public_key_b64)
     assert not same_key(signer.public_key_b64, "")
+
+
+# ── the shape around the bytes (spec §7.3.1) ────────────────────────────────────
+# Both strangers who implemented the protocol themselves (agent-exec.448c.org, mach402.dev,
+# October 2026) published the signature as a bare base64 string. Every verifier called
+# `.get("value")` on it and raised; the assay died, its dossier froze, doctor printed a
+# traceback. A wrong shape must be a refusal with a reason, on every path.
+
+
+def _manifest(signer: Signer) -> dict:
+    manifest = {"protocol_version": "v2", "generated_at": "2026-10-21T00:00:00Z",
+                "capabilities_count": 1, "tools": [{"name": "t", "description": "d",
+                                                    "input_schema": {"type": "object"}}]}
+    manifest["signature"] = signer.sign_manifest(manifest)
+    return manifest
+
+
+def test_a_bare_string_signature_is_refused_not_raised(signer):
+    manifest = _manifest(signer)
+    assert signer.verify_manifest_signature(manifest, signer.public_key_b64)
+    manifest["signature"] = manifest["signature"]["value"]   # the right bytes, the wrong shape
+    assert signer.verify_manifest_signature(manifest, signer.public_key_b64) is False
+    assert Signer.verify_object_signature({"a": 1, "signature": "abc"}, signer.public_key_b64) is False
+    canonical = signer.manifest_canonical(manifest)
+    for shape in ("abc", ["abc"], 7, True, {"algorithm": "ed25519"}, {"value": 7}):
+        assert Signer.verify_hybrid(signer.public_key_b64, shape, canonical) is False
+
+
+def test_a_non_string_is_not_base64():
+    for value in (None, 7, ["a"], {"value": "a"}, b"AAAA"):
+        assert decode_b64(value) is None
+
+
+def test_the_shape_problem_says_how_to_fix_it():
+    said = signature_shape_problem("f9bhOPZYAAMm5OUZR+NLyNZ3GSNKVzY8n5F3+04P")
+    assert said.startswith("signature is a string, not an object")
+    assert "§7.3.1" in said and '"algorithm": "ed25519"' in said and '"value"' in said
+    assert "an array" in signature_shape_problem(["x"])
+    assert "a number" in signature_shape_problem(3)
+    assert '"value"' in signature_shape_problem({"algorithm": "ed25519"})
+    assert signature_shape_problem({"algorithm": "ed25519", "value": "AAAA"}) == ""
+

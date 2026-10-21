@@ -383,6 +383,41 @@ def test_unsigned_manifest_fails(monkeypatch, tmp_path, resolvable):
     assert by["manifest_signed"]["ok"] is False
 
 
+def test_a_bare_string_signature_fails_with_a_reason_not_a_crash(monkeypatch, tmp_path, resolvable):
+    """mach402.dev and agent-exec.448c.org, October 2026: the base64 signature published as a
+    string. run_assay raised `'str' object has no attribute 'get'` on every crawl cycle, so
+    their dossiers froze on an older failure they had already fixed. Now it is a failed check
+    that says what shape to publish — on the manifest and on the well-known alike."""
+    root = tmp_path / "bare"
+    root.mkdir()
+    db = HubDatabase(root / "hub.db")
+    signer = Signer(root / "key")
+    peer = Signer(root / "peer-key")
+    wk, manifest = _peer_docs(peer, name="x", description="x")
+    manifest["signature"] = manifest["signature"]["value"]
+    wk["signature"] = wk["signature"]["value"]
+
+    async def get_json(url):
+        return wk if url.endswith("ai-market.json") else manifest
+
+    dossier = asyncio.run(run_assay(
+        STRANGER, config=HubConfig(), db=db, signer=signer,
+        get_json=get_json,
+        post_json=lambda u, b, h: _signed_post(peer, u, b, h),
+        crawl_on_admit=False,
+    ))
+    assert dossier["verdict"] == "fail"
+    by = {c["id"]: c for c in dossier["checks"]}
+    assert by["manifest_signed"]["ok"] is False
+    assert "not an object (spec §7.3.1)" in by["manifest_signed"]["detail"]
+    assert '"algorithm": "ed25519"' in by["manifest_signed"]["detail"]
+    assert "not an object" in by["well_known_signed"]["detail"]
+    blockers = {b["id"]: b["detail"] for b in assay_blockers(dossier)}
+    assert "§7.3.1" in blockers["manifest_signed"]
+    # The verdict is stored, so the public dossier stops showing the last one.
+    assert db.get_peer_assay(STRANGER)["verdict"] == "fail"
+
+
 def test_get_assay_is_public_and_empty_is_quarantined(monkeypatch, tmp_path):
     with _hub(monkeypatch, tmp_path) as client:
         empty = client.get("/ai-market/v2/federation/assay", params={"url": STRANGER})

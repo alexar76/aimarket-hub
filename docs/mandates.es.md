@@ -139,7 +139,10 @@ Las llamadas pequeñas siguen sin usted; una grande necesita su firma sobre **es
 1. La llamada del agente por encima del umbral responde `402 approval_required` con un bloque
    `approval`: `approval_id`, `capability_id`, `amount_usd`, `max_usd` (el techo que usted
    aprueba; en una llamada enrutada incluye la comisión de enrutamiento), `body_sha256` (la
-   petición exacta), `expires_at` (24 h) y `url`. No se reserva nada.
+   petición exacta), `expires_at` (24 h) y `url`. No se reserva nada. Una llamada que otro
+   límite del mandato (`perCall`, `perDay`, `total`, el límite diario de un producto) rechazaría
+   de todos modos se rechaza al instante con `402 mandate_limit`: nunca se le pide firmar lo que
+   no podría ejecutarse.
 2. Lo pendiente: `GET /ai-market/v2/mandates/approvals?status=pending` con el `X-API-Key` de la
    cuenta que financia.
 3. La respuesta: `POST /ai-market/v2/mandates/approvals/{approval_id}` con
@@ -154,6 +157,49 @@ Las llamadas pequeñas siguen sin usted; una grande necesita su firma sobre **es
 Un mandato puede tener como máximo 16 solicitudes esperando (`429 approval_queue_full`). Un
 mandato redelegado conserva el umbral del padre y solo puede bajarlo. Por A2A la tarea espera
 en `AUTH_REQUIRED` y avanza cuando usted responde, con una notificación push al webhook del agente.
+
+### Avisos cuando una llamada le espera
+
+Sin un canal, el propietario solo se entera de una solicitud si pregunta (paso 2). Registre
+canales en la cuenta que financia y el hub enviará allí cada solicitud nueva y la respuesta a
+ella. Un aviso solo informa: aprobar sigue exigiendo la firma de una clave del propietario, que
+ningún chat, canal ni ticket tiene, y cada mensaje dice cómo aprobar y cómo denegar.
+
+```bash
+# Telegram con el bot del hub (si el operador lo tiene): pulse Start con él y dé el id de su chat
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "telegram", "chat_id": "123456789"}'
+# … o con su propio bot: añada "bot_token": "123456789:AA…"
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "slack", "webhook_url": "https://hooks.slack.com/services/T…/B…/…"}'
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "jira", "base_url": "https://acme.atlassian.net", "email": "ops@acme.example",
+       "api_token": "…", "project_key": "OPS", "issue_type": "Task"}'
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "webhook", "url": "https://ops.acme.example/hooks/aimarket", "secret": "…"}'
+# enviar ahora un mensaje de prueba y ver qué respondió el canal
+curl -X POST "$HUB/ai-market/v2/mandates/notify/<channel_id>/test" -H "X-API-Key: $KEY"
+```
+
+| `kind` | Qué indica usted | Qué llega |
+|---|---|---|
+| `telegram` | `chat_id` (un número, o `@canal` donde el bot es administrador). `bot_token` para su propio bot; sin él se usa el bot del hub, si el operador lo tiene (`GET …/notify` lo nombra en `telegram_bot`). | Un mensaje: qué capacidad, cuánto, el techo, hasta cuándo, cómo aprobar y cómo denegar. En HTML, o las mismas palabras en texto plano si Telegram rechaza el marcado. |
+| `slack` | `webhook_url` de un webhook entrante (`https://hooks.slack.com/services/…` o `/triggers/…`). | El mismo texto. |
+| `jira` | `base_url` de Jira Cloud (https), `email`, `api_token` (id.atlassian.com → Security → API tokens), `project_key`, `issue_type` (por defecto `Task`). | Una incidencia por solicitud; la respuesta se añade como comentario. |
+| `webhook` | `url` (https), `secret` opcional. | `POST` de `{"event": "mandate.approval.requested" \| "….approved" \| "….denied", "approval": {…}, "title", "text"}` con `X-AIMarket-Event`; con secreto, también `X-AIMarket-Signature: t=<unix>,v1=<hex HMAC-SHA256 de "<t>.<body>">`. |
+
+- `GET /ai-market/v2/mandates/notify` lista los canales de la cuenta con el resultado de la
+  última entrega de cada uno. Los secretos —token del bot, URL de Slack, token de Jira, secreto
+  del webhook— se guardan para usarse y nunca se devuelven (de la URL de Slack se ven los cuatro
+  últimos caracteres).
+- `POST …/notify/{channel_id}/test` envía al momento un mensaje de prueba y responde `delivered`
+  y lo que dijo el canal; `DELETE …/notify/{channel_id}` elimina un canal. Hasta 8 por cuenta.
+- Un canal pertenece a la cuenta que financia y se entera de cada mandato que esa cuenta
+  financia. Los canales se gestionan con la clave API de la cuenta, que ya lista sus solicitudes pendientes.
+- Cada dirección se comprueba como cualquier dirección que un llamante da a este hub: solo
+  https, sin redes privadas ni de metadatos, resuelta una vez y fijada, sin redirecciones. La
+  entrega va fuera de la petición, se reintenta dos veces (a los 2 s y 10 s) si no hay
+  respuesta, hay un 5xx o un 429, y nunca cambia la solicitud de la que informa.
 
 ### Leer el estado de un mandato
 
@@ -432,6 +478,8 @@ hub.
 | `AIMARKET_HISTOR_FLUSH_S` | `30` | Cada cuánto la bandeja de salida (outbox) envía las anclas pendientes (el intervalo crece hasta 10 min mientras HISTOR falla o aplaza). |
 | `AIMARKET_HISTOR_OUTBOX_RETAIN_DAYS` | `30` | Días que una fila anclada queda en el outbox; después la ruta de estado pregunta a HISTOR. `0` las conserva todas. |
 | `AIMARKET_MANDATE_APPROVAL_TTL_S` | `86400` | Cuánto queda abierta una solicitud de aprobación del propietario (300 s – 7 días); una aprobada se usa en la misma ventana. |
+| `AIMARKET_NOTIFY_TELEGRAM_BOT_TOKEN` (o `…_FILE`) | sin definir | El bot de Telegram propio del hub para los avisos de aprobación: al propietario le basta el id del chat. Sin él, un canal de Telegram necesita el `bot_token` del propietario. Nunca se registra en el log. |
+| `AIMARKET_NOTIFY_TELEGRAM_BOT_NAME` | sin definir | El @nombre de ese bot, que `GET /mandates/notify` muestra para que el propietario sepa con quién pulsar Start. |
 
 La imagen ya instala `awr` (lo necesita el plugin de provenance). Un hub instalado sin él arranca
 con normalidad y responde `503 mandates_unavailable` a las llamadas con mandato.

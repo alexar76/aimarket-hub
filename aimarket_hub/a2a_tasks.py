@@ -57,8 +57,17 @@ ALL_STATES = frozenset({SUBMITTED, WORKING}) | TERMINAL | INTERRUPTED
 DEFAULT_INTERRUPTED_TTL_S = 900
 #: A WORKING row older than this belongs to an invoke that can no longer be running (the
 #: process that ran it restarted). Pay-on-Verified can hold an invoke for 300 s; this is
-#: comfortably past any real call.
+#: comfortably past any real call. Only for rows written before leases existed: a leased row
+#: is recovered as soon as its lease lapses (recover_stale in a2a.py).
 WORKING_STALE_S = 1800
+#: How long a WORKING task is held by the process running it without a renewal. The runner
+#: renews every LEASE_S / 3, so a live call never loses it; a process that died loses all of
+#: its tasks within this, and the next sweep recovers them.
+LEASE_S = 90.0
+#: This process, as the owner of the leases it takes.
+PROCESS_ID = secrets.token_hex(8)
+#: The lease a recovery holds while it reads the ledger and moves an abandoned task on.
+RECOVERY_OWNER = f"recover:{PROCESS_ID}"
 #: How long a finished task (without its input) stays readable by GetTask/ListTasks.
 DEFAULT_RETENTION_S = 7 * 86_400
 ANONYMOUS_FAILURE_RETENTION_S = 3600
@@ -165,12 +174,12 @@ class A2ATaskStore:
             self._conn,
             "INSERT INTO a2a_tasks (task_id, context_id, principal_hash, message_id, last_message_id, "
             "task_state, product_id, capability_id, source_hub, invoke_body, invoke_sha256, "
-            "status_json, history_json, revision, created_at, updated_at, expires_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?) "
+            "status_json, history_json, revision, created_at, updated_at, expires_at, lease_owner, lease_until) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?) "
             "ON CONFLICT DO NOTHING RETURNING task_id",
             (task_id, context_id, principal, message_id, message_id, WORKING, product_id, capability_id,
              source_hub, invoke_b64, invoke_sha256, _dumps(status), _dumps(history[-MAX_HISTORY:]),
-             now, now, now + self.interrupted_ttl_s),
+             now, now, now + self.interrupted_ttl_s, PROCESS_ID, now + LEASE_S),
         )
         self._conn.commit()
         if won is not None:
@@ -192,10 +201,11 @@ class A2ATaskStore:
         won = returning_one(
             self._conn,
             f"UPDATE a2a_tasks SET task_state = ?, last_message_id = ?, status_json = ?, "
-            f"revision = revision + 1, updated_at = ? "
+            f"revision = revision + 1, updated_at = ?, lease_owner = ?, lease_until = ?, invoke_started = 0, "
+            f"invoke_rail = '' "
             f"WHERE task_id = ? AND task_state IN {_INTERRUPTED_SQL} AND expires_at >= ? "
             f"AND last_message_id <> ? RETURNING task_id",
-            (WORKING, message_id, _dumps(status), now, task_id, now, message_id),
+            (WORKING, message_id, _dumps(status), now, PROCESS_ID, now + LEASE_S, task_id, now, message_id),
         )
         self._conn.commit()
         return self.get(task_id) if won is not None else None
@@ -232,12 +242,12 @@ class A2ATaskStore:
             "UPDATE a2a_tasks SET task_state = ?, status_json = ?, artifacts_json = ?, metadata_json = ?, "
             "history_json = ?, x402_nonce = ?, invoke_body = ?, invoke_sha256 = ?, awaiting = ?, "
             "revision = revision + 1, updated_at = ?, expires_at = ? "
-            "WHERE task_id = ? AND task_state = ? AND revision = ? RETURNING task_id",
+            "WHERE task_id = ? AND task_state = ? AND revision = ? AND lease_owner = ? RETURNING task_id",
             (state, _dumps(status), _dumps(artifacts or []), _dumps(metadata or {}),
              _dumps(history[-MAX_HISTORY:]),
              str(row.get("x402_nonce") or "") if x402_nonce is None else x402_nonce,
              body, digest, awaiting if keep_body else "", now, expires,
-             row["task_id"], WORKING, int(row.get("revision") or 0)),
+             row["task_id"], WORKING, int(row.get("revision") or 0), PROCESS_ID),
         )
         self._conn.commit()
         if won is None:
@@ -262,6 +272,89 @@ class A2ATaskStore:
              int(row.get("revision") or 0)),
         )
         self._conn.commit()
+        return self.get(row["task_id"]) if won is not None else None
+
+    # ── a running invoke: its lease and what it reserved ───────────────────
+
+    def renew(self, task_id: str, *, now: float | None = None) -> bool:
+        """Keep this process's lease on a running task. False when the task is no longer
+        this process's to run (it finished, or a sweep took it as abandoned)."""
+        now = time.time() if now is None else now
+        won = returning_one(
+            self._conn,
+            "UPDATE a2a_tasks SET lease_until = ? WHERE task_id = ? AND task_state = ? AND lease_owner = ? "
+            "RETURNING task_id", (now + LEASE_S, task_id, WORKING, PROCESS_ID), commit=True,
+        )
+        return won is not None
+
+    def started(self, task_id: str, *, rail: str, now: float | None = None) -> None:
+        """The invoke is about to be sent: from here on money may move. ``rail`` says on which
+        rail (credits, x402, trial or none), which decides what a recovery can know."""
+        self._conn.execute(
+            "UPDATE a2a_tasks SET invoke_started = ?, invoke_rail = ? WHERE task_id = ? AND task_state = ? "
+            "AND lease_owner = ?", (time.time() if now is None else now, rail[:20], task_id, WORKING, PROCESS_ID),
+        )
+        self._conn.commit()
+
+    def note_charge(self, task_id: str, receipt_id: str, kind: str, *, now: float | None = None) -> None:
+        """Name a reservation or debit BEFORE it is made, so a hub that dies mid-call can find it."""
+        self._conn.execute(
+            "INSERT INTO a2a_task_charges (task_id, receipt_id, kind, created_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT DO NOTHING", (task_id, receipt_id, kind[:20], time.time() if now is None else now),
+        )
+        self._conn.commit()
+
+    def charges(self, task_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT receipt_id, kind FROM a2a_task_charges WHERE task_id = ? ORDER BY created_at, receipt_id",
+            (task_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def stale(self, now: float | None = None, *, limit: int = 50) -> list[dict[str, Any]]:
+        """WORKING tasks whose lease lapsed: the process running them is gone."""
+        now = time.time() if now is None else now
+        rows = self._conn.execute(
+            "SELECT * FROM a2a_tasks WHERE task_state = ? AND lease_until > 0 AND lease_until < ? "
+            "ORDER BY updated_at LIMIT ?", (WORKING, now, int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def take_stale(self, row: dict[str, Any], *, now: float | None = None) -> dict[str, Any] | None:
+        """Take an abandoned task's lease for a recovery — one conditional statement, so the
+        runner (should it be alive after all) can no longer renew it or record its outcome,
+        and two sweeps cannot both recover one task. None when this caller did not win."""
+        now = time.time() if now is None else now
+        won = returning_one(
+            self._conn,
+            "UPDATE a2a_tasks SET lease_owner = ?, lease_until = ? WHERE task_id = ? AND task_state = ? "
+            "AND lease_until > 0 AND lease_until < ? RETURNING task_id",
+            (RECOVERY_OWNER, now + LEASE_S, row["task_id"], WORKING, now), commit=True,
+        )
+        return self.get(row["task_id"]) if won is not None else None
+
+    def resolve_stale(self, row: dict[str, Any], *, state: str, status: dict[str, Any],
+                      metadata: dict[str, Any] | None = None, now: float | None = None) -> dict[str, Any] | None:
+        """Move an abandoned task on: back to waiting (its input kept, so a follow-up runs it)
+        or to a terminal state (its input purged). Only by the recovery that took its lease."""
+        now = time.time() if now is None else now
+        history = load_json(row.get("history_json"), [])
+        message = status.get("message")
+        if isinstance(message, dict):
+            history.append(message)
+        waiting = state in INTERRUPTED
+        won = returning_one(
+            self._conn,
+            "UPDATE a2a_tasks SET task_state = ?, status_json = ?, history_json = ?, metadata_json = ?, "
+            "invoke_body = CASE WHEN ? = 1 THEN invoke_body ELSE '' END, lease_owner = '', lease_until = 0, "
+            "revision = revision + 1, updated_at = ?, expires_at = ? "
+            "WHERE task_id = ? AND task_state = ? AND revision = ? AND lease_owner = ? RETURNING task_id",
+            (state, _dumps(status), _dumps(history[-MAX_HISTORY:]),
+             _dumps(metadata if metadata is not None else load_json(row.get("metadata_json"), {})),
+             1 if waiting else 0, now, now + self.interrupted_ttl_s if waiting else float(row.get("expires_at") or now),
+             row["task_id"], WORKING, int(row.get("revision") or 0), RECOVERY_OWNER),
+            commit=True,
+        )
         return self.get(row["task_id"]) if won is not None else None
 
     def waiting_on(self, approval_id: str) -> list[dict[str, Any]]:
@@ -307,7 +400,7 @@ class A2ATaskStore:
         """
         now = time.time() if now is None else now
         if not force and now - self._swept_at < _SWEEP_EVERY_S:
-            return {"expired": 0, "orphaned": 0, "deleted": 0, "task_ids": []}
+            return {"expired": 0, "orphaned": 0, "deleted": 0, "task_ids": [], "ran": False}
         self._swept_at = now
         expired_status = _dumps({
             "state": FAILED, "timestamp": iso(now),
@@ -329,12 +422,19 @@ class A2ATaskStore:
             (FAILED, expired_status, now, now),
             commit=True,
         )
+        # Only rows without a lease (written before leases existed): a leased row is recovered
+        # by the facade, which can look at the ledger, as soon as its lease lapses.
         orphaned = returning(
             self._conn,
             "UPDATE a2a_tasks SET task_state = ?, status_json = ?, invoke_body = '', "
-            "revision = revision + 1, updated_at = ? WHERE task_state = ? AND updated_at < ? RETURNING task_id",
+            "revision = revision + 1, updated_at = ? WHERE task_state = ? AND lease_until = 0 AND updated_at < ? "
+            "RETURNING task_id",
             (FAILED, orphaned_status, now, WORKING, now - WORKING_STALE_S),
             commit=True,
+        )
+        self._conn.execute(
+            f"DELETE FROM a2a_task_charges WHERE task_id IN (SELECT task_id FROM a2a_tasks WHERE "
+            f"task_state IN {_TERMINAL_SQL} AND updated_at < ?)", (now - self.retention_s,),
         )
         deleted = self._conn.execute(
             f"DELETE FROM a2a_tasks WHERE (task_state IN {_TERMINAL_SQL} AND updated_at < ?) "
@@ -350,7 +450,44 @@ class A2ATaskStore:
                 return 0
 
         return {"expired": len(expired), "orphaned": len(orphaned), "deleted": _count(deleted),
-                "task_ids": [str(r["task_id"]) for r in [*expired, *orphaned]]}
+                "task_ids": [str(r["task_id"]) for r in [*expired, *orphaned]], "ran": True}
+
+
+class ChargeJournal:
+    """The credits ledger as one A2A task's invoke sees it.
+
+    Every reservation and debit is named in ``a2a_task_charges`` BEFORE the money moves. If
+    the process dies mid-call, the hub can then read, receipt by receipt, what the call
+    reserved and whether any of it was captured — instead of failing the task with "you may
+    have been charged" (a2a.py, recover_stale). Anything that does not move money passes
+    straight through.
+    """
+
+    def __init__(self, inner: Any, store: "A2ATaskStore", task_id: str):
+        self._inner = inner
+        self._store = store
+        self._task_id = task_id
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def _note(self, receipt_id: str, kind: str) -> None:
+        if receipt_id:
+            self._store.note_charge(self._task_id, receipt_id, kind)
+
+    def hold(self, account_id: str, amount_usd: float, receipt_id: str) -> dict[str, Any]:
+        self._note(receipt_id, "hold")
+        return self._inner.hold(account_id, amount_usd, receipt_id)
+
+    def hold_allowance(self, account_id: str, amount_usd: float, receipt_id: str) -> dict[str, Any]:
+        self._note(receipt_id, "allowance")
+        hold = getattr(self._inner, "hold_allowance", None) or self._inner.hold
+        return hold(account_id, amount_usd, receipt_id)
+
+    def debit(self, account_id: str, amount_usd: float, receipt_id: str = "", note: str = "",
+              **kwargs: Any) -> dict[str, Any]:
+        self._note(receipt_id, "debit")
+        return self._inner.debit(account_id, amount_usd, receipt_id=receipt_id, note=note, **kwargs)
 
 
 def _agent_note(text: str) -> dict[str, Any]:

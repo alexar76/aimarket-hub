@@ -139,6 +139,8 @@ API-ключом) заменяет подпись владельца.
    `approval_id`, `capability_id`, `amount_usd`, `max_usd` (потолок, который вы одобряете; для
    маршрутизированного вызова в нём комиссия маршрутизации), `body_sha256` (точный запрос),
    `expires_at` (24 ч) и `url`. Ничего не резервируется. Повтор до вашего ответа возвращает тот же запрос.
+   Вызов, который другой лимит мандата (`perCall`, `perDay`, `total`, дневной лимит продукта) всё
+   равно отклонит, сразу получает `402 mandate_limit`: вас не просят подписать то, что не выполнится.
 2. Что ждёт ответа: `GET /ai-market/v2/mandates/approvals?status=pending` с `X-API-Key`
    финансирующего аккаунта.
 3. Ответ: `POST /ai-market/v2/mandates/approvals/{approval_id}` с
@@ -154,6 +156,48 @@ API-ключом) заменяет подпись владельца.
 Одновременно ждать могут не больше 16 запросов одного мандата (`429 approval_queue_full`).
 Переделегированный мандат сохраняет порог родителя и может его только понизить. По A2A задача
 ждёт в `AUTH_REQUIRED` и сдвигается, когда вы ответили, с push-уведомлением на webhook агента.
+
+### Уведомления, когда вызов ждёт вас
+
+Без канала владелец узнаёт о запросе, только если спросит сам (шаг 2 выше). Подключите каналы к
+финансирующему аккаунту — и хаб будет присылать туда каждый новый запрос и ответ на него.
+Уведомление только сообщает: одобрить по-прежнему можно лишь подписью ключа владельца, которой нет
+ни в чате, ни в канале, ни в задаче, и каждое сообщение объясняет, как одобрить и как отклонить.
+
+```bash
+# Telegram через бота хаба (если оператор его запустил): нажмите у него Start и укажите id своего чата
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "telegram", "chat_id": "123456789"}'
+# … или через своего бота: добавьте "bot_token": "123456789:AA…"
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "slack", "webhook_url": "https://hooks.slack.com/services/T…/B…/…"}'
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "jira", "base_url": "https://acme.atlassian.net", "email": "ops@acme.example",
+       "api_token": "…", "project_key": "OPS", "issue_type": "Task"}'
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "webhook", "url": "https://ops.acme.example/hooks/aimarket", "secret": "…"}'
+# отправить тестовое сообщение сейчас и увидеть ответ канала
+curl -X POST "$HUB/ai-market/v2/mandates/notify/<channel_id>/test" -H "X-API-Key: $KEY"
+```
+
+| `kind` | Что указать | Что приходит |
+|---|---|---|
+| `telegram` | `chat_id` (число или `@канал`, где бот — администратор). `bot_token` — для своего бота; без него используется бот хаба, если оператор его запустил (`GET …/notify` называет его в `telegram_bot`). | Сообщение: какая способность, сколько, потолок, до какого срока, как одобрить и как отклонить. В HTML, а если Telegram отверг разметку — те же слова простым текстом. |
+| `slack` | `webhook_url` входящего webhook (`https://hooks.slack.com/services/…` или `/triggers/…`). | Тот же текст. |
+| `jira` | `base_url` Jira Cloud (https), `email`, `api_token` (id.atlassian.com → Security → API tokens), `project_key`, `issue_type` (по умолчанию `Task`). | Задача на каждый запрос; ответ добавляется к ней комментарием. |
+| `webhook` | `url` (https), необязательный `secret`. | `POST` с `{"event": "mandate.approval.requested" \| "….approved" \| "….denied", "approval": {…}, "title", "text"}` и заголовком `X-AIMarket-Event`; с секретом ещё `X-AIMarket-Signature: t=<unix>,v1=<hex HMAC-SHA256 от "<t>.<body>">`. |
+
+- `GET /ai-market/v2/mandates/notify` — каналы аккаунта с итогом последней доставки каждого.
+  Секреты — токен бота, URL Slack, токен Jira, секрет webhook — хранятся для отправки и никогда
+  не возвращаются (у URL Slack видны последние четыре символа).
+- `POST …/notify/{channel_id}/test` сразу шлёт тестовое сообщение и отвечает `delivered` и тем,
+  что сказал канал; `DELETE …/notify/{channel_id}` удаляет канал. Не больше 8 на аккаунт.
+- Канал принадлежит финансирующему аккаунту и слышит о каждом мандате, который этот аккаунт
+  финансирует. Управляет каналами API-ключ аккаунта — тот же ключ и так видит его ожидающие запросы.
+- Каждый адрес проверяется как любой адрес, который хабу даёт вызывающий: только https, никаких
+  частных и metadata-сетей, имя разрешается один раз и закрепляется, без редиректов. Доставка идёт
+  вне запроса, при отсутствии ответа, 5xx или 429 повторяется дважды (через 2 с и 10 с) и никогда
+  не меняет запрос, о котором сообщает.
 
 ### Как прочитать статус мандата
 
@@ -427,6 +471,8 @@ SUBCONTRACT_CANARY_API_KEY=aimk_… scripts/subcontract_canary.py --a2a      # t
 | `AIMARKET_HISTOR_FLUSH_S` | `30` | Как часто очередь отправки (outbox) шлёт ожидающие якоря (пока HISTOR сбоит или откладывает, интервал растёт до 10 мин). |
 | `AIMARKET_HISTOR_OUTBOX_RETAIN_DAYS` | `30` | Сколько дней заякоренная строка хранится в outbox; потом маршрут статуса спрашивает HISTOR. `0` — хранить всё. |
 | `AIMARKET_MANDATE_APPROVAL_TTL_S` | `86400` | Сколько открыт запрос на подтверждение владельца (300 с – 7 дней); одобренный надо использовать в том же окне. |
+| `AIMARKET_NOTIFY_TELEGRAM_BOT_TOKEN` (или `…_FILE`) | не задан | Собственный Telegram-бот хаба для уведомлений о подтверждениях: владельцу достаточно id чата. Без него Telegram-каналу нужен `bot_token` владельца. Никогда не пишется в журнал. |
+| `AIMARKET_NOTIFY_TELEGRAM_BOT_NAME` | не задан | @имя этого бота; `GET /mandates/notify` показывает его владельцам, чтобы они знали, у кого нажать Start. |
 
 Образ уже ставит `awr` (он нужен плагину provenance). Хаб, установленный без него, запускается
 нормально и отвечает `503 mandates_unavailable` на вызовы по мандату.

@@ -805,8 +805,9 @@ _DOCTOR_HINTS: dict[str, str] = {
     "advertised_key": "The well-known names no signer_public_key.",
     "manifest_schema": "The manifest at manifest_url is missing, off-origin or not schema-valid. If "
                        "nginx rewrites paths, the manifest URL must stay on the same origin.",
-    "manifest_signed": "The manifest signature does not verify under the advertised key — a proxy "
-                       "rewriting the body, or a key file swapped under a running hub.",
+    "manifest_signed": "The manifest signature does not verify under the advertised key. The line "
+                       "above says which way: a signature that is not an object (spec §7.3.1), a "
+                       "proxy rewriting the body, or a key file swapped under a running hub.",
     "manifest_fresh": "generated_at is stale: a cache in front of the hub is serving an old manifest.",
     "invoke_same_origin": "The invoke URL the well-known advertises is on another origin.",
     "sandbox_probe": "The sandbox could not run anything of yours. `aimarket quickstart` lists a free "
@@ -911,6 +912,22 @@ def _cmd_doctor(args) -> int:
                     url, config=acfg, db=db, signer=signer,
                     get_json=get_json, post_json=post_json, crawl_on_admit=False,
                 ))
+            except Exception as exc:
+                # The assay must turn anything a peer publishes into a failed check. If it raises
+                # instead, that is our bug, and a traceback hides the one useful fact: the
+                # operator did nothing wrong by running this (2026-10-21, a string signature).
+                from aimarket_hub import __version__
+
+                if args.json:
+                    print(json.dumps({"url": url, "verdict": None, "assay_error":
+                                      f"{type(exc).__name__}: {str(exc)[:200]}",
+                                      "hub_version": __version__}, indent=2))
+                    return 1
+                print(f"  {RED}✗{RESET} the assay itself crashed on what {url} publishes: "
+                      f"{type(exc).__name__}: {str(exc)[:200]}")
+                print(f"      This is a bug in aimarket-hub {__version__}, not a verdict. Please report "
+                      f"it: https://github.com/alexar76/aimarket-hub/issues/new?template=admission.yml")
+                return 1
             finally:
                 fa._crawler._url_is_safe = saved_guard
             if local:
@@ -934,8 +951,10 @@ def _cmd_doctor(args) -> int:
         if cid in ("llm_verdict", "sandbox_judge"):
             continue
         ok = check.get("ok")
-        detail = str(check.get("detail") or "")
-        print(f"  {marks.get(ok, marks[None])} {cid}{DIM}{'  ' + detail[:110] if detail else ''}{RESET}")
+        # A failed check's detail is the instruction for fixing it; cut at 110 it lost the half
+        # that says how (the §7.3.1 object shape). Passing and skipped rows stay short.
+        detail = str(check.get("detail") or "")[:400 if ok is False else 110]
+        print(f"  {marks.get(ok, marks[None])} {cid}{DIM}{'  ' + detail if detail else ''}{RESET}")
         if ok is False and cid in _DOCTOR_HINTS:
             print(f"      {YELLOW}{_DOCTOR_HINTS[cid]}{RESET}")
     sandbox = dossier.get("sandbox") or {}

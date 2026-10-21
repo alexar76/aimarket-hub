@@ -14,7 +14,7 @@ from decimal import Decimal
 import httpx
 
 from aimarket_hub import settle, x402
-from aimarket_hub.outbound_http import prepare_safe_request
+from aimarket_hub.outbound_http import prepare_safe_request_async
 from aimarket_hub.signing import Signer
 from aimarket_hub.studio_paid import _json
 
@@ -29,7 +29,7 @@ class RemotePending(Exception):
 
 
 async def request_json(method, url, *, body=None, token=None):
-    target, headers, ext = prepare_safe_request(url)
+    target, headers, ext = await prepare_safe_request_async(url)
     if token:
         headers['X-Operation-Token'] = token
     async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:

@@ -1501,6 +1501,59 @@ _register(57, "057_card_topup_tax", """
     ALTER TABLE card_topups DROP COLUMN tax_mode;
 """)
 
+# 058: Where an account's owners hear about approval requests (owner_notify.py, mandates.md
+# §5.6): Telegram, Slack, Jira or a signed webhook. target_json holds the channel's own secret
+# (a bot token, a webhook URL, a Jira token) — used to deliver, never returned. owner_notify_refs
+# remembers what a request opened in a channel (a Jira issue), so its answer lands there too.
+_register(58, "058_owner_notify", """
+    CREATE TABLE IF NOT EXISTS owner_notify_channels (
+        channel_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        target_json TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        last_status INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT NOT NULL DEFAULT '',
+        last_sent_at REAL NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_owner_notify_account ON owner_notify_channels(account_id, created_at);
+    CREATE TABLE IF NOT EXISTS owner_notify_refs (
+        approval_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        external_ref TEXT NOT NULL,
+        PRIMARY KEY (approval_id, channel_id)
+    );
+""", """
+    DROP TABLE IF EXISTS owner_notify_refs;
+    DROP INDEX IF EXISTS idx_owner_notify_account;
+    DROP TABLE IF EXISTS owner_notify_channels;
+""")
+
+# 059: A2A tasks survive a restart of the hub that runs them (a2a.py, recover_stale). A running
+# task is LEASED by its process (lease_owner/lease_until, renewed while the call runs); the
+# call is marked when it is sent (invoke_started, invoke_rail); and every credit reservation or
+# debit it makes is named in a2a_task_charges BEFORE the money moves. A lapsed lease then tells
+# the hub, from the ledger, whether the abandoned call cost anything.
+_register(59, "059_a2a_task_recovery", """
+    ALTER TABLE a2a_tasks ADD COLUMN lease_owner TEXT NOT NULL DEFAULT '';
+    ALTER TABLE a2a_tasks ADD COLUMN lease_until REAL NOT NULL DEFAULT 0;
+    ALTER TABLE a2a_tasks ADD COLUMN invoke_started REAL NOT NULL DEFAULT 0;
+    ALTER TABLE a2a_tasks ADD COLUMN invoke_rail TEXT NOT NULL DEFAULT '';
+    CREATE TABLE IF NOT EXISTS a2a_task_charges (
+        task_id TEXT NOT NULL,
+        receipt_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (task_id, receipt_id)
+    );
+""", """
+    DROP TABLE IF EXISTS a2a_task_charges;
+    ALTER TABLE a2a_tasks DROP COLUMN invoke_rail;
+    ALTER TABLE a2a_tasks DROP COLUMN invoke_started;
+    ALTER TABLE a2a_tasks DROP COLUMN lease_until;
+    ALTER TABLE a2a_tasks DROP COLUMN lease_owner;
+""")
+
 def channel_ledger_versions() -> list[int]:
     """Migration versions whose DDL touches a channel-ledger table.
 

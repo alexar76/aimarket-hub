@@ -219,6 +219,48 @@ class TestFlow:
             assert r.json()["approval"]["approval_id"] != first["approval_id"]
             assert balance(db, m["account"]) == pytest.approx(1.0)
 
+    @pytest.mark.parametrize("limits, name", [
+        ({"per_call": 3_500}, "perCall"),
+        ({"per_day": 3_500}, "perDay"),
+        ({"total": 3_500}, "total"),
+        ({"per_product": 3_500}, "perProductPerDay"),
+    ])
+    def test_the_owner_is_not_asked_for_a_call_the_mandate_refuses(self, monkeypatch, tmp_path, limits, name):
+        """A yes would change nothing: perCall and the period limits are checked first."""
+        with hub(monkeypatch, tmp_path) as (client, db):
+            list_static(db)
+            m = setup_mandate(client, db, approval_above=THRESHOLD, **limits)
+            r = mandated_invoke(client, m, ECHO)
+            assert r.status_code == 402 and r.json()["error"] == "mandate_limit", r.text
+            assert r.json()["limit"] == name
+            assert db._conn.execute("SELECT COUNT(*) AS n FROM mandate_approvals").fetchone()["n"] == 0
+
+    def test_one_approval_pays_for_one_routed_call(self, monkeypatch, tmp_path):
+        """A peer that answers below its catalogue price makes the hub release the fee hold and
+        debit the smaller fee. The release gave the approval back, although the call ran and
+        was charged: one signature then paid for any number of identical calls."""
+        import aimarket_hub.outbound_http as ohttp
+        from tests.test_federated_invoke import (
+            MCP_ENDPOINT, ORACLE_PEER, _add_federated_capability, _add_peer, _oracle_envelope, _Outbound, _Resp,
+        )
+
+        routed = {"product_id": "prod-x", "capability_id": "cap.x@v1", "source_hub": ORACLE_PEER,
+                  "input": {"q": "hi"}}
+        with hub(monkeypatch, tmp_path) as (client, db):
+            _add_peer(db, ORACLE_PEER, categories=["oracle"])
+            _add_federated_capability(db, ORACLE_PEER, price=0.01)   # the hub holds its 100 µUSD fee
+            outbound = _Outbound(_Resp(200, _oracle_envelope(price=0.008)), well_known={"mcp_endpoint": MCP_ENDPOINT})
+            monkeypatch.setattr(ohttp, "safe_get", outbound.safe_get)
+            monkeypatch.setattr(ohttp, "safe_post", outbound.safe_post)
+            m = setup_mandate(client, db, approval_above=50)
+            approval = mandated_invoke(client, m, routed).json()["approval"]
+            assert _approve(client, m, approval).status_code == 200
+            codes = [mandated_invoke(client, m, routed).status_code for _ in range(3)]
+            assert codes == [200, 402, 402]
+            assert len(outbound.posts) == 1
+            spent = client.get(f"/ai-market/v2/mandates/approvals/{approval['approval_id']}").json()
+            assert spent["status"] == "used"
+
     def test_usage_reports_the_threshold(self, monkeypatch, tmp_path):
         with hub(monkeypatch, tmp_path) as (client, db):
             m = setup_mandate(client, db, approval_above=THRESHOLD)

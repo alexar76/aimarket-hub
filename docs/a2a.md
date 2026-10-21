@@ -205,10 +205,16 @@ without the trial identity and the task shows the price (`INPUT_REQUIRED`,
 | 402 `payment_invalid`, 400 `payment_malformed` | `TASK_STATE_INPUT_REQUIRED` | `payment-failed`, `x402.payment.error`, fresh terms |
 | 400 `incomplete_input` | `TASK_STATE_INPUT_REQUIRED` | `aimarket.missing` — reply with the complete invoke |
 | 402 with no way to pay on chain, `mandate_required`; 401 (`invalid_api_key`, `mandate_proof_invalid`); a mandate whose account cannot pay | `TASK_STATE_AUTH_REQUIRED` | `aimarket.error` |
-| 402 `approval_required` (a mandate's `approvalAbove`) | `TASK_STATE_AUTH_REQUIRED`, until the owner answers | `aimarket.approval` |
+| 402 `approval_required` (a mandate's `approvalAbove`, a request this hub holds for this mandate and these bytes) | `TASK_STATE_AUTH_REQUIRED`, until the owner answers | `aimarket.approval` |
 | 402 `mandate_limit` / `mandate_unfunded` / `listing_not_sellable` / `approval_denied`; 429 `approval_queue_full`; 400, 403 (safety block, `mandate_scope`, `mandate_invalid`), 404, 409 `price_limit_exceeded`, 422 | `TASK_STATE_REJECTED` | `aimarket.error`, the hub's refusal as a data part |
 | 429, 5xx, anything else | `TASK_STATE_FAILED` | `aimarket.error` |
 | `payment-rejected` reply, or `CancelTask` while waiting | `TASK_STATE_CANCELED` | |
+
+An `approval_required` that a federated peer answered is not a wait for an owner of this hub:
+the hub looks the request up in its own store and, finding none, treats the 402 as any refusal
+to pay — `AUTH_REQUIRED` on the normal expiry, with no `aimarket.approval`. An owner who answers
+while the call is still running is not missed either: the run checks the request once more as
+it records the wait.
 
 `INPUT_REQUIRED` and `AUTH_REQUIRED` wait for a follow-up message on the task: a payment, new
 credentials in the HTTP headers, and/or a replacement invoke for the **same** capability (a
@@ -240,10 +246,25 @@ is single-use). A message to a finished task is `-32004`.
   stays. History keeps what was asked (product, capability, source hub, the payment *status*),
   not the input. Result and receipts stay as artifacts.
 - **Expiry.** A waiting task fails after 15 minutes (`AIMARKET_A2A_TASK_TTL_S`) and forgets its
-  input — one waiting on its owner's approval, when the approval request expires; a task left
-  `WORKING` by a restart is marked `FAILED` after 30 minutes (its money settled on its own —
-  check receipts and balance). Finished tasks are deleted after 7 days
-  (`AIMARKET_A2A_TASK_RETENTION_S`), with their push configs.
+  input — one waiting on its owner's approval, when the approval request expires. Finished
+  tasks are deleted after 7 days (`AIMARKET_A2A_TASK_RETENTION_S`), with their push configs.
+- **A restart mid-call.** A running task holds a 90-second lease that its process renews every
+  30 s, and its call names the reservations it makes as it makes them (`a2a_task_charges`). A
+  task whose process died — a restart, a crash, a detached `returnImmediately` run — is taken
+  over within about two and a half minutes, by the next A2A request or by the hub's own sweep
+  once a minute (so a hub nobody calls over A2A still does it), and settled from what the
+  ledger says:
+  - the call was never sent, or its credit or mandate reservation is still held → the
+    reservation is released (the mandate's limits and any owner approval come back) and the
+    task waits in `AUTH_REQUIRED` with its input kept: a follow-up on it runs the call, charged once;
+  - the call was charged (a captured hold or a debit) → `FAILED`, with
+    `metadata.aimarket.recovered = {"outcome": "charged", "receipts": […]}` naming what was paid —
+    nothing is refunded behind the operator's back;
+  - a rail the hub cannot read back (x402, a seller-direct settlement, a job allowance, a hold a
+    payment verifier still owns) → `FAILED` with outcome `unknown`: check receipts and balance.
+
+  The webhooks hear it like any other change. A slow process that comes back after its task was
+  taken over can no longer record over it.
 
 ## Long tasks: `returnImmediately` and push notifications
 
@@ -278,8 +299,11 @@ The push carries the status, never the artifacts: a paid result is read with `Ge
 the same authorization as always, so a leaked webhook leaks a state change, not the purchase.
 The webhook URL is the caller's choice and is treated like every such URL on this hub: `https`
 only, no userinfo, no private, loopback, link-local or metadata network (resolved once and
-pinned against DNS rebinding), no redirects, 10 s timeout, the reply capped at 4 KiB. A delivery
-that fails with no answer, a 5xx or 429 is retried twice (after 2 s and 10 s); a 4xx is final.
+pinned against DNS rebinding — the lookup runs off the event loop, so a slow nameserver delays
+only its own push), no redirects, 10 s timeout, the reply capped at 4 KiB. A delivery that
+fails with no answer, a 5xx or 429 is retried twice (after 2 s and 10 s); a 4xx is final. At
+most 16 deliveries are in flight at once, each holding its slot for one attempt and never
+through a retry's pause; past 2048 pending, a push is dropped and the drop recorded on its config.
 The outcome is recorded on the config (`last_status`, `last_error`) and never affects the task.
 Credentials are stored to be sent back to the client's webhook and are never returned by the
 config methods.
@@ -325,8 +349,8 @@ so a reverse proxy in front of the hub needs the same read timeout on `/a2a` as 
 `/ai-market/v2/invoke`. A client cut off by a proxy loses only the answer: retrying with the same
 `messageId` returns the task, it does not pay again.
 
-Tasks live in the hub database (`a2a_tasks`, migration 036; `awaiting`, migration 054), webhooks
-in `a2a_push_configs` (migration 055). Traffic is counted in
+Tasks live in the hub database (`a2a_tasks`, migration 036; `awaiting`, migration 054; leases
+and `a2a_task_charges`, migration 059), webhooks in `a2a_push_configs` (migration 055). Traffic is counted in
 `aimarket_hub_a2a_requests_total{method,result}`; an invoke task is counted by the state it
 reached (`completed`, `input_required`, `auth_required`, `rejected`, `failed`, `canceled`), and
 the internal invoke is counted by the invoke metrics like any other.

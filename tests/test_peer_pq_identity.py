@@ -106,9 +106,12 @@ def test_a_pq_key_survives_a_round_trip_through_the_database(tmp_path):
 
 
 def test_the_pq_key_is_read_from_inside_the_signature_block():
-    """It is part of the signature object, not a sibling of `signer_public_key`."""
+    """It is part of the signature object, not a sibling of `signer_public_key` — and read only
+    when the signature IS an object: a bare-string signature (two strangers published one in
+    October 2026) used to raise here and abort the crawl of that peer."""
     src = CRAWLER.read_text(encoding="utf-8")
-    assert 'wk.get("signature") or {}).get("pq_public_key")' in src
+    assert 'wk_sig = wk.get("signature")' in src
+    assert 'wk_sig.get("pq_public_key") if isinstance(wk_sig, dict)' in src
 
 
 def test_first_sight_pins_without_rejecting_anything():

@@ -138,6 +138,76 @@ def register(
         return {**result, "url": f"{hub_mandates.hub_origin}/ai-market/v2/mandates/approvals/{approval_id}",
                 "protocol_version": "v2"}
 
+    # ── Where owners hear about approval requests (owner_notify.py) ─────────────
+    from aimarket_hub import owner_notify
+
+    hub_notify_store = owner_notify.NotifyStore(hub_mandates._conn)
+    hub_notifier = owner_notify.OwnerNotifier(hub_notify_store, hub_mandates)
+    hub_mandates.request_listeners.append(hub_notifier.on_requested)
+    hub_mandates.decision_listeners.append(hub_notifier.on_decided)
+
+    def _notify_account(x_api_key: str | None) -> str | JSONResponse:
+        account = _api_key_account(x_api_key)
+        if not account:
+            return JSONResponse(status_code=401, content={
+                "success": False, "error": "invalid_api_key",
+                "detail": "notification channels belong to a funding account: send its X-API-Key"})
+        return account
+
+    @router.get("/mandates/notify")
+    async def list_notify_channels(x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+        account = _notify_account(x_api_key)
+        if isinstance(account, JSONResponse):
+            return account
+        return {"account_id": account, "channels": [owner_notify.public(c) for c in hub_notify_store.list(account)],
+                "telegram_bot": owner_notify.hub_bot_name() or None, "protocol_version": "v2"}
+
+    @router.post("/mandates/notify")
+    async def add_notify_channel(request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+        """Add a channel: ``{"kind": "telegram", "chat_id": …}``, ``{"kind": "slack", "webhook_url": …}``,
+        ``{"kind": "jira", "base_url", "email", "api_token", "project_key"}`` or
+        ``{"kind": "webhook", "url", "secret"}``."""
+        account = _notify_account(x_api_key)
+        if isinstance(account, JSONResponse):
+            return account
+        try:
+            payload = await _json_body(request, limit=8192)
+            kind, target = owner_notify.parse_channel(payload)
+            row = hub_notify_store.add(account, kind, target)
+        except owner_notify.NotifyConfigError as exc:
+            return JSONResponse(status_code=400, content={"success": False, "error": "channel_invalid",
+                                                          "detail": str(exc)})
+        except mandates.MandateError as exc:
+            return _mandate_refusal(exc)
+        return JSONResponse(status_code=201, content={**owner_notify.public(row), "protocol_version": "v2"})
+
+    @router.delete("/mandates/notify/{channel_id}")
+    async def delete_notify_channel(channel_id: str, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+        account = _notify_account(x_api_key)
+        if isinstance(account, JSONResponse):
+            return account
+        if not hub_notify_store.delete(account, channel_id):
+            return JSONResponse(status_code=404, content={"success": False, "error": "channel_unknown"})
+        return {"deleted": channel_id, "protocol_version": "v2"}
+
+    @router.post("/mandates/notify/{channel_id}/test")
+    async def test_notify_channel(channel_id: str, request: Request,
+                                  x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+        """Send a test message now and answer what the channel said — set up and see."""
+        if not _check_invoke_rate(_client_address(request, _TRUSTED_PROXIES) or "anonymous"):
+            return JSONResponse(status_code=429, content={"success": False, "error": "rate_limited"})
+        account = _notify_account(x_api_key)
+        if isinstance(account, JSONResponse):
+            return account
+        channel = hub_notify_store.get(account, channel_id)
+        if channel is None:
+            return JSONResponse(status_code=404, content={"success": False, "error": "channel_unknown"})
+        from starlette.concurrency import run_in_threadpool
+
+        ok, detail = await run_in_threadpool(hub_notifier.send_test, channel)
+        return {"delivered": ok, "detail": detail, "channel": owner_notify.public(
+            hub_notify_store.get(account, channel_id) or channel), "protocol_version": "v2"}
+
     @router.get("/mandates/{digest:path}")
     async def mandate_status(
         digest: str,

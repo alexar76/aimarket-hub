@@ -56,6 +56,33 @@ def pq_unverifiable(sig: Any) -> bool:
     return isinstance(sig, dict) and bool(sig.get("pq_value")) and not _PQ_LIB
 
 
+SIGNATURE_OBJECT_SHAPE = '{"algorithm": "ed25519", "public_key": "<base64>", "value": "<base64>"}'
+
+_JSON_TYPE_NAMES = {str: "a string", list: "an array", bool: "a boolean", int: "a number",
+                    float: "a number", type(None): "null"}
+
+
+def signature_shape_problem(sig: Any) -> str:
+    """Why `sig` is not a usable signature OBJECT (spec §7.3.1), or "" when it is one.
+
+    Both strangers who have ever knocked on modelmarket.dev from their own implementation
+    (agent-exec.448c.org on 2026-10-08, mach402.dev on 2026-10-19) published the base64
+    signature as a bare string. Every verifier then did `sig.get("value")` on a `str`, and the
+    assay crashed instead of saying what was wrong: their dossiers froze on an older failure
+    they had already fixed, and `aimarket doctor` printed a traceback. A wrong shape is the
+    peer's mistake to fix, so it has to come back as a sentence that says how.
+    """
+    if isinstance(sig, dict):
+        value = sig.get("value")
+        if not isinstance(value, str) or not value.strip():
+            return ('the signature object has no "value" string: put the base64 Ed25519 signature '
+                    'there (spec §7.3.1)')
+        return ""
+    kind = _JSON_TYPE_NAMES.get(type(sig), "not an object")
+    return (f"signature is {kind}, not an object (spec §7.3.1): publish "
+            f"{SIGNATURE_OBJECT_SHAPE}, with the base64 Ed25519 signature in value")
+
+
 def pq_unverifiable_refusals() -> int:
     """Signatures refused so far because the PQ half could not be evaluated (for /health)."""
     return _pq_unverifiable_refusals
@@ -438,6 +465,8 @@ class Signer:
             raise PQCMisconfigured(
                 "AIMARKET_PQC_REQUIRE is on but dilithium-py is missing — "
                 "install aimarket-hub[pqc] on this hub")
+        if signature_shape_problem(sig):
+            return False        # a bare string, or an object without a value, is not a signature
         if not Signer.verify(public_key_b64, sig.get("value", ""), canonical):
             return False
         pq_value = sig.get("pq_value")
@@ -851,7 +880,9 @@ def decode_b64(text: str) -> bytes | None:
     Strict decoding, tried in both alphabets, is the honest reading — it accepts an
     encoding, never a wrong signature.
     """
-    raw = (text or "").strip()
+    if not isinstance(text, str):
+        return None         # a peer's JSON can put a number or an object where a key belongs
+    raw = text.strip()
     if not raw:
         return None
     padded = raw + "=" * (-len(raw) % 4)

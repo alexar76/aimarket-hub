@@ -39,6 +39,51 @@ def test_pin_blocks_rebind_to_private(monkeypatch):
         oh._pin_target("http://rebind.example/latest/meta-data/")
 
 
+@pytest.mark.parametrize("ip", ["198.18.0.10", "192.0.2.7", "240.0.0.1", "2001:db8::1"])
+def test_pin_refuses_what_validation_refuses(monkeypatch, ip):
+    # The pin is the answer actually connected to: a name that answered a public address to
+    # the validation lookup and a benchmark, documentation or reserved one now is refused here.
+    from aimarket_hub import crawler
+
+    assert crawler._is_private_url(f"http://[{ip}]/x" if ":" in ip else f"http://{ip}/x")
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_gai(ip))
+    with pytest.raises(ValueError, match="blocked network"):
+        oh._pin_target("https://rebind.example/x")
+
+
+def test_async_callers_resolve_off_the_event_loop(monkeypatch):
+    import asyncio
+    import threading
+    import time
+
+    loop_thread = []
+
+    def slow(host, port, *a, **k):
+        loop_thread.append(threading.current_thread() is threading.main_thread())
+        time.sleep(0.4)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", slow)
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        end = time.monotonic() + 0.35
+        while time.monotonic() < end:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    async def go():
+        beat = asyncio.create_task(ticker())
+        with pytest.raises(ValueError):
+            await oh.safe_post_capped("https://slow-dns.example/x", json={}, max_bytes=10)
+        await beat
+
+    asyncio.run(go())
+    assert loop_thread and not any(loop_thread), "getaddrinfo ran on the event loop's thread"
+    assert ticks > 10, "the event loop stood still while a name resolved"
+
+
 def test_pin_allow_hosts_bypasses(monkeypatch):
     # A configured gateway / localhost is exempt (not pinned, not blocked).
     monkeypatch.setattr(socket, "getaddrinfo", _fake_gai("127.0.0.1"))

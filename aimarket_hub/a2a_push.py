@@ -44,8 +44,13 @@ DELIVERY_TIMEOUT_S = 10.0
 RETRY_DELAYS_S = (2.0, 10.0)
 MAX_REPLY_BYTES = 4096
 #: Deliveries in flight at once across the hub. A burst beyond it waits its turn rather than
-#: opening a connection per task.
+#: opening a connection per task. A slot is held for one attempt, never across a retry's
+#: pause: webhooks that hang and fail would otherwise keep every slot through their whole
+#: retry cycle, and every other task's push would wait behind them.
 MAX_CONCURRENT_DELIVERIES = 16
+#: Deliveries scheduled and not finished. Beyond it a push is dropped (and recorded on its
+#: config): the task is stored either way, and memory is not a queue a caller can fill.
+MAX_PENDING_DELIVERIES = 2048
 MEDIA_TYPE = "application/a2a+json"
 
 # RFC 9110 token for the scheme; credentials are printable ASCII without CR/LF — they go
@@ -259,11 +264,18 @@ class PushDispatcher:
             logger.warning("a2a push: no event loop to deliver %s on; the client must read the task", task.get("id"))
             return 0
         body = status_update(task)
+        scheduled = 0
         for config in configs:
+            if len(self._inflight) >= MAX_PENDING_DELIVERIES:
+                logger.warning("a2a push: %d deliveries pending; dropped one for task %s",
+                               len(self._inflight), task.get("id"))
+                self._record(config, 0, "dropped: too many deliveries pending on this hub")
+                continue
             job = loop.create_task(self._deliver(config, body))
             self._inflight.add(job)
             job.add_done_callback(self._inflight.discard)
-        return len(configs)
+            scheduled += 1
+        return scheduled
 
     async def drain(self) -> None:
         """Wait for deliveries in flight (tests, and a clean shutdown)."""
@@ -291,19 +303,22 @@ class PushDispatcher:
         post = self._post or _safe_post
         delays = RETRY_DELAYS_S if self._retry_delays is None else self._retry_delays
         status, error = 0, ""
-        async with self._gate:
-            for delay in (0.0, *delays):
-                if delay:
-                    await asyncio.sleep(delay)
+        for delay in (0.0, *delays):
+            if delay:
+                await asyncio.sleep(delay)
+            async with self._gate:
                 try:
                     status, _ = await post(config["url"], body, headers)
                     error = "" if 200 <= status < 300 else f"HTTP {status}"
                 except Exception as exc:  # noqa: BLE001 - a refused, unsafe or dead webhook
                     status, error = 0, f"{type(exc).__name__}: {exc}"[:300]
-                # Retry what may pass next time: no answer, a 5xx, or a 429. A 4xx is the
-                # client's webhook saying no; asking again would not change its mind.
-                if 200 <= status < 300 or (400 <= status < 500 and status != 429):
-                    break
+            # Retry what may pass next time: no answer, a 5xx, or a 429. A 4xx is the
+            # client's webhook saying no; asking again would not change its mind.
+            if 200 <= status < 300 or (400 <= status < 500 and status != 429):
+                break
+        self._record(config, status, error)
+
+    def _record(self, config: dict[str, Any], status: int, error: str) -> None:
         try:
             self.store.record(config["task_id"], config["config_id"], status=status, error=error)
         except Exception as exc:  # noqa: BLE001

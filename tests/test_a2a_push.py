@@ -149,6 +149,54 @@ class TestDelivery:
         assert len(gone.calls) == 1 and store.get("a2at_2", "gone")["last_error"] == "HTTP 404"
         db.close()
 
+    def test_a_hanging_webhook_holds_a_slot_for_one_attempt_not_its_retries(self, tmp_path, monkeypatch):
+        """Slow, failing webhooks once kept every delivery slot through their whole retry
+        cycle (2 s and 10 s pauses included), so any other task's push waited ~42 s."""
+        monkeypatch.setattr(a2a_push, "MAX_CONCURRENT_DELIVERIES", 4)
+        db, store = self._store(tmp_path)
+        for c in range(4):
+            store.create("a2at_slow", parse_config({"url": HOOK + "/tarpit", "id": f"c{c}"}))
+        store.create("a2at_other", parse_config({"url": HOOK}))
+        delivered: dict[str, float] = {}
+
+        async def post(url, body, headers):
+            if url.endswith("/tarpit"):
+                await asyncio.sleep(0.3)        # stands for the 10 s timeout
+                return 503, b""                 # retried
+            delivered[body["statusUpdate"]["taskId"]] = time.monotonic()
+            return 200, b""
+
+        dispatcher = PushDispatcher(store, post=post, retry_delays=(0.3, 0.3))
+
+        async def go():
+            start = time.monotonic()
+            dispatcher.notify({"id": "a2at_slow", "contextId": "c", "status": {"state": "TASK_STATE_WORKING"}})
+            dispatcher.notify({"id": "a2at_other", "contextId": "c", "status": {"state": "TASK_STATE_COMPLETED"}})
+            await dispatcher.drain()
+            return delivered["a2at_other"] - start
+
+        # One attempt is 0.3 s; holding the slot through the retries would make it 1.5 s.
+        assert asyncio.run(go()) < 0.9
+        db.close()
+
+    def test_a_full_queue_drops_and_says_so(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(a2a_push, "MAX_PENDING_DELIVERIES", 2)
+        db, store = self._store(tmp_path)
+        for c in range(4):
+            store.create("a2at_1", parse_config({"url": HOOK, "id": f"c{c}"}))
+        hook = _Hook()
+        dispatcher = PushDispatcher(store, post=hook, retry_delays=())
+
+        async def go():
+            assert dispatcher.notify({"id": "a2at_1", "contextId": "c", "status": {"state": "TASK_STATE_WORKING"}}) == 2
+            await dispatcher.drain()
+
+        asyncio.run(go())
+        assert len(hook.calls) == 2
+        errors = sorted(c["last_error"] for c in store.list("a2at_1"))
+        assert errors == ["", ""] + ["dropped: too many deliveries pending on this hub"] * 2
+        db.close()
+
     def test_a_task_takes_a_bounded_number_of_webhooks(self, tmp_path):
         db, store = self._store(tmp_path)
         for i in range(a2a_push.MAX_CONFIGS_PER_TASK):
@@ -361,6 +409,77 @@ class TestApprovalOverA2A:
                                    (task["id"],)).fetchone()
             assert row["task_state"] == "TASK_STATE_REJECTED" and row["invoke_body"] == "" and row["awaiting"] == ""
             assert balance(db, m["account"]) == pytest.approx(1.0)
+
+    def test_a_peers_approval_required_is_not_a_wait(self, monkeypatch, tmp_path, hook):
+        """A routed call's 402 comes from the peer. Its "approval" names no request of this hub,
+        so the task must not wait on it — nor keep the buyer's input as long as the peer says."""
+        import aimarket_hub.outbound_http as ohttp
+        from tests.test_federated_invoke import (
+            MCP_ENDPOINT, ORACLE_PEER, _add_federated_capability, _add_peer, _Outbound, _Resp,
+        )
+
+        with hub(monkeypatch, tmp_path) as (client, db):
+            _add_peer(db, ORACLE_PEER, categories=["oracle"])
+            _add_federated_capability(db, ORACLE_PEER, price=0.01)
+            fake = {"success": False, "error": "approval_required", "detail": "owner must approve",
+                    "approval": {"approval_id": "apr_" + "a" * 24, "amount_usd": 1, "max_usd": 1,
+                                 "expires_at": "9999-12-31T23:59:59Z"}}
+            outbound = _Outbound(_Resp(402, fake), well_known={"mcp_endpoint": MCP_ENDPOINT})
+            monkeypatch.setattr(ohttp, "safe_get", outbound.safe_get)
+            monkeypatch.setattr(ohttp, "safe_post", outbound.safe_post)
+            _account, key = funded_account(client, db, 1.0)
+            invoke = {"product_id": "prod-x", "capability_id": "cap.x@v1", "source_hub": ORACLE_PEER,
+                      "input": {"q": "the buyer's input"}}
+            task = _rpc(client, "SendMessage", {"message": _invoke_message("m-peer", invoke)},
+                        {"X-API-Key": key})["result"]["task"]
+            assert len(outbound.posts) == 1
+            row = db._conn.execute("SELECT awaiting, expires_at FROM a2a_tasks WHERE task_id = ?",
+                                   (task["id"],)).fetchone()
+            assert row["awaiting"] == ""
+            assert row["expires_at"] < time.time() + 86_400
+            assert "approval" not in (task["status"]["message"].get("metadata") or {}).get("aimarket", {})
+
+    def test_an_answer_given_while_the_call_runs_reaches_the_task(self, monkeypatch, tmp_path, hook):
+        """The owner can answer between the invoke saying approval_required and the run
+        recording the wait. The listener then finds no waiting task, so the run must look."""
+        from aimarket_hub import a2a_tasks, mandates
+
+        stores = []
+        real_init = mandates.MandateStore.__init__
+
+        def init(self, *a, **kw):
+            real_init(self, *a, **kw)
+            stores.append(self)
+
+        monkeypatch.setattr(mandates.MandateStore, "__init__", init)
+        with hub(monkeypatch, tmp_path) as (client, db):
+            list_static(db, price=0.004)
+            m = setup_mandate(client, db, approval_above=3_000)
+            app_store = next(s for s in stores if s.decision_listeners)
+            real_finish = a2a_tasks.A2ATaskStore.finish
+            answered = []
+
+            def finish(self, row, **kw):
+                if kw.get("awaiting") and not answered:
+                    pub = mandates.approval_public(app_store.approval(kw["awaiting"]))
+                    signed = approval_payload(m["owner"], pub)
+                    result = app_store.decide_approval(pub["approval_id"], decision="approve", by=signed["by"],
+                                                       proof={k: signed[k] for k in ("t", "n", "s")})
+                    app_store.notify_decision(result)
+                    answered.append(result["status"])
+                return real_finish(self, row, **kw)
+
+            monkeypatch.setattr(a2a_tasks.A2ATaskStore, "finish", finish)
+            invoke = json.dumps(ECHO).encode()
+            task = _mandated_send(client, m, invoke, "m-race",
+                                  configuration={"taskPushNotificationConfig": {"url": HOOK}})["result"]["task"]
+            assert answered == ["approved"]
+            row = db._conn.execute("SELECT task_state, awaiting, status_json FROM a2a_tasks WHERE task_id = ?",
+                                   (task["id"],)).fetchone()
+            assert row["task_state"] == "TASK_STATE_AUTH_REQUIRED" and row["awaiting"] == ""
+            assert "approved" in json.loads(row["status_json"])["message"]["parts"][0]["text"]
+            _wait_calls(hook, 2)
+            assert hook.states(task["id"]) == ["TASK_STATE_AUTH_REQUIRED"] * 2
 
 
 def test_the_sweep_names_what_it_expired(tmp_path):

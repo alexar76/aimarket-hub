@@ -338,9 +338,9 @@ class Crawler:
         # Import lazily: outbound_http delegates URL policy back to this module.
         # The helper pins the validated public IP, closing the check/connect DNS
         # rebinding window that a second hostname lookup would leave open.
-        from aimarket_hub.outbound_http import prepare_safe_request
+        from aimarket_hub.outbound_http import prepare_safe_request_async
 
-        target, pin_headers, extensions = prepare_safe_request(url)
+        target, pin_headers, extensions = await prepare_safe_request_async(url)
         headers = {
             "User-Agent": USER_AGENT,
             "X-AIMarket-Crawler": self.config.hub_url,
@@ -777,7 +777,10 @@ class Crawler:
         prior_key = existing_peer.public_key if existing_peer else ""
         # The PQ key travels INSIDE the signature block, not beside it as `signer_public_key`
         # does, because it is part of the signature object the peer produced.
-        advertised_pq_key = str((wk.get("signature") or {}).get("pq_public_key") or "")
+        wk_sig = wk.get("signature")
+        advertised_pq_key = str(
+            (wk_sig.get("pq_public_key") if isinstance(wk_sig, dict) else "") or ""
+        )
         prior_pq_key = existing_peer.pq_public_key if existing_peer else ""
         signed_gossip = self._well_known_gossip_verified(wk, advertised_key)
 

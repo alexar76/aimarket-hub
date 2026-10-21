@@ -199,6 +199,21 @@ _API_HELPERS = (
 )
 
 
+def _a2a_charge_task(request: Request) -> str:
+    """The A2A task this invoke runs for, when the A2A bridge itself sent it — proven by the
+    process's internal secret, so no outside caller can attach its call to someone's task."""
+    import hmac
+
+    from aimarket_hub import a2a
+    from aimarket_hub.a2a_tasks import is_task_id
+
+    task_id = (request.headers.get(a2a.TASK_HEADER) or "").strip()
+    secret = (request.headers.get(a2a.INTERNAL_HEADER) or "").strip()
+    if not task_id or not secret or not is_task_id(task_id):
+        return ""
+    return task_id if hmac.compare_digest(secret, a2a.INTERNAL_SECRET) else ""
+
+
 def register(
     *,
     TrustOracleUnavailable: type[Exception],
@@ -281,6 +296,15 @@ def register(
             status = 200 if result["status"] in ("completed", "failed") else 202
             return JSONResponse(status_code=status, content=result, headers={"Cache-Control": "no-store"})
         ledger = hub_credits if credits.enabled() else None
+        charge_task = _a2a_charge_task(request)
+        if charge_task and ledger is not None:
+            # An A2A task's own invoke (a2a.py sends it through this app): every reservation
+            # and debit is named against the task before the money moves, so a restart
+            # mid-call can be recovered from the ledger instead of guessed at.
+            from aimarket_hub.a2a_tasks import A2ATaskStore, ChargeJournal
+
+            ledger = ChargeJournal(ledger, A2ATaskStore(db._conn), charge_task)
+            request.state.aimarket_charge_journal = ledger
 
         def _resolve_product(product_id: str, capability_id: str) -> str:
             # The same lookup the handler executes with, so a per-product limit is keyed on
@@ -396,7 +420,7 @@ def _read_call(
     # this existed it was `crypto_on` alone, which is why a default deployment served
     # every priced capability for free.
     credits_on = credits.enabled()
-    credits_ledger = hub_credits if credits_on else None
+    credits_ledger = (getattr(request.state, "aimarket_charge_journal", None) or hub_credits) if credits_on else None
     credit_account = ""
     if credits_ledger is not None and x_api_key:
         credit_account = credits_ledger.resolve(x_api_key)

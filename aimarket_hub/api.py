@@ -862,6 +862,7 @@ def create_app(
         crawl_task: asyncio.Task | None = None
         collect_task: asyncio.Task | None = None
         sweep_task: asyncio.Task | None = None
+        a2a_sweep_task: asyncio.Task | None = None
         openapi_task: asyncio.Task | None = None
         deposit_task: asyncio.Task | None = None
 
@@ -986,6 +987,19 @@ def create_app(
             # then on the timer.
             _sweep_allowances_once()
             sweep_task = asyncio.create_task(_periodic_allowance_sweep(max(10.0, sweep_interval)))
+        # A2A tasks whose process died mid-call (a2a_tasks leases): recovered within a minute of
+        # their lease lapsing, from the ledger — not left WORKING until somebody calls /a2a.
+        a2a_sweep = getattr(fastapi_app.state, "a2a_sweep", None)
+        if a2a_sweep is not None:
+            async def _periodic_a2a_sweep() -> None:
+                while True:
+                    await asyncio.sleep(60.0)
+                    try:
+                        a2a_sweep()
+                    except Exception as exc:  # noqa: BLE001 - a bad cycle must never kill the loop
+                        logger.warning("a2a: periodic task sweep failed: %s", exc)
+
+            a2a_sweep_task = asyncio.create_task(_periodic_a2a_sweep())
         # USDC landing in the top-up wallet becomes credit without anybody presenting it
         # (deposit_watch.py) — only on a wallet that receives top-ups and nothing else.
         if deposit_watch.enabled() and hub_credits is not None:
@@ -1023,7 +1037,7 @@ def create_app(
         try:
             yield
         finally:
-            for task in (crawl_task, collect_task, sweep_task, openapi_task, deposit_task):
+            for task in (crawl_task, collect_task, sweep_task, openapi_task, deposit_task, a2a_sweep_task):
                 if task is None:
                     continue
                 task.cancel()

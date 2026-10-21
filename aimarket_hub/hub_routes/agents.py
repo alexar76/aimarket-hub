@@ -137,13 +137,70 @@ def register(
             except ValueError:
                 return default
 
+        a2a_tasks_store = A2ATaskStore(
+            db._conn,
+            interrupted_ttl_s=_env_seconds("AIMARKET_A2A_TASK_TTL_S", 900),
+            retention_s=_env_seconds("AIMARKET_A2A_TASK_RETENTION_S", 7 * 86_400),
+        )
+
+        def _a2a_recover(row: dict[str, Any]) -> dict[str, Any]:
+            """What an abandoned task's call cost, from the receipts its ChargeJournal named.
+
+            A hold still held belongs to a process that is gone (the recovery took the task's
+            lease first): it is released, with its mandate reservation — and an owner approval
+            it used goes back with it. A captured hold or a recorded debit is a charge. An
+            allowance (its children settle it) or a hold a verifier still owns cannot be judged
+            here: "unknown"."""
+            from aimarket_hub import credits as credits_mod
+            from aimarket_hub.channels import UNRESOLVED_SETTLEMENT_STATUSES
+
+            ledger = credits_mod.CreditsLedger(db._conn)
+            charges = a2a_tasks_store.charges(row["task_id"])
+            charged: list[str] = []
+            unknown = False
+            marks = ",".join("?" for _ in UNRESOLVED_SETTLEMENT_STATUSES)
+            for charge in charges:
+                receipt, kind = str(charge["receipt_id"]), str(charge["kind"])
+                if kind == "allowance":
+                    unknown = True
+                    continue
+                if kind == "debit":
+                    if db._conn.execute("SELECT 1 FROM credit_ledger WHERE receipt_id = ? LIMIT 1",
+                                        (receipt,)).fetchone():
+                        charged.append(receipt)
+                    continue
+                hold = db._conn.execute("SELECT status FROM credit_holds WHERE receipt_id = ?", (receipt,)).fetchone()
+                if hold is None:
+                    continue   # named, never taken
+                status = str(dict(hold)["status"])
+                if status == "held" and db._conn.execute(
+                        f"SELECT 1 FROM verified_settlements WHERE nonce = ? AND status IN ({marks})",
+                        (receipt, *UNRESOLVED_SETTLEMENT_STATUSES)).fetchone():
+                    unknown = True   # a verifier owns it and settles it on its own
+                    continue
+                if status == "held":
+                    result = ledger.release_hold(receipt)
+                    status = "captured" if result.get("already") == "captured" else "released"
+                if status == "captured":
+                    charged.append(receipt)
+                    hub_mandates.capture(receipt)
+                else:
+                    hub_mandates.settle(receipt, 0)
+            if charged:
+                outcome = "charged"
+            elif unknown:
+                outcome = "unknown"
+            else:
+                outcome = "released" if charges else "none"
+            return {"outcome": outcome, "receipts": charged}
+
         a2a_bridge = a2a_facade.InvokeBridge(
             invoke=_a2a_invoke,
-            tasks=A2ATaskStore(
-                db._conn,
-                interrupted_ttl_s=_env_seconds("AIMARKET_A2A_TASK_TTL_S", 900),
-                retention_s=_env_seconds("AIMARKET_A2A_TASK_RETENTION_S", 7 * 86_400),
-            ),
+            tasks=a2a_tasks_store,
+            recover=_a2a_recover,
+            approval_lookup=lambda approval_id: (
+                mandates.approval_public(row, base_url=hub_mandates.hub_origin)
+                if (row := hub_mandates.approval(approval_id)) is not None else None),
             client_address=_mcp_caller,
             resolve_account=_api_key_account,
             verify_mandate=_a2a_verify_mandate,
@@ -158,7 +215,9 @@ def register(
         hub_mandates.decision_listeners.append(a2a_facade.approval_listener(a2a_bridge))
 
     a2a_router = APIRouter(tags=["a2a"])
-    a2a_facade.attach_a2a_routes(
+    # The task sweep, run on the hub's timer too (api.py lifespan): after a restart the tasks
+    # the dead process was running must be recovered whether or not anyone calls /a2a.
+    app.state.a2a_sweep = a2a_facade.attach_a2a_routes(
         a2a_router,
         hub_name=config.hub_name,
         hub_url=config.hub_url,

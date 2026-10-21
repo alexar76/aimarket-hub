@@ -35,7 +35,7 @@ from aimarket_hub.access_policy import OPERATOR_GATED, capability_access_mode
 from aimarket_hub.config import OPENROUTER_CHAT_COMPLETIONS, HubConfig
 from aimarket_hub.database import HubDatabase
 from aimarket_hub.federation_transport import invoke_endpoint_candidates, invoke_endpoint_for
-from aimarket_hub.signing import Signer, same_key
+from aimarket_hub.signing import Signer, same_key, signature_shape_problem
 from aimarket_hub.validator import validate_manifest, validate_well_known
 
 logger = logging.getLogger(__name__)
@@ -730,6 +730,9 @@ def _why_unsigned(signer: Any, manifest: dict, advertised_key: str) -> str:
     sig = manifest.get("signature") or {}
     if not sig:
         return "manifest carries no signature block"
+    shape = signature_shape_problem(sig)
+    if shape:
+        return shape
     canonical = signer.manifest_canonical(manifest)
     classic_ok = bool(signer.verify(advertised_key, sig.get("value", ""), canonical))
     if not classic_ok:
@@ -870,9 +873,13 @@ async def run_assay(
                     str(sig.get("value") or ""),
                     signer.object_canonical(well_known),
                 ))
+            unsigned_note = "unsigned well-known is allowed; gossip will not relay observations"
+            wk_shape = signature_shape_problem(sig) if sig else ""
             _add(
                 checks, "well_known_signed", wk_signed if advertised_key else None,
-                "" if wk_signed else "unsigned well-known is allowed; gossip will not relay observations",
+                "" if wk_signed else (
+                    f"{wk_shape}; read as unsigned — {unsigned_note}" if wk_shape else unsigned_note
+                ),
             )
 
             # An address presenting the key of a hub we already trust is that hub under another

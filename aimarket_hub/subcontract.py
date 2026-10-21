@@ -229,6 +229,10 @@ class JobStore:
             "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
             (node, job_id, parent, depth, product_id, capability_id, funded_by),
         )
+        # Committed here, not by a later statement of the caller: join() refuses right after
+        # this on a finished parent, and on PostgreSQL an uncommitted write left the request's
+        # connection "idle in transaction" — out of the pool and holding its locks for good.
+        self._conn.commit()
 
     # children ---------------------------------------------------------------
 

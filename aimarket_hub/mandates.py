@@ -573,6 +573,9 @@ class MandateStore:
         # Called with an approval's public form once an owner has answered it (§5.6). The A2A
         # facade listens, to move the task that waits on it and tell its push subscribers.
         self.decision_listeners: list[Any] = []
+        # Called with the stored row of each NEW approval request — not a repeat of a pending
+        # one — so the account's owners can be told (owner_notify.py).
+        self.request_listeners: list[Any] = []
 
     # registration and lookup ------------------------------------------------
 
@@ -901,6 +904,36 @@ class MandateStore:
         )
         return won is not None
 
+    def respend_approval(self, approval_id: str, receipt_id: str) -> None:
+        """Mark an approval spent again by a charge its call made after giving a hold back.
+
+        A routed call whose peer charged less than listed releases its fee hold and debits the
+        right fee instead (invoke.py). The release gave the approval back; the debit means the
+        call ran and was charged, so the approval is spent — or one owner signature would pay
+        for every repeat of the call."""
+        self._conn.execute(
+            "UPDATE mandate_approvals SET status = ?, receipt_id = ? WHERE approval_id = ? AND status = ?",
+            (APPROVAL_USED, receipt_id, approval_id, APPROVAL_APPROVED),
+        )
+        self._conn.commit()
+
+    def limit_in_the_way(self, chain: list[Mandate], *, call_micro: int, amount_micro: int,
+                         product_id: str, now: float | None = None) -> tuple[str, str] | None:
+        """(limit name, mandate digest) of a limit this spend would break right now, or None.
+
+        A read, not a reservation: it exists so the hub does not ask an owner to approve a call
+        that the mandate's own limits would refuse anyway — the signature would be wasted and
+        the request would take a pending slot (§5.6). The reservation still decides."""
+        now = time.time() if now is None else now
+        day = utc_day(now)
+        for mandate in chain:
+            if call_micro > mandate.limits["perCall"]:
+                return "perCall", mandate.digest
+            for period, limit, name in self.periods_for(mandate, product_id, day):
+                if self._counter(mandate.digest, period) + amount_micro > limit:
+                    return name, mandate.digest
+        return None
+
     def unclaim_approval(self, receipt_id: str) -> None:
         """The hold that used an approval was released: the call did not happen, so the
         owner's answer stands for an identical retry (until it expires)."""
@@ -953,7 +986,7 @@ class MandateStore:
                     mandate=leaf.digest,
                 )
             approval_id = new_approval_id()
-            returning_one(
+            inserted = returning_one(
                 self._conn,
                 "INSERT INTO mandate_approvals (approval_id, account_id, leaf_digest, agent, capability_id, "
                 "product_id, source_hub, body_sha256, amount_micro, max_micro, threshold_micro, status, "
@@ -967,6 +1000,8 @@ class MandateStore:
             existing = pending()
             if existing is None:  # pragma: no cover - answered and closed between two statements
                 raise MandateError(409, "approval_required", "the approval request changed; retry the call")
+            if inserted is not None and existing["approval_id"] == approval_id:
+                self.notify_request(existing)
         elif int(existing["max_micro"]) < int(max_micro):
             self._conn.execute(
                 "UPDATE mandate_approvals SET amount_micro = ?, max_micro = ? WHERE approval_id = ? AND status = ?",
@@ -1040,6 +1075,13 @@ class MandateStore:
                                    "the call's ceiling was raised after you read it; read the request and sign again")
             raise MandateError(409, "approval_closed", f"this request is already {state}")
         return approval_public(latest, now)
+
+    def notify_request(self, row: dict[str, Any]) -> None:
+        for listener in list(self.request_listeners):
+            try:
+                listener(row)
+            except Exception as exc:  # noqa: BLE001 - the request is stored; telling is best effort
+                logger.error("mandates: request listener failed for %s: %s", row.get("approval_id"), exc)
 
     def notify_decision(self, approval: dict[str, Any]) -> None:
         for listener in list(self.decision_listeners):
@@ -1489,8 +1531,10 @@ class MandatedCredits:
         self._admission = admission
         # What this CALL has reserved so far, for perCall (a price hold, then a fee hold).
         self._call_micro = 0
-        # The ceiling of the owner approval this call has used, once it has used one (§5.6).
+        # The ceiling of the owner approval this call has used, once it has used one (§5.6),
+        # and which approval it was.
         self._approved_max: int | None = None
+        self._approval_id: str | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -1517,10 +1561,10 @@ class MandatedCredits:
         fee = -(-fee // 10) * 10 + 10
         return total_micro + fee
 
-    def _needs_approval(self, total_micro: int) -> str | None:
-        """For a per-call hold that would bring the call to ``total_micro``: None when no
-        approval is needed, the id of an approved request to use, or a raised refusal that
-        carries the request the owner must answer."""
+    def _needs_approval(self, total_micro: int, micro: int) -> str | None:
+        """For a per-call hold of ``micro`` that would bring the call to ``total_micro``: None
+        when no approval is needed, the id of an approved request to use, or a raised refusal
+        that carries the request the owner must answer."""
         admission = self._admission
         threshold = approval_threshold(admission.chain)
         if threshold is None or total_micro <= threshold:
@@ -1528,6 +1572,14 @@ class MandatedCredits:
         if self._approved_max is not None and total_micro <= self._approved_max:
             return None   # covered by the approval this call already used
         store = admission.store
+        blocked = store.limit_in_the_way(admission.chain, call_micro=total_micro, amount_micro=micro,
+                                         product_id=admission.product_id)
+        if blocked is not None:
+            # The mandate refuses this call whatever the owner says: say that, instead of
+            # asking for a signature that could not make it run.
+            name, digest = blocked
+            raise MandateError(402, "mandate_limit", f"the {name} limit of mandate {digest} would be exceeded",
+                               limit=name, mandate=digest)
         if self._approved_max is None:
             found = store.usable_approval(leaf_digest=admission.leaf.digest, body_sha256=admission.body_sha256,
                                           need_micro=total_micro)
@@ -1561,7 +1613,7 @@ class MandatedCredits:
         approval_id: str | None = None
         try:
             if per_call:
-                approval_id = self._needs_approval(self._call_micro + micro)
+                approval_id = self._needs_approval(self._call_micro + micro, micro)
             store.reserve(
                 self._admission.chain, receipt_id=receipt_id, amount_micro=micro,
                 product_id=self._admission.product_id,
@@ -1572,10 +1624,11 @@ class MandatedCredits:
                                             need_micro=self._call_micro + micro):
                     # Another copy of this call used the approval first, or it just expired.
                     store.release(receipt_id)
-                    approval_id = self._needs_approval(self._call_micro + micro)
+                    approval_id = self._needs_approval(self._call_micro + micro, micro)
                     raise MandateError(402, "approval_required", "the approval was used by another call; retry")
                 approved = store.approval(approval_id) or {}
                 self._approved_max = int(approved.get("max_micro") or 0)
+                self._approval_id = approval_id
         except MandateError as exc:
             self._admission.last_refusal = exc
             return {"error": exc.detail}
@@ -1586,12 +1639,12 @@ class MandatedCredits:
             # approval this hold claimed goes back with it (settle() → unclaim_approval).
             store.release(receipt_id)
             if approval_id is not None:
-                self._approved_max = None
+                self._approved_max = self._approval_id = None
             raise
         if result.get("error"):
             store.release(receipt_id)
             if approval_id is not None:
-                self._approved_max = None
+                self._approved_max = self._approval_id = None
         elif per_call:
             self._call_micro += micro
         return result
@@ -1632,4 +1685,8 @@ class MandatedCredits:
                     force=True,
                 )
                 self._admission.store.capture(receipt_id)
+            if self._approval_id is not None:
+                # This call ran on an owner's approval and was charged: whatever hold gave
+                # the approval back on its way to this debit, the approval stays spent.
+                self._admission.store.respend_approval(self._approval_id, receipt_id)
         return result

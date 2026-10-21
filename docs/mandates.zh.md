@@ -98,12 +98,44 @@ owner_unlink_payload(old_owner.did, hub_origin=HUB, account_id=ACCOUNT_ID, autho
 
 在授权书的 `limits` 中加入 `approvalAbove`（µUSD），任何超过该金额的单次调用都不会直接支出，而是等待您的答复（[规范 §5.6](../../aimarket-protocol/mandates.md)）。小额调用照常无人值守运行；大额调用需要您对**这一次**调用签名。
 
-1. 智能体超过阈值的调用返回 `402 approval_required`，附带 `approval` 块：`approval_id`、`capability_id`、`amount_usd`、`max_usd`（您批准的上限；路由调用包含路由费）、`body_sha256`（确切的请求）、`expires_at`（24 小时）和 `url`。不会预留任何资金。
+1. 智能体超过阈值的调用返回 `402 approval_required`，附带 `approval` 块：`approval_id`、`capability_id`、`amount_usd`、`max_usd`（您批准的上限；路由调用包含路由费）、`body_sha256`（确切的请求）、`expires_at`（24 小时）和 `url`。不会预留任何资金。若授权书的其他限额（`perCall`、`perDay`、`total`、某产品的每日限额）无论如何都会拒绝该调用，则立即返回 `402 mandate_limit`——不会请您签署无法执行的调用。
 2. 待处理的请求：用出资账户的 `X-API-Key` 调用 `GET /ai-market/v2/mandates/approvals?status=pending`。
 3. 答复：`POST /ai-market/v2/mandates/approvals/{approval_id}`，正文 `{"decision": "approve", "by": <您的 DID>, "t", "n", "s"}`；`s` 是您对以下各行（以 `\n` 分隔）的 Ed25519 签名：`aimarket-mandate-approval/1`、枢纽基础 URL、`approval_id`、`approve`、授权书摘要、`body_sha256`、`max_micro`、`t`、`n`。账户的任一所有者 DID 都可签名。仅凭 API 密钥只能**拒绝**（`{"decision": "deny"}`）。
 4. 智能体用新的证明再次发送同一请求。调用只执行一次；批准随之消耗，若调用在扣款前失败则退回。拒绝在请求到期前一直有效（`402 approval_denied`）。
 
 每份授权书最多 16 个待处理请求（`429 approval_queue_full`）。再委托的授权书保留父级阈值，只能调低。通过 A2A 时，任务（Task）在 `AUTH_REQUIRED` 中等待，您答复后即推进，并向智能体的 webhook 发送推送通知。
+
+### 调用等待您时收到通知
+
+没有通知渠道时，所有者只能主动查询才知道有待处理的请求（上文第 2 步）。在出资账户上登记渠道后，枢纽会把每个新请求及其答复发送到那里。通知只是告知：批准仍需所有者密钥的签名，任何聊天、频道或工单都不持有该密钥；每条消息都会说明如何批准、如何拒绝。
+
+```bash
+# 通过枢纽的 Telegram 机器人（如果运营方提供）：先对它按 Start，再填写您的聊天 id
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "telegram", "chat_id": "123456789"}'
+# ……或使用您自己的机器人：加上 "bot_token": "123456789:AA…"
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "slack", "webhook_url": "https://hooks.slack.com/services/T…/B…/…"}'
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "jira", "base_url": "https://acme.atlassian.net", "email": "ops@acme.example",
+       "api_token": "…", "project_key": "OPS", "issue_type": "Task"}'
+curl -X POST "$HUB/ai-market/v2/mandates/notify" -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "webhook", "url": "https://ops.acme.example/hooks/aimarket", "secret": "…"}'
+# 立即发送一条测试消息，查看渠道的回应
+curl -X POST "$HUB/ai-market/v2/mandates/notify/<channel_id>/test" -H "X-API-Key: $KEY"
+```
+
+| `kind` | 您需要提供 | 收到的内容 |
+|---|---|---|
+| `telegram` | `chat_id`（数字，或机器人担任管理员的 `@频道`）。使用自己的机器人时提供 `bot_token`；不提供则使用枢纽的机器人（如果运营方提供，`GET …/notify` 在 `telegram_bot` 中给出其名称）。 | 一条消息：哪个能力、多少钱、上限、有效期、如何批准与拒绝。使用 HTML；若 Telegram 拒绝该标记，则以纯文本发送同样内容。 |
+| `slack` | 传入 webhook 的 `webhook_url`（`https://hooks.slack.com/services/…` 或 `/triggers/…`）。 | 同样的文本。 |
+| `jira` | Jira Cloud 的 `base_url`（https）、`email`、`api_token`（id.atlassian.com → Security → API tokens）、`project_key`、`issue_type`（默认 `Task`）。 | 每个请求一个工单；答复以评论形式追加到该工单。 |
+| `webhook` | `url`（https），可选 `secret`。 | `POST` 正文 `{"event": "mandate.approval.requested" \| "….approved" \| "….denied", "approval": {…}, "title", "text"}`，带 `X-AIMarket-Event`；设置了密钥时另带 `X-AIMarket-Signature: t=<unix>,v1=<对 "<t>.<body>" 的 HMAC-SHA256 十六进制值>`。 |
+
+- `GET /ai-market/v2/mandates/notify` 列出账户的渠道及每个渠道最近一次投递的结果。机器人令牌、Slack URL、Jira 令牌、webhook 密钥等秘密仅用于发送，从不返回（Slack URL 只显示最后四个字符）。
+- `POST …/notify/{channel_id}/test` 立即发送测试消息，并返回 `delivered` 及渠道的回应；`DELETE …/notify/{channel_id}` 删除渠道。每个账户最多 8 个。
+- 渠道属于出资账户，因此会收到该账户出资的每份授权书的通知。渠道由账户的 API 密钥管理——同一密钥本来就能列出其待处理的请求。
+- 每个地址都按调用方提供给本枢纽的任何地址来检查：仅限 https，不得指向私有或元数据网络，只解析一次并固定，不跟随重定向。投递在请求之外进行，无响应、5xx 或 429 时重试两次（2 秒和 10 秒后），且从不改变它所报告的请求。
 
 ### 读取授权书的状态
 
@@ -270,6 +302,8 @@ SUBCONTRACT_CANARY_API_KEY=aimk_… scripts/subcontract_canary.py --a2a      # t
 | `AIMARKET_HISTOR_FLUSH_S` | `30` | 发件箱（outbox）发送待处理锚点的频率（HISTOR 失败或推迟期间，间隔会退避增长到 10 分钟）。 |
 | `AIMARKET_HISTOR_OUTBOX_RETAIN_DAYS` | `30` | 已锚定行在 outbox 中保留的天数；之后状态路由改为询问 HISTOR。`0` 表示全部保留。 |
 | `AIMARKET_MANDATE_APPROVAL_TTL_S` | `86400` | 所有者批准请求保持开放的时长（300 秒至 7 天）；已批准的请求须在同一时间窗内使用。 |
+| `AIMARKET_NOTIFY_TELEGRAM_BOT_TOKEN`（或 `…_FILE`） | 未设置 | 枢纽自己的 Telegram 机器人，用于批准通知：所有者只需提供聊天 id。未设置时，Telegram 渠道需要所有者自己的 `bot_token`。从不写入日志。 |
+| `AIMARKET_NOTIFY_TELEGRAM_BOT_NAME` | 未设置 | 该机器人的 @名称，由 `GET /mandates/notify` 返回，让所有者知道该对谁按 Start。 |
 
 镜像已安装 `awr`（provenance 插件需要它）。未安装它的枢纽可以正常启动，但对凭授权书的调用回答 `503 mandates_unavailable`。
 

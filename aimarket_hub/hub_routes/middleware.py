@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 from aimarket_hub import settle
+from aimarket_hub.canonical import canonical_base, canonical_href, with_canonical
 from aimarket_hub.config import HubConfig
 from aimarket_hub.database import HubDatabase
 from aimarket_hub.metrics import metrics_payload, record_invoke, set_federation_peer_health
@@ -57,6 +58,30 @@ def register(
         if request.headers.get("x-forwarded-proto", request.url.scheme) == "https":
             headers.setdefault("Strict-Transport-Security", "max-age=31536000")
         return response
+
+    @app.middleware("http")
+    async def _canonical_link_middleware(request: Request, call_next):
+        """A ``<link rel="canonical">`` on every HTML page, named under AIMARKET_HUB_URL.
+
+        One place instead of every page handler: the home page is a file on disk, the
+        others are built in four modules, and a page added later must not slip past.
+        """
+        response = await call_next(request)
+        base = canonical_base(config.hub_url)
+        if (
+            base is None
+            or request.method != "GET"
+            or response.status_code != 200
+            or not response.headers.get("content-type", "").startswith("text/html")
+            or response.headers.get("content-encoding")
+        ):
+            return response
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        href = canonical_href(base, request.url.path, request.query_params.get("lang"))
+        page = Response(content=with_canonical(body, href), status_code=response.status_code)
+        page.raw_headers = [(k, v) for k, v in response.raw_headers if k.lower() != b"content-length"]
+        page.headers["content-length"] = str(len(page.body))
+        return page
 
     @app.middleware("http")
     async def _x402_middleware(request: Request, call_next):

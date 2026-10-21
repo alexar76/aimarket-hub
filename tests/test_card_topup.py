@@ -7,6 +7,7 @@ whatever an event claims.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
@@ -269,6 +270,49 @@ class TestLimits:
             assert r.status_code == 429 and r.json()["error"] == "daily_topup_limit"
             assert open_checkout(client, key, 10).status_code == 201
 
+    def test_racing_checkouts_never_pass_the_daily_limit(self, monkeypatch, tmp_path, stripe):
+        """Six requests of $100 at once against a $200 limit: each passed the check before
+        any had a row, and all six opened."""
+        import threading
+
+        from aimarket_hub.topup import TopupError
+
+        with hub(monkeypatch, tmp_path, **ENV) as (client, db):
+            account, _key = funded_account(client, db, 0.0)
+            store = card_topup.CardTopupStore(db._conn)
+            for _ in range(5):
+                db._conn.execute("DELETE FROM card_topups")
+                db._conn.commit()
+                barrier = threading.Barrier(6)
+
+                def go() -> None:
+                    barrier.wait(timeout=10)
+                    with contextlib.suppress(TopupError):
+                        card_topup.create(store=store, account_id=account, amount_usd=100,
+                                          hub_url="https://hub.test", stripe=stripe)
+
+                threads = [threading.Thread(target=go) for _ in range(6)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=20)
+                assert store.committed_cents(account) <= 20_000
+                assert db._conn.execute("SELECT COUNT(*) AS n FROM card_topups WHERE status = 'new'").fetchone()["n"] == 0
+
+    def test_a_refunded_topup_still_counts_toward_the_limit(self, monkeypatch, tmp_path, stripe):
+        """The credit stays when the money goes back, so the limit on what a card can turn
+        into credit is not freed by a refund (or by Managed Payments refunding on its own)."""
+        with hub(monkeypatch, tmp_path, **ENV) as (client, db):
+            _account, key = funded_account(client, db, 0.0)
+            for _ in range(2):
+                assert open_checkout(client, key, 100).status_code == 201
+                paid = stripe.pay(list(stripe.sessions)[-1])
+                assert deliver(client, event("checkout.session.completed", paid)).json()["outcome"] == "credited"
+            assert open_checkout(client, key, 100).status_code == 429
+            refund = {"id": "ch_1", "payment_intent": paid["payment_intent"], "amount_refunded": 10_000}
+            assert deliver(client, event("charge.refunded", refund)).json()["outcome"] == "refunded"
+            assert open_checkout(client, key, 100).status_code == 429
+
     def test_a_key_is_required(self, monkeypatch, tmp_path, stripe):
         with hub(monkeypatch, tmp_path, **ENV) as (client, db):
             assert client.post("/ai-market/v2/account/topup/card", json={"amount_usd": 10}).status_code == 401
@@ -281,6 +325,47 @@ class TestLimits:
             r = open_checkout(client, key, 10)
             assert r.status_code == status and "nothing was charged" in r.json()["detail"]
             assert db._conn.execute("SELECT status FROM card_topups").fetchone()["status"] == "failed"
+
+
+def test_a_checkout_handed_out_keeps_its_session_whatever_another_request_does(monkeypatch, tmp_path, stripe):
+    """On SQLite every request shares one connection. A statement that fails on another
+    request's thread rolls back whatever is pending on it; if the row's session id was
+    written and committed as two steps, a failure between them lost it — and the checkout
+    the buyer was handed, and paid, could never be credited."""
+    import sqlite3
+    import threading
+
+    with hub(monkeypatch, tmp_path, **ENV) as (client, db):
+        account, key = funded_account(client, db, 0.0)
+        backend = db._conn
+        real_commit, real_opened = backend.commit, card_topup.CardTopupStore.opened
+        armed = []
+
+        def failing_statement() -> None:
+            with contextlib.suppress(sqlite3.Error, Exception):
+                backend.execute("INSERT INTO card_topups (topup_id) VALUES (NULL)")
+
+        def commit():
+            if armed:
+                armed.clear()
+                other = threading.Thread(target=failing_statement)
+                other.start()
+                other.join(timeout=0.3)   # runs now unless this write still holds the connection
+            return real_commit()
+
+        def opened(self, *a, **k):
+            armed.append(1)
+            return real_opened(self, *a, **k)
+
+        monkeypatch.setattr(backend, "commit", commit)
+        monkeypatch.setattr(card_topup.CardTopupStore, "opened", opened)
+        topup_id = open_checkout(client, key, 10).json()["topup_id"]
+        monkeypatch.setattr(card_topup.CardTopupStore, "opened", real_opened)
+        assert db._conn.execute("SELECT status FROM card_topups WHERE topup_id = ?",
+                                (topup_id,)).fetchone()["status"] == "open"
+        paid = stripe.pay(list(stripe.sessions)[-1])
+        assert deliver(client, event("checkout.session.completed", paid)).json()["outcome"] == "credited"
+        assert balance(db, account) == pytest.approx(10.0)
 
 
 def test_signature_check_accepts_a_rolled_secret_and_rejects_trailing_junk():

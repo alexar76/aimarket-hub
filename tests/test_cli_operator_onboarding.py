@@ -9,6 +9,7 @@ what replaced each of those.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 
@@ -252,6 +253,43 @@ def test_doctor_pass_prints_the_knock(stranger, monkeypatch, capsys):
     _answers(monkeypatch)
     assert cli.main(["doctor", "--url", "https://hub.example.org"]) == 0
     assert "/federation/announce" in capsys.readouterr().out
+
+
+def test_doctor_prints_a_failed_check_in_full(stranger, monkeypatch, capsys):
+    """The fix is in the second half of the detail; cut at 110 it read as a riddle."""
+    from aimarket_hub import federation_assay
+    from aimarket_hub.signing import signature_shape_problem
+
+    said = signature_shape_problem("f9bhOPZYAAMm5OUZR+NLyNZ3GSNKVzY8n5F3+04P")
+    bad = [dict(c) for c in _GOOD]
+    bad[4] = {"id": "manifest_signed", "ok": False, "detail": said}
+    monkeypatch.setattr(federation_assay, "run_assay", _fake_assay(bad))
+    _answers(monkeypatch)
+    assert cli.main(["doctor", "--url", "https://hub.example.org"]) == 1
+    out = capsys.readouterr().out
+    assert said in out and len(said) > 110
+    assert "not an object (spec §7.3.1)" in out
+
+
+def test_doctor_reports_an_assay_crash_as_our_bug(stranger, monkeypatch, capsys):
+    """Whatever a peer publishes must come back as a failed check. If the assay raises anyway,
+    the operator gets one readable line and where to report it — not a traceback."""
+    from aimarket_hub import federation_assay
+
+    async def crashes(url, **_kwargs):
+        raise AttributeError("'str' object has no attribute 'get'")
+
+    monkeypatch.setattr(federation_assay, "run_assay", crashes)
+    _answers(monkeypatch)
+    assert cli.main(["doctor", "--url", "https://hub.example.org"]) == 1
+    out = capsys.readouterr().out
+    assert "the assay itself crashed" in out and "not a verdict" in out
+    assert "issues/new?template=admission.yml" in out
+    assert "Traceback" not in out
+
+    assert cli.main(["doctor", "--url", "https://hub.example.org", "--json"]) == 1
+    body = json.loads(capsys.readouterr().out)
+    assert body["verdict"] is None and body["assay_error"].startswith("AttributeError")
 
 
 def test_doctor_with_nothing_running_says_start_it(stranger, capsys):
