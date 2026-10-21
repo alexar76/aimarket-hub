@@ -10,16 +10,35 @@ cualquier tienda y deja el dinero en la **misma** línea del libro que una recar
 (`CreditsLedger.deposit`, tipo `topup`); después, todo lo del carril de créditos — llamadas de pago,
 [mandatos](mandates.es.md), subcontratación, A2A — funciona igual.
 
-**Estado.** En el hub desde 2026-10-20 (3.16.0), **desactivado por defecto**. Probado contra un
-sandbox real de Stripe el 2026-10-20: se abrió un pago de $5, se pagó con una tarjeta de prueba, el
-webhook acreditó exactamente una vez y un reenvío del mismo evento por Stripe no acreditó nada. Esa
-prueba también encontró un fallo que las pruebas unitarias no podían ver (el cliente HTTP enviaba el
-formulario de una forma que httpx 0.28 rechaza); ahora una prueba ejecuta el código real del
-cliente. Los modos de impuesto de abajo están cubiertos por pruebas con Stripe simulado en su borde
-HTTP; en el sandbox se probó el modo por defecto (`off`).
+**Estado.** Disponible desde 2026-10-20 (3.16.0), **desactivado por defecto**. Verificado en el sandbox oficial de Stripe el 20–21 de octubre de 2026: pagos sin impuestos, un pago Managed Payments con IVA no nulo, reembolsos completos con y sin impuestos y una disputa. El alcance exacto y las limitaciones figuran abajo. No se movió dinero real.
+
+<a id="sandbox-verification"></a>
+## Verificado en el sandbox oficial de Stripe
+
+Se usaron Checkout alojado por Stripe, tarjetas de prueba, respuestas reales de Stripe API y eventos firmados enviados por la CLI oficial de Stripe a un hub local aislado. Son comprobaciones distintas de las pruebas unitarias que simulan Stripe en el límite HTTP. El [registro de pruebas](evidence/stripe-sandbox-2026-10-21.json) contiene importes, identificadores de eventos, resultados de entrega y comprobaciones del libro; sus marcas de tiempo están en UTC.
+
+| Escenario | Resultado observado |
+|---|---|
+| `off`: pago sin impuestos | Se pagaron $5 y `checkout.session.completed` acreditó exactamente $5 una vez; la entrega repetida no añadió crédito. |
+| `stripe_tax` | Se verificaron la creación y apertura de Checkout en el sandbox. Pago, impuesto no nulo, reembolso y disputa en este modo **no están verificados**. |
+| `managed_payments` + `exclusive` | Comprador de prueba en Países Bajos: $5 + $1,05 de IVA (21%) = $6,05 USD; `paid`, cálculo fiscal `complete`, responsabilidad `stripe`. `refresh` acreditó exactamente $5 una vez. Ese ensayo no verificó el webhook del pago inicial. |
+| Reembolso completo con impuestos | Stripe API devolvió `succeeded` por $6,05, incluidos $1,05 de impuestos. El evento firmado `charge.refunded` recibió HTTP 200 y cambió el estado del hub a `refunded`. Lo solicitó el operador; no se probó un reembolso automático iniciado por Stripe. |
+| Reembolso completo sin impuestos (`off`) | Se devolvieron $5 con `succeeded`; `charge.refunded` firmado recibió HTTP 200 y cambió el estado a `refunded`. |
+| Disputa sin impuestos (`off`) | La tarjeta `4000 0000 0000 0259` produjo una disputa real del sandbox por $5, motivo `fraudulent`, estado Stripe `needs_response`; `charge.dispute.created` dejó la recarga en `disputed`. |
+| Eventos repetidos y tardíos | Stripe volvió a entregar los eventos de pago, reembolso y disputa. Los estados `refunded`/`disputed` sobrevivieron al pago tardío; cada cuenta mantuvo una sola entrada `topup` de $5, sin crédito duplicado. |
+| Impuesto incluido (`inclusive`) | La validación de importes tiene pruebas locales; un Checkout pagado y su reembolso en el sandbox oficial **no están verificados**. |
+
+**Fallo de orden detectado y corregido.** En el primer ensayo, Stripe entregó la disputa antes de completar el pago y el manejador anterior respondió `ignored`. Ahora el hub busca la Checkout Session por PaymentIntent, comprueba su vínculo con una recarga local y concilia el pago según el modo fiscal guardado antes de registrar la reversión. Un fallo de consulta devuelve un error reintentable. Después se entregó intencionadamente un reembolso real antes del evento de pago: se registró correctamente y la entrega posterior del pago conservó `refunded`. El orden de disputa anticipada también tiene una prueba de regresión; el reenvío recuperó la primera disputa y un nuevo pago con disputa pasó. Siguen vigentes las comprobaciones de sesión e importes.
+
+**Política de saldo confirmada:** reembolsos y disputas registran el estado y la cuenta en el log, sin retirar crédito ni bloquear la cuenta automáticamente. Cada cuenta probada conservó $5. El operador decide y aplica cualquier corrección de saldo.
+
+**No verificado en el sandbox oficial:** reembolsos parciales, reembolsos asíncronos fallidos, ganar o perder una disputa, disputas en Managed Payments, ni pagos/reembolsos `stripe_tax` e `inclusive`. El éxito del sandbox no acredita elegibilidad de Managed Payments en producción; el operador decide el modo de producción.
+
+Referencias: [tarjetas y disputas de prueba de Stripe](https://docs.stripe.com/testing#disputes), [API de reembolsos](https://docs.stripe.com/api/refunds/create), [consulta de Checkout Session por PaymentIntent](https://docs.stripe.com/api/checkout/sessions/list).
 
 ## Contenido
 
+- [Verificado en el sandbox oficial de Stripe](#sandbox-verification)
 - [En breve](#en-breve)
 - [Qué ve el comprador](#qué-ve-el-comprador)
 - [Qué comprueba el hub](#qué-comprueba-el-hub)

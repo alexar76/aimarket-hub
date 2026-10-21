@@ -51,6 +51,10 @@ class FakeStripe:
         if method == "GET" and path.startswith("/v1/checkout/sessions/"):
             sid = path.rsplit("/", 1)[1]
             return (200, dict(self.sessions[sid])) if sid in self.sessions else (404, {})
+        if method == "GET" and path.startswith("/v1/checkout/sessions?"):
+            from urllib.parse import parse_qs, urlsplit
+            pi = parse_qs(urlsplit(path).query)["payment_intent"][0]
+            return 200, {"data": [dict(s) for s in self.sessions.values() if s["payment_intent"] == pi]}
         return 404, {}
 
     def pay(self, sid: str) -> dict:
@@ -445,3 +449,45 @@ def test_a_refund_in_stripe_is_recorded_and_ends_the_topup(monkeypatch, tmp_path
         assert r.json()["outcome"] == "refunded"
         unknown = deliver(client, event("charge.refunded", {"id": "ch_2", "payment_intent": "pi_other"}))
         assert unknown.json()["outcome"] == "ignored"
+
+
+@pytest.mark.parametrize("kind,expected", [("charge.dispute.created", "disputed"), ("charge.refunded", "refunded")])
+def test_reversal_before_completed_reconciles_once_and_survives_late_payment(monkeypatch, tmp_path, stripe, kind, expected):
+    with hub(monkeypatch, tmp_path, **ENV) as (client, db):
+        account, key = funded_account(client, db, 0.0)
+        opened = open_checkout(client, key, 5).json()
+        paid = stripe.pay(next(iter(stripe.sessions)))
+        reversal = event(kind, {"id": "reversal_1", "payment_intent": paid["payment_intent"],
+                                "amount_refunded": 500, "reason": "fraudulent"})
+        assert deliver(client, reversal).json()["outcome"] == expected
+        assert deliver(client, event("checkout.session.completed", paid)).json()["outcome"] == expected
+        deliver(client, reversal)
+        assert client.get(f"/ai-market/v2/card-topups/{opened['topup_id']}").json()["status"] == expected
+        assert balance(db, account) == 5
+        assert db._conn.execute("SELECT count(*) AS n FROM credit_ledger WHERE account_id=? AND kind='topup'", (account,)).fetchone()["n"] == 1
+
+
+def test_early_reversal_lookup_failure_is_retried_and_does_not_credit(monkeypatch, tmp_path, stripe):
+    with hub(monkeypatch, tmp_path, **ENV) as (client, db):
+        account, key = funded_account(client, db, 0.0)
+        open_checkout(client, key, 5)
+        paid = stripe.pay(next(iter(stripe.sessions)))
+        stripe.fail = "raise"
+        result = deliver(client, event("charge.dispute.created", {"payment_intent": paid["payment_intent"]}))
+        assert result.status_code == 503
+        assert balance(db, account) == 0
+
+
+@pytest.mark.parametrize("corruption,status,outcome", [("id", 200, "ignored"), ("amount_total", 503, None)])
+def test_early_reversal_does_not_bypass_session_or_amount_checks(monkeypatch, tmp_path, stripe, corruption, status, outcome):
+    with hub(monkeypatch, tmp_path, **ENV) as (client, db):
+        account, key = funded_account(client, db, 0.0)
+        open_checkout(client, key, 5)
+        sid = next(iter(stripe.sessions))
+        paid = stripe.pay(sid)
+        stripe.sessions[sid][corruption] = "cs_other" if corruption == "id" else 499
+        result = deliver(client, event("charge.dispute.created", {"payment_intent": paid["payment_intent"]}))
+        assert result.status_code == status
+        if outcome:
+            assert result.json()["outcome"] == outcome
+        assert balance(db, account) == 0

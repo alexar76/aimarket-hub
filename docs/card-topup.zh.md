@@ -6,10 +6,35 @@
 
 [USDC 充值](credits-topup.zh.md)让持有钱包的智能体为自己的额度账户充值。只有银行卡、没有钱包的人此前无法充值。这扇门像普通商店一样收卡，并把钱记入与 USDC 充值**相同**的账本行（`CreditsLedger.deposit`，类型 `topup`）。因此此后额度轨道上的一切——付费调用、[授权书](mandates.zh.md)、分包、A2A——都照常运作。
 
-**状态。** 自 2026-10-20（3.16.0）起在枢纽中，**默认关闭**。2026-10-20 已在真实的 Stripe 沙箱中验证：开立了一笔 5 美元的支付，用测试卡付款，webhook 恰好入账一次，Stripe 再次投递同一事件时没有重复入账。这次运行还发现了一个单元测试无法发现的缺陷（HTTP 客户端发送表单的方式被 httpx 0.28 拒绝）；现在有一个测试会运行真实的客户端代码。下文的税务模式由在 HTTP 边界模拟 Stripe 的测试覆盖；沙箱中验证的是默认模式（`off`）。
+**状态。** 自 2026-10-20（3.16.0）起提供，**默认关闭**。2026 年 10 月 20–21 日已在 Stripe 官方沙箱验证：无税付款、包含非零增值税的 Managed Payments 付款、含税与无税的全额退款，以及争议。下文明确列出覆盖范围和未验证项目。没有转移真实资金。
+
+<a id="sandbox-verification"></a>
+## Stripe 官方沙箱验证范围
+
+这些验证使用 Stripe 托管的 Checkout、测试卡、真实 Stripe API 响应，以及由官方 Stripe CLI 转发到隔离本地枢纽的签名事件。它们与在 HTTP 边界模拟 Stripe 的单元测试不同。[验证记录](evidence/stripe-sandbox-2026-10-21.json)包含金额、事件 ID、投递结果和账本检查；记录中的时间均为 UTC。
+
+| 场景 | 已观察到的结果 |
+|---|---|
+| `off`：无税付款 | 支付 5 美元，`checkout.session.completed` 恰好入账一次，额度为 5 美元；重复投递未增加额度。 |
+| `stripe_tax` | 已验证在沙箱创建并打开 Checkout。此模式下的付款、非零税额、退款和争议**尚未验证**。 |
+| `managed_payments` + `exclusive` | 荷兰测试买家：5 美元 + 21% 增值税（1.05 美元）= 6.05 美元；付款为 `paid`，税额计算为 `complete`，纳税责任为 `stripe`。枢纽通过 `refresh` 恰好入账一次，额度为 5 美元。该次运行未验证最初付款的 webhook。 |
+| 含税全额退款 | Stripe API 对 6.05 美元退款返回 `succeeded`，其中包含 1.05 美元税额。签名 `charge.refunded` 获得 HTTP 200，枢纽状态变为 `refunded`。退款由运营者请求；未测试 Stripe 主动发起的自动退款。 |
+| 无税全额退款（`off`） | 退回 5 美元，状态为 `succeeded`；签名 `charge.refunded` 获得 HTTP 200，状态变为 `refunded`。 |
+| 无税争议（`off`） | 测试卡 `4000 0000 0000 0259` 产生了一笔真实沙箱争议：金额 5 美元、原因为 `fraudulent`、Stripe 状态为 `needs_response`；`charge.dispute.created` 将充值状态设为 `disputed`。 |
+| 重复及延迟事件 | Stripe 重新投递付款、退款和争议事件。延迟付款事件未改变 `refunded`/`disputed` 状态；每个账户只有一条 5 美元的 `topup` 账目，没有重复入账。 |
+| 价内税（`inclusive`） | 金额校验由本地测试覆盖；官方沙箱中的实际付款及退款**尚未验证**。 |
+
+**发现并修复了事件顺序缺陷。** 第一次争议测试中，Stripe 在付款完成事件之前投递了争议，旧处理器返回了 `ignored`。现在枢纽会根据 PaymentIntent 查找 Checkout Session，验证它与本地充值记录的关联，并按该记录保存的税务模式核对付款，再记录退款或争议。查询失败会返回可重试错误。随后刻意先投递真实退款、再投递付款事件：退款正确记录，Stripe 延迟重投付款后仍保持 `refunded`。争议先到的顺序也有回归测试；重投恢复了第一次争议，新的一次付款及争议测试通过。会话 ID 和金额校验仍然生效。
+
+**已确认的余额策略：** 退款和争议会记录状态并将账户写入错误日志，但不会自动扣减额度或冻结账户。每个测试账户在退款或争议后仍有 5 美元额度。运营者需要决定并执行余额调整。
+
+**官方沙箱中尚未验证：** 部分退款、异步失败退款、争议胜诉或败诉、Managed Payments 下的争议，以及 `stripe_tax` 和 `inclusive` 的付款及退款。沙箱成功并不证明生产环境的 Managed Payments 使用资格；生产模式仍由运营者决定。
+
+参考：[Stripe 测试卡与争议](https://docs.stripe.com/testing#disputes)、[退款 API](https://docs.stripe.com/api/refunds/create)、[按 PaymentIntent 查找 Checkout Session](https://docs.stripe.com/api/checkout/sessions/list)。
 
 ## 目录
 
+- [Stripe 官方沙箱验证范围](#sandbox-verification)
 - [简要流程](#简要流程)
 - [买家看到什么](#买家看到什么)
 - [枢纽检查什么](#枢纽检查什么)

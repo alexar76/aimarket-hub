@@ -11,16 +11,35 @@ registre qu'une recharge USDC (`CreditsLedger.deposit`, type `topup`) ; ensuite,
 par le rail de crédits — appels payants, [mandats](mandates.fr.md), sous-traitance, A2A — fonctionne
 de la même façon.
 
-**Statut.** Dans le hub depuis le 2026-10-20 (3.16.0), **désactivé par défaut**. Éprouvé contre un
-vrai sandbox Stripe le 2026-10-20 : un paiement de 5 $ a été ouvert, payé avec une carte de test,
-crédité par le webhook exactement une fois, et une nouvelle livraison du même événement par Stripe
-n'a rien crédité. Ce passage a aussi trouvé un bogue que les tests unitaires ne pouvaient pas voir
-(le client HTTP envoyait le formulaire sous une forme que httpx 0.28 refuse) ; un test exécute
-désormais le vrai code du client. Les modes de taxe ci-dessous sont couverts par des tests où Stripe
-est simulé à sa frontière HTTP ; le sandbox a utilisé le mode par défaut (`off`).
+**Statut.** Disponible depuis le 2026-10-20 (3.16.0), **désactivé par défaut**. Vérifié dans le sandbox officiel de Stripe les 20–21 octobre 2026 : paiements sans taxe, paiement Managed Payments avec TVA non nulle, remboursements complets avec et sans taxe, et litige. Le périmètre exact et les lacunes sont détaillés ci-dessous. Aucun argent réel n'a été transféré.
+
+<a id="sandbox-verification"></a>
+## Vérifié dans le sandbox officiel de Stripe
+
+Ces vérifications utilisent Checkout hébergé par Stripe, des cartes de test, de vraies réponses de Stripe API et des événements signés transmis par la CLI officielle de Stripe à un hub local isolé. Elles sont distinctes des tests unitaires qui simulent Stripe à la frontière HTTP. Le [rapport de vérification](evidence/stripe-sandbox-2026-10-21.json) contient les montants, identifiants d'événements, résultats de livraison et contrôles du registre ; ses horodatages sont en UTC.
+
+| Scénario | Résultat observé |
+|---|---|
+| `off` : paiement sans taxe | 5 $ payés, exactement 5 $ crédités une fois via `checkout.session.completed` ; une nouvelle livraison n'a ajouté aucun crédit. |
+| `stripe_tax` | Création et ouverture de Checkout vérifiées dans le sandbox. Paiement, taxe non nulle, remboursement et litige dans ce mode **non vérifiés**. |
+| `managed_payments` + `exclusive` | Acheteur de test aux Pays-Bas : 5 $ + 1,05 $ de TVA (21 %) = 6,05 $ USD ; `paid`, calcul fiscal `complete`, responsabilité `stripe`. `refresh` a crédité exactement 5 $ une fois. Le webhook du paiement initial n'a pas été vérifié lors de cet essai. |
+| Remboursement complet avec taxe | Stripe API a renvoyé `succeeded` pour 6,05 $, dont 1,05 $ de taxe. L'événement signé `charge.refunded` a reçu HTTP 200 et le statut du hub est devenu `refunded`. Le remboursement a été demandé par l'opérateur ; un remboursement automatique à l'initiative de Stripe n'a pas été testé. |
+| Remboursement complet sans taxe (`off`) | 5 $ remboursés, statut `succeeded` ; `charge.refunded` signé a reçu HTTP 200 et le statut est devenu `refunded`. |
+| Litige sans taxe (`off`) | La carte `4000 0000 0000 0259` a produit un vrai litige de sandbox de 5 $, motif `fraudulent`, statut Stripe `needs_response` ; `charge.dispute.created` a placé la recharge en `disputed`. |
+| Événements répétés et tardifs | Stripe a renvoyé les événements de paiement, remboursement et litige. Les statuts `refunded`/`disputed` ont résisté au paiement tardif ; chaque compte a gardé une seule écriture `topup` de 5 $, sans crédit supplémentaire. |
+| Taxe incluse (`inclusive`) | La validation des montants est couverte par des tests locaux ; Checkout payé et remboursement dans le sandbox officiel **non vérifiés**. |
+
+**Un défaut d'ordre détecté et corrigé.** Lors du premier essai, Stripe a livré le litige avant la fin du paiement ; l'ancien gestionnaire a répondu `ignored`. Le hub cherche désormais la Checkout Session par PaymentIntent, vérifie son association à une recharge locale et rapproche le paiement selon le mode fiscal enregistré avant d'inscrire le remboursement ou le litige. Un échec de recherche renvoie une erreur permettant une nouvelle tentative. Un vrai remboursement a ensuite été volontairement livré avant le paiement : il a été enregistré correctement et la livraison tardive du paiement a conservé `refunded`. L'ordre « litige avant paiement » est également couvert par un test de régression ; le renvoi a récupéré le premier litige et un nouvel essai paiement/litige a réussi. Les contrôles de session et de montants restent appliqués.
+
+**Politique de solde confirmée :** remboursements et litiges enregistrent le statut et journalisent le compte, sans retirer automatiquement le crédit ni bloquer le compte. Chaque compte testé conservait 5 $. L'opérateur décide et applique toute correction du solde.
+
+**Non vérifiés dans le sandbox officiel :** remboursements partiels, remboursements asynchrones en échec, gain/perte d'un litige, litiges Managed Payments et paiements/remboursements `stripe_tax` et `inclusive`. Le succès dans le sandbox ne confirme pas l'éligibilité à Managed Payments en production ; le mode de production reste une décision de l'opérateur.
+
+Références : [cartes et litiges de test Stripe](https://docs.stripe.com/testing#disputes), [API de remboursement](https://docs.stripe.com/api/refunds/create), [recherche de Checkout Session par PaymentIntent](https://docs.stripe.com/api/checkout/sessions/list).
 
 ## Sommaire
 
+- [Vérifié dans le sandbox officiel de Stripe](#sandbox-verification)
 - [En bref](#en-bref)
 - [Ce que voit l'acheteur](#ce-que-voit-lacheteur)
 - [Ce que vérifie le hub](#ce-que-vérifie-le-hub)

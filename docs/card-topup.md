@@ -10,15 +10,35 @@ money on the **same** ledger line a USDC top-up does (`CreditsLedger.deposit`, k
 everything on the credits rail — paid invokes, [mandates](mandates.md), subcontracting, A2A — works
 the same afterwards.
 
-**Status.** In the hub from 2026-10-20 (3.16.0), **off by default**. Proven against a real Stripe
-sandbox on 2026-10-20: a $5 checkout was opened, paid with a test card, credited by the webhook
-exactly once, and a redelivery of the same event by Stripe credited nothing. That run also found
-a bug the unit tests could not see (the HTTP client sent the form in a shape httpx 0.28 refuses);
-a test now runs the real client code. The tax modes below are covered by tests with Stripe faked at
-its HTTP edge; the sandbox run used the default mode (`off`).
+**Status.** Available since 2026-10-20 (3.16.0), **off by default**. Verified against the official Stripe sandbox on 2026-10-20–21: payments without tax, a Managed Payments payment with nonzero VAT, full refunds with and without tax, and a dispute. The exact coverage and remaining gaps are below. No real money moved.
+
+<a id="sandbox-verification"></a>
+## Verified in the official Stripe sandbox
+
+These checks used Stripe-hosted Checkout, test cards, real Stripe API responses and signed events forwarded by the official Stripe CLI to an isolated local hub. They are separate from unit tests that mock Stripe at the HTTP boundary. [Recorded evidence](evidence/stripe-sandbox-2026-10-21.json) contains amounts, event IDs, delivery outcomes and ledger checks; timestamps in the evidence are UTC.
+
+| Scenario | Observed result |
+|---|---|
+| `off`: payment without tax | $5 paid, $5 credited exactly once through `checkout.session.completed`; redelivery did not add credit. |
+| `stripe_tax` | Checkout creation/opening was checked in the sandbox. Payment, nonzero tax, refund and dispute in this mode have **not** been verified. |
+| `managed_payments` + `exclusive` | Test buyer in the Netherlands: $5 subtotal + $1.05 VAT (21%) = $6.05 USD; `paid`, tax calculation `complete`, liability `stripe`. The hub's `refresh` credited exactly $5 once. The initial payment webhook was not exercised in that run. |
+| Full refund with tax | Stripe API returned `succeeded` for $6.05, including the $1.05 tax. Signed `charge.refunded` returned HTTP 200 and changed the hub status to `refunded`. This was an operator-requested refund, not an automatic refund initiated by Stripe. |
+| Full refund without tax (`off`) | $5 returned with `succeeded`; signed `charge.refunded` returned HTTP 200 and changed the hub status to `refunded`. |
+| Dispute without tax (`off`) | Card `4000 0000 0000 0259` produced a real sandbox dispute for $5, reason `fraudulent`, Stripe status `needs_response`; `charge.dispute.created` set the hub status to `disputed`. |
+| Repeated and delayed events | Stripe redelivered payment, refund and dispute events. Final `refunded`/`disputed` statuses survived late payment events, each account retained one $5 `topup` ledger entry, and no replay added credit. |
+| `inclusive` tax | Amount validation is covered by local tests; an actual paid sandbox checkout and its refund are **not** verified. |
+
+**An ordering bug found and fixed.** In the first dispute run, Stripe delivered the dispute before the payment completion; the old handler acknowledged it as `ignored`. The handler now finds the Checkout Session by PaymentIntent, verifies its association with a local top-up and reconciles it under the row's original tax mode before recording the reversal. Lookup failures return a retryable error. A real refund was then deliberately delivered before its payment event: it was recorded correctly, and Stripe's later redelivery of the payment event preserved `refunded`. The early-dispute order is also covered by a regression test; replay recovered the first dispute, and a new payment/dispute run passed. Session and amount checks still apply.
+
+**Balance policy confirmed:** refunds and disputes record the status and log the account; they do not automatically remove credit or freeze the account. Each tested account still held $5 after reversal. The operator must decide and apply any balance correction.
+
+**Not verified in the official sandbox:** partial refunds, asynchronous failed refunds, winning/losing a dispute, disputes under Managed Payments, or paid/refunded `stripe_tax` and `inclusive` checkouts. Sandbox success does not establish production eligibility for Managed Payments. The production mode remains the operator's decision.
+
+References: [Stripe test cards and disputes](https://docs.stripe.com/testing#disputes), [refund API](https://docs.stripe.com/api/refunds/create), [Checkout Session lookup by PaymentIntent](https://docs.stripe.com/api/checkout/sessions/list).
 
 ## Contents
 
+- [Verified in the official Stripe sandbox](#sandbox-verification)
 - [The short version](#the-short-version)
 - [What the buyer sees](#what-the-buyer-sees)
 - [What the hub checks](#what-the-hub-checks)

@@ -535,6 +535,8 @@ def settle_session(*, store: CardTopupStore, ledger: Any, session: dict[str, Any
         return {"outcome": "ignored", "reason": "not a top-up of this hub"}
     if row["status"] == CREDITED:
         return {"outcome": "already_credited", "topup_id": topup_id}
+    if row["status"] in (DISPUTED, REFUNDED, FAILED):
+        return {"outcome": row["status"], "topup_id": topup_id}
     if str(session.get("id") or "") != row["session_id"]:
         logger.error("card top-up: session %s does not belong to %s", str(session.get("id"))[:40], topup_id)
         return {"outcome": "refused", "reason": "session mismatch"}
@@ -568,6 +570,40 @@ def settle_session(*, store: CardTopupStore, ledger: Any, session: dict[str, Any
             "replay": bool(result.get("idempotent_replay"))}
 
 
+def _reversal_row(store: CardTopupStore, ledger: Any, payment_intent: str) -> dict[str, Any] | None:
+    """Resolve a reversal even when Stripe delivers it before the paid-session event.
+
+    Checkout Sessions read access is enough; no extra PaymentIntent permission is needed.
+    Only a session already bound to a local row can establish the association. Temporary
+    lookup/settlement failures must be retried by Stripe, not acknowledged as ignored.
+    """
+    from urllib.parse import urlencode
+
+    row = store.by_payment_intent(payment_intent)
+    if row is not None or not payment_intent:
+        return row
+    try:
+        status, result = _stripe_request("GET", "/v1/checkout/sessions?" + urlencode(
+            {"payment_intent": payment_intent, "limit": 1}), version=STRIPE_VERSION_MANAGED)
+    except Exception:
+        raise TopupError(503, "stripe_unavailable", "cannot associate the reversal yet", retryable=True) from None
+    if status >= 300:
+        raise TopupError(503, "stripe_unavailable", "cannot associate the reversal yet", retryable=True)
+    for session in result.get("data", []):
+        topup_id = str(session.get("client_reference_id") or (session.get("metadata") or {}).get("topup_id") or "")
+        row = store.get(topup_id)
+        if row is None or row["session_id"] != session.get("id") or session.get("payment_intent") != payment_intent:
+            continue
+        # Read with the version of this row's tax mode and run all normal amount checks.
+        refresh(store=store, ledger=ledger, topup_id=topup_id)
+        row = store.by_payment_intent(payment_intent)
+        if row is None:
+            raise TopupError(503, "reversal_pending", "the paid session is not reconciled yet",
+                             retryable=True)
+        return row
+    return None
+
+
 def handle_webhook(*, store: CardTopupStore, ledger: Any, payload: bytes, signature: str,
                    now: float | None = None) -> dict[str, Any]:
     """A Stripe event, verified. Anything not about a top-up is acknowledged and ignored, so
@@ -592,7 +628,7 @@ def handle_webhook(*, store: CardTopupStore, ledger: Any, payload: bytes, signat
             return {"outcome": "expired", "topup_id": topup_id}
         return {"outcome": "ignored"}
     if kind == "charge.dispute.created":
-        row = store.by_payment_intent(str(obj.get("payment_intent") or ""))
+        row = _reversal_row(store, ledger, str(obj.get("payment_intent") or ""))
         if row is not None:
             store.disputed(row["topup_id"], f"dispute {str(obj.get('id'))[:40]}: {str(obj.get('reason'))[:60]}")
             logger.error("card top-up: DISPUTE on %s (account %s, $%.2f) — review the account; credit already "
@@ -603,7 +639,7 @@ def handle_webhook(*, store: CardTopupStore, ledger: Any, payload: bytes, signat
         # Refunds are made in Stripe, by the operator — or, under Managed Payments, by Stripe
         # itself within 60 days. The money left; the credit may already be spent, so the hub
         # records it and says so instead of guessing what to take back.
-        row = store.by_payment_intent(str(obj.get("payment_intent") or ""))
+        row = _reversal_row(store, ledger, str(obj.get("payment_intent") or ""))
         if row is not None and row["status"] in (CREDITED, DISPUTED):
             refunded = obj.get("amount_refunded")
             store.refunded(row["topup_id"], f"refunded {refunded} cents in Stripe")
