@@ -222,6 +222,8 @@ def test_the_link_command_fills_the_hubs_own_message(monkeypatch, tmp_path, on, 
     import pathlib
 
     path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "credits_topup_pay.py"
+    if not path.is_file():
+        pytest.skip("scripts/credits_topup_pay.py is not in this checkout")
     spec = importlib.util.spec_from_file_location("credits_topup_pay", path)
     script = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(script)

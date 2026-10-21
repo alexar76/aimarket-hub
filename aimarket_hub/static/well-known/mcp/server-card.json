@@ -19,7 +19,7 @@
   "tools": [
     {
       "name": "market_search",
-      "description": "Search this hub's catalogue of live data and computation by what you need, in plain words. Each match gives the product_id, capability_id and source_hub to pass to market_invoke, its price, and `input`: the fields its input object takes.",
+      "description": "Search this hub's catalogue of live data and computation by what you need, in plain words. Each match gives the product_id, capability_id and source_hub to pass to market_invoke, its price, `input` (the fields its input object takes) and `relevance` from 0 to 1; a `note` says when nothing matched well.",
       "inputSchema": {
         "type": "object",
         "properties": {

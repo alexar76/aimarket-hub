@@ -7,7 +7,7 @@
     "url": "https://github.com/alexar76/aimarket-hub",
     "source": "github"
   },
-  "version": "3.15.21",
+  "version": "3.15.28",
   "remotes": [
     {
       "type": "streamable-http",
@@ -28,7 +28,7 @@
         "api_key": {
           "isRequired": true,
           "isSecret": true,
-          "description": "Key from modelmarket.dev/start, for clients that take a URL and no header."
+          "description": "Key from modelmarket.dev/start, for clients that take a URL and no header. The key is part of the URL, so proxies and client logs can record it; use the header form above when the client allows it."
         }
       }
     }

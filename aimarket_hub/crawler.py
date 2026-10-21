@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import httpx
 
 from aimarket_hub.config import HubConfig
+from aimarket_hub.federation_transport import peer_tool_endpoint
 from aimarket_hub.database import HubDatabase
 from aimarket_hub import contracts_declaration, realm
 from aimarket_hub import __version__ as _HUB_VERSION
@@ -217,6 +218,12 @@ def _canonical_base_from_manifest_url(value: Any) -> str:
     if not text.endswith(marker):
         return ""
     return text[: -len(marker)].rstrip("/")
+
+
+def _safe_tool_endpoint(tool: Any, base_url: str) -> str:
+    """`peer_tool_endpoint`, and only if the SSRF guard would let us call it."""
+    url = peer_tool_endpoint(tool, base_url)
+    return url if url and _url_is_safe(url) else ""
 
 
 def _norm_hub(value: Any) -> str:
@@ -1177,8 +1184,13 @@ class Crawler:
             if origin and origin not in ("local", peer_host):
                 continue
 
-            # Validate price (EXP-29)
-            price = float(tool.get("price_per_call_usd", 0.35))
+            # Validate price (EXP-29). `price_usd` is the same field under the name x402 sellers
+            # use (mach402.dev lists every tool that way); read as absent, a $0.02 tool was
+            # indexed at the $0.35 default — a price the seller never asked for.
+            raw_price = tool.get("price_per_call_usd")
+            if raw_price is None:
+                raw_price = tool.get("price_usd")
+            price = float(0.35 if raw_price is None else raw_price)
             if price < MIN_PRICE_USD or price > MAX_PRICE_USD:
                 logger.warning(
                     "Skipping tool %s: price %.2f out of range [%.2f, %.2f]",
@@ -1212,9 +1224,18 @@ class Crawler:
             # Start at a neutral baseline; trust_scorer will update over time.
             success = 0.5
 
+            # A tool sold at its own URL on the peer (no capability_id, a same-origin POST
+            # endpoint): routed calls go there. Such a seller names no product either, and an
+            # invoke needs one of two characters or more, so its listing is filed under the
+            # peer's host — otherwise it was indexed but could never be bought.
+            peer_endpoint = _safe_tool_endpoint(tool, base_url)
+            product_id = tool.get("product_id", "")
+            if peer_endpoint and not str(product_id or "").strip():
+                product_id = (urlparse(base_url).hostname or "").lower()
+
             cap = Capability(
                 capability_id=tool.get("capability_id", tool.get("name", "")),
-                product_id=tool.get("product_id", ""),
+                product_id=product_id,
                 name=tool.get("name", tool.get("capability_id", "")),
                 version="v1",
                 description=tool.get("description", ""),
@@ -1237,6 +1258,7 @@ class Crawler:
                 # manifest states it: what lets a buyer's delivery receipt be tied to this
                 # listing (deliveries.py). Not a routing input; a malformed one is dropped.
                 provider_pubkey=_provider_pubkey(tool.get("provider_pubkey")),
+                peer_endpoint=peer_endpoint,
             )
             self.db.upsert_capability(cap)
             self._indexed_now.add((cap.product_id, cap.capability_id))

@@ -28,11 +28,18 @@ jobs:
         # A pinned commit, not the moving HEAD of another repo (bump deliberately).
         run: |
           git clone --no-checkout https://github.com/alexar76/acex.git acex
-          git -C acex checkout 5ab0d8100c649932cc1f3f01c7b612f347e02d7c  # alexar76/acex main, 2026-10-08
+          git -C acex checkout 0583fee8c7bcd722bc0777e11451b3ae742516ad  # alexar76/acex main, 2026-10-16 (append-only since 10-15; the 10-08 pin was an orphaned force-push root)
+
+      - name: Fetch aimarket-widget (served at /widget; the embedding test reads it)
+        run: |
+          git clone --no-checkout https://github.com/alexar76/aimarket-widget.git aimarket-widget
+          git -C aimarket-widget checkout 2b3c171bb4283fc407796d2d1103a79d5ec56569  # alexar76/aimarket-widget main, 2026-10-16
 
       - name: Install hub (dev + escrow)
-        # escrow pulls eth-account; pipeline/x402 tests import it at collection time
-        run: pip install -e ".[dev,escrow]"
+        # escrow pulls eth-account; pipeline/x402 tests import it at collection time.
+        # The provenance plugin (receipts, parents) and the agent SDK (A2A subcontract tests) are
+        # monorepo siblings; here they come from PyPI at the versions published with this hub.
+        run: pip install -e ".[dev,escrow]" "aimarket-provenance==2.3.0" "aimarket-agent==2.5.1"
 
       - name: Pytest + coverage badge
         run: bash scripts/ci_coverage_badge.sh -- tests/ -q --tb=short -k "not cross_hub" --maxfail=5 --cov=aimarket_hub

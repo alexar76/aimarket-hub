@@ -50,6 +50,9 @@ class Capability:
     provider_pubkey: str = ""
     stake_usd: float = 0.0
     is_demo: bool = False
+    # Federated rows only: the peer's own URL for this tool (manifest `tools[].endpoint`, same
+    # origin as the peer). Routed calls POST the bare input there. Never set for local rows.
+    peer_endpoint: str = ""
 
     def tool_name(self) -> str:
         return protocol_tool_name(self)

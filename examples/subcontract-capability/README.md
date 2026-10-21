@@ -90,7 +90,7 @@ Local run: `WITNESS_HUB_URL=http://127.0.0.1:9083 python3 server.py`, `curl 127.
 Every step changes production and needs the owner's go-ahead; nothing here runs by itself.
 Rehearse on UNI first (at the end).
 
-**1. The provider, bound to loopback.** On the hub host (my-vps):
+**1. The provider, bound to loopback.** On the hub host (factory-vps):
 
 ```bash
 sudo useradd --system --home /var/lib/weather-witness --shell /usr/sbin/nologin weather-witness

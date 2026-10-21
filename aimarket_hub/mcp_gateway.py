@@ -186,7 +186,8 @@ TOOLS = [
         "description": (
             "Search this hub's catalogue of live data and computation by what you need, in "
             "plain words. Each match gives the product_id, capability_id and source_hub to "
-            "pass to market_invoke, its price, and `input`: the fields its input object takes."
+            "pass to market_invoke, its price, `input` (the fields its input object takes) and "
+            "`relevance` from 0 to 1; a `note` says when nothing matched well."
         ),
         "inputSchema": {
             "type": "object",
@@ -556,6 +557,27 @@ def _clip(text: Any, limit: int) -> str:
     if space > limit * 0.6:
         cut = cut[:space]
     return cut.rstrip(" ,;:-(") + "…"
+
+
+#: Below this, the best match shares a word with the request rather than doing it. Measured on
+#: modelmarket.dev 2026-10-21: requests the catalogue serves ("weather in Berlin") top out at
+#: 0.67-0.76 (hybrid / semantic); ones it does not ("translate text to german", "stock price of
+#: AAPL") at 0.20-0.25, lexical only — and were answered with a confident list of unrelated tools.
+WEAK_MATCH_SCORE = 0.35
+
+
+def _search_note(intent: str, matches: list[dict[str, Any]]) -> str:
+    """One sentence for the caller when the list is not an answer to the request."""
+    if not intent:
+        return ("No intent was given, so this is the first page of the catalogue, not a match. "
+                "Send intent with the user's need in plain words.")
+    if not matches:
+        return "Nothing in this catalogue matches. Tell the user so rather than suggesting a substitute."
+    best = max((m.get("relevance") for m in matches if isinstance(m.get("relevance"), float)), default=None)
+    if best is not None and best < WEAK_MATCH_SCORE:
+        return ("No strong match: these share words with the request but may not do what was asked. "
+                "Read each description before invoking, and tell the user if none of them fits.")
+    return ""
 
 
 def _schema_hint(schema: Any, *, max_fields: int = 12) -> dict[str, dict[str, Any]]:
@@ -1145,6 +1167,12 @@ def attach_mcp_routes(
             required = [name for name, spec in hint.items() if spec.get("required")]
         if required:
             match["input_required"] = required
+        # How well it matched (0..1) and how: a caller can only tell "this is what you asked
+        # for" from "this shares one word with it" if it is told.
+        score = row.get("score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool) and row.get("match_type"):
+            match["relevance"] = round(float(score), 3)
+            match["match_type"] = str(row["match_type"])
         return match
 
     async def _search(arguments: dict[str, Any]) -> str:
@@ -1195,7 +1223,11 @@ def attach_mcp_routes(
                 if len(rows) >= limit:
                     break
         matches = [_project(row) for row in rows[:limit] if isinstance(row, dict)]
-        return _dump({"intent": intent, "matches": matches})
+        out: dict[str, Any] = {"intent": intent, "matches": matches}
+        note = _search_note(intent, matches)
+        if note:
+            out["note"] = note
+        return _dump(out)
 
     def _is_priced(product_id: str, capability_id: str, source_hub: str) -> bool:
         """Whether this capability costs anything. Unknown counts as priced.

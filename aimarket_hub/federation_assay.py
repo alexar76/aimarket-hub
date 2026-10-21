@@ -34,7 +34,11 @@ from aimarket_hub import crawler as _crawler
 from aimarket_hub.access_policy import OPERATOR_GATED, capability_access_mode
 from aimarket_hub.config import OPENROUTER_CHAT_COMPLETIONS, HubConfig
 from aimarket_hub.database import HubDatabase
-from aimarket_hub.federation_transport import invoke_endpoint_candidates, invoke_endpoint_for
+from aimarket_hub.federation_transport import (
+    invoke_endpoint_candidates,
+    invoke_endpoint_for,
+    peer_tool_endpoint,
+)
 from aimarket_hub.signing import Signer, same_key, signature_shape_problem
 from aimarket_hub.validator import validate_manifest, validate_well_known
 
@@ -535,6 +539,32 @@ def _pick_priced_tools(tools: list[Any], limit: int = MAX_SANDBOX_CANDIDATES) ->
     return priced[:max(1, limit)]
 
 
+def _direct_endpoint(tool: Any, base: str) -> str:
+    """The tool's own URL on the peer when it is sold there (see peer_tool_endpoint), or ""."""
+    url = peer_tool_endpoint(tool, base)
+    return url if url and _crawler._url_is_safe(url) else ""
+
+
+def _pick_direct_tools(tools: list[Any], base: str, limit: int = MAX_SANDBOX_CANDIDATES) -> list[dict[str, Any]]:
+    """Tools sold at their own URL, priced ones first and cheapest first.
+
+    Such a seller signs no AI-Market receipt, so its evidence can only be the payment door:
+    an unpaid request to a priced tool answers 402 with an offer. A tool its catalogue lists
+    as free is tried after those — if its door asks for money anyway, the price check says so.
+    """
+    picked = [
+        t for t in tools
+        if isinstance(t, dict) and _direct_endpoint(t, base)
+        and capability_access_mode(SimpleNamespace(
+            access_mode=t.get("access_mode") or "",
+            description=t.get("description") or "",
+            price_per_call_usd=_tool_price(t),
+        )) != OPERATOR_GATED
+    ]
+    picked.sort(key=lambda t: (_tool_price(t) <= 0.0, _tool_price(t)))
+    return picked[:max(1, limit)]
+
+
 def _tool_is_own(tool: dict[str, Any], base: str) -> bool:
     """Does the peer sell this itself, or only re-export someone else's?"""
     source = str(tool.get("source_hub") or "").strip()
@@ -583,8 +613,10 @@ def plan_sandbox_probes(
     and too lax at once, both for the same reason.
 
     Order: own free (a signed receipt — work ran), then own priced (the 402 door quoting the
-    catalogue price), and only for a peer that offers nothing of its own, what it re-exports:
-    for a pure aggregator routing IS the product, so relaying faithfully is the evidence.
+    catalogue price), then tools the peer sells at their own URL (`direct`: an x402 seller
+    with no invoke route, whose tools carry no capability_id — the door is read there), and
+    only for a peer that offers nothing of its own, what it re-exports: for a pure
+    aggregator routing IS the product, so relaying faithfully is the evidence.
     """
     excluded = _preflight_only(well_known or {})
     usable = [
@@ -596,6 +628,7 @@ def plan_sandbox_probes(
     plan: list[tuple[str, dict[str, Any]]] = []
     plan += [("free", t) for t in _pick_sandbox_tools(own, limit)]
     plan += [("paid", t) for t in _pick_priced_tools(own, limit)]
+    plan += [("direct", t) for t in _pick_direct_tools(own, base, limit)]
     if plan or own:
         # A peer with capabilities of its own is judged on them or not at all: if none of them
         # can be probed (all operator-gated, say), relayed work must not stand in for them.
@@ -1003,7 +1036,10 @@ async def run_assay(
                 for kind, tool in plan:
                     result = None
                     usable = False
-                    for endpoint in endpoints:
+                    # A tool sold at its own URL is knocked on THERE, with its bare input; the
+                    # peer's invoke candidates are where hub-protocol listings answer.
+                    targets = [_direct_endpoint(tool, base)] if kind == "direct" else endpoints
+                    for endpoint in targets:
                         attempt_checks = []
                         attempt_sandbox = {}
                         result = await _probe_sandbox(
@@ -1018,6 +1054,7 @@ async def run_assay(
                             sandbox=attempt_sandbox,
                             post_json=post_json,
                             resolve_peer_key=_known_peer_key,
+                            direct=kind == "direct",
                         )
                         usable = bool(result and (
                             attempt_sandbox.get("receipt_signed")
@@ -1261,8 +1298,13 @@ async def _probe_sandbox(
     sandbox: dict[str, Any],
     post_json: Any,
     resolve_peer_key: Any = None,
+    direct: bool = False,
 ) -> dict[str, Any] | None:
+    # `direct`: the tool's own URL on the peer, which takes the bare input, as routed calls to
+    # it will (Capability.peer_endpoint). It has no capability_id; the crawl indexes it by name.
     cap_id = str(tool.get("capability_id") or tool.get("id") or "").strip()
+    if direct:
+        cap_id = str(tool.get("name") or "").strip()
     product_id = str(tool.get("product_id") or "").strip()
     # A capability the peer re-exports must be invoked with the hub it came from. The manifest
     # says which one; omitting it is a malformed request, and a correct aggregator answers 400
@@ -1287,6 +1329,9 @@ async def _probe_sandbox(
     }
     if source_hub:
         body["source_hub"] = source_hub
+    if direct:
+        body = body["input"]
+        sandbox["direct_endpoint"] = True
     headers = {
         "User-Agent": _crawler.USER_AGENT,
         "Content-Type": "application/json",

@@ -65,9 +65,14 @@
 // repository path instead of an install command, because telling a stranger to fetch a name
 // we do not own is how a supply-chain compromise starts.
 var PUBLISHED = [
-  "aimarket-channels", "aimarket-mcp-packager", "aimarket-reputation",
-  "aimarket-safety", "aimarket-tee"
+  "aimarket-auction", "aimarket-channels", "aimarket-data-cap", "aimarket-dataset",
+  "aimarket-mcp-packager", "aimarket-nft", "aimarket-orchestrator", "aimarket-personas",
+  "aimarket-promo", "aimarket-provenance", "aimarket-reputation", "aimarket-safety",
+  "aimarket-streaming", "aimarket-tee", "aimarket-zk"
 ];
+
+// Catalogue name → PyPI distribution where they differ.
+var PYPI_NAME = { "provenance": "aimarket-provenance" };
 
 // Plugin name → directory under plugins/ where its name and the directory differ.
 var REPO_DIR = { "provenance": "aimarket-provenance" };
@@ -106,8 +111,9 @@ var DEMO = {
 function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
 function installLine(name) {
-  if (PUBLISHED.indexOf(name) !== -1) {
-    return { cmd: "pip install " + name, note: "" };
+  var dist = PYPI_NAME[name] || name;
+  if (PUBLISHED.indexOf(dist) !== -1) {
+    return { cmd: "pip install " + dist, note: "" };
   }
   return {
     cmd: "pip install -e plugins/" + (REPO_DIR[name] || name),

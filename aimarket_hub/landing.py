@@ -347,12 +347,12 @@ aimarket crawl --base-url {HUB}</pre></div>
   <a class="btn btn-ghost" href="/ai-market/v2/plugins">Plugin catalog (JSON)</a>
 </div>
 <p class="section-note" style="margin-bottom:18px;">Each plugin auto-discovers and registers with the
-  hub at startup. The ones marked &ldquo;not on PyPI yet&rdquo; install from the repository — do not
-  <code>pip install</code> a name this page has not published, here or anywhere else. Try live routes
+  hub at startup. Every name on this page is published on PyPI by this project — do not
+  <code>pip install</code> an <code>aimarket-*</code> name this page does not list. Try live routes
   on the <a href="/plugins/demo">plugin demo page</a>.</p>
 <div class="grid">
 
-<div class="card"><h3>aimarket-provenance</h3><div class="cat">compliance</div><p>Ed25519 W3C VC receipts on every invoke. Auto-attached provenance_receipt with public verify URL.</p><code>pip install -e plugins/aimarket-provenance</code><div class="cat" style="opacity:.75">not on PyPI yet — install from the repo</div></div>
+<div class="card"><h3>aimarket-provenance</h3><div class="cat">compliance</div><p>Ed25519 W3C VC receipts on every invoke. Auto-attached provenance_receipt with public verify URL.</p><code>pip install aimarket-provenance</code></div>
 
 <div class="card"><h3>aimarket-safety</h3><div class="cat">security</div><p>Pre/post-invoke safety classifier. Blocks injection, PII, medical, harassment. Issues signed rejection receipts with auto-refund.</p><code>pip install aimarket-safety</code></div>
 
@@ -360,25 +360,25 @@ aimarket crawl --base-url {HUB}</pre></div>
 
 <div class="card"><h3>aimarket-tee</h3><div class="cat">security</div><p>TEE-attested execution (AWS Nitro Enclaves / Intel TDX). Attestation reports + enclave-signed receipts. Enterprise compliance ready.</p><code>pip install aimarket-tee</code></div>
 
-<div class="card"><h3>aimarket-auction</h3><div class="cat">monetization</div><p>Spot bidding market. Post tasks, providers bid in real-time, consumer picks winner. Uber-vibes for AI tasks.</p><code>pip install -e plugins/aimarket-auction</code><div class="cat" style="opacity:.75">not on PyPI yet — install from the repo</div></div>
+<div class="card"><h3>aimarket-auction</h3><div class="cat">monetization</div><p>Spot bidding market. Post tasks, providers bid in real-time, consumer picks winner. Uber-vibes for AI tasks.</p><code>pip install aimarket-auction</code></div>
 
-<div class="card"><h3>aimarket-personas</h3><div class="cat">tooling</div><p>Auto-generated AI agent personas per product. Names (Lyra, Nova...), CVs, avatars, greetings. Chat-native discovery.</p><code>pip install -e plugins/aimarket-personas</code><div class="cat" style="opacity:.75">not on PyPI yet — install from the repo</div></div>
+<div class="card"><h3>aimarket-personas</h3><div class="cat">tooling</div><p>Auto-generated AI agent personas per product. Names (Lyra, Nova...), CVs, avatars, greetings. Chat-native discovery.</p><code>pip install aimarket-personas</code></div>
 
-<div class="card"><h3>aimarket-data-cap</h3><div class="cat">monetization</div><p>Data-as-capability. Upload private corpus → becomes paid RAG-capability. 70% revenue to data owner.</p><code>pip install -e plugins/aimarket-data-cap</code><div class="cat" style="opacity:.75">not on PyPI yet — install from the repo</div></div>
+<div class="card"><h3>aimarket-data-cap</h3><div class="cat">monetization</div><p>Data-as-capability. Upload private corpus → becomes paid RAG-capability. 70% revenue to data owner.</p><code>pip install aimarket-data-cap</code></div>
 
-<div class="card"><h3>aimarket-nft</h3><div class="cat">monetization</div><p>Tokenized pre-paid credits (ERC-721). Transfer, gift, sell on secondary market. Liquidity for unused calls.</p><code>pip install -e plugins/aimarket-nft</code><div class="cat" style="opacity:.75">not on PyPI yet — install from the repo</div></div>
+<div class="card"><h3>aimarket-nft</h3><div class="cat">monetization</div><p>Tokenized pre-paid credits (ERC-721). Transfer, gift, sell on secondary market. Liquidity for unused calls.</p><code>pip install aimarket-nft</code></div>
 
 <div class="card"><h3>aimarket-mcp-packager</h3><div class="cat">tooling</div><p>Package any capability as MCP server. Docker image + manifest + Claude Desktop config. One-click install.</p><code>pip install aimarket-mcp-packager</code></div>
 
-<div class="card"><h3>aimarket-orchestrator</h3><div class="cat">monetization</div><p>Orchestrator as a capability. NL task → plan → execute chain → BOM. Sells the brain, not just muscles. 1% fee.</p><code>pip install -e plugins/aimarket-orchestrator</code><div class="cat" style="opacity:.75">not on PyPI yet — install from the repo</div></div>
+<div class="card"><h3>aimarket-orchestrator</h3><div class="cat">monetization</div><p>Orchestrator as a capability. NL task → plan → execute chain → BOM. Sells the brain, not just muscles. 1% fee.</p><code>pip install aimarket-orchestrator</code></div>
 
-<div class="card"><h3>aimarket-streaming</h3><div class="cat">monetization</div><p>SSE/WS streaming + per-chunk billing. Micro-receipts every N tokens. Cancel mid-stream, pay only for received.</p><code>pip install -e plugins/aimarket-streaming</code><div class="cat" style="opacity:.75">not on PyPI yet — install from the repo</div></div>
+<div class="card"><h3>aimarket-streaming</h3><div class="cat">monetization</div><p>SSE/WS streaming + per-chunk billing. Micro-receipts every N tokens. Cancel mid-stream, pay only for received.</p><code>pip install aimarket-streaming</code></div>
 
-<div class="card"><h3>aimarket-promo</h3><div class="cat">monetization</div><p>Signed time-locked discount offers. Yield Management for AI. Providers pop demand when spare capacity.</p><code>pip install -e plugins/aimarket-promo</code><div class="cat" style="opacity:.75">not on PyPI yet — install from the repo</div></div>
+<div class="card"><h3>aimarket-promo</h3><div class="cat">monetization</div><p>Signed time-locked discount offers. Yield Management for AI. Providers pop demand when spare capacity.</p><code>pip install aimarket-promo</code></div>
 
-<div class="card"><h3>aimarket-dataset</h3><div class="cat">tooling</div><p>Weekly anonymized invocation corpus (JSONL). CC-BY 4.0. Researchers cite, orchestrator trains on it.</p><code>pip install -e plugins/aimarket-dataset</code><div class="cat" style="opacity:.75">not on PyPI yet — install from the repo</div></div>
+<div class="card"><h3>aimarket-dataset</h3><div class="cat">tooling</div><p>Weekly anonymized invocation corpus (JSONL). CC-BY 4.0. Researchers cite, orchestrator trains on it.</p><code>pip install aimarket-dataset</code></div>
 
-<div class="card"><h3>aimarket-zk</h3><div class="cat">security</div><p>ZK input/output proofs. Prove input matches schema without revealing it. Prove execution correctness without revealing trace.</p><code>pip install -e plugins/aimarket-zk</code><div class="cat" style="opacity:.75">not on PyPI yet — install from the repo</div></div>
+<div class="card"><h3>aimarket-zk</h3><div class="cat">security</div><p>ZK input/output proofs. Prove input matches schema without revealing it. Prove execution correctness without revealing trace.</p><code>pip install aimarket-zk</code></div>
 
 <div class="card"><h3>aimarket-channels</h3><div class="cat">infrastructure</div><p>Pre-funded payment channels. Off-chain ledger, on-chain settlement. Debit/refund API. 24h auto-expiry.</p><code>pip install aimarket-channels</code></div>
 

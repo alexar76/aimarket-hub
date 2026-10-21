@@ -113,6 +113,7 @@ aimarket_hub = [
     "assets/fonts/*.woff2",
     "static/llms.txt",
     "static/start.html",
+    "static/og-card.png",
     "static/well-known/mcp/server-card.json",
 ]
 

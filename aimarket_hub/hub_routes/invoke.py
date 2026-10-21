@@ -2573,6 +2573,10 @@ async def _fed_deliver(d: SimpleNamespace, call: _Call, fed: _Fed):
     # Resolved from what the peer publishes, for EVERY peer — see
     # _peer_invoke_endpoint for why a category allow-list was the wrong test.
     mcp_endpoint = await _peer_invoke_endpoint(peer)
+    if _fed_tool_endpoint(fed):
+        # Sold at the tool's own URL on the peer: the bare input goes there (see
+        # _fed_call_peer), so nothing below may treat the call as an envelope invoke.
+        mcp_endpoint = None
     headers = _fed_peer_headers(d, call, fed)
     if fed.sells and mcp_endpoint:
         # Only where this hub is the seller of record (AIMARKET_SELLS_FOR): it has taken
@@ -2695,6 +2699,21 @@ def _fed_peer_headers(d: SimpleNamespace, call: _Call, fed: _Fed) -> dict[str, s
     return headers
 
 
+def _fed_tool_endpoint(fed: _Fed) -> str:
+    """The peer's own URL for this tool (Capability.peer_endpoint), or "".
+
+    Checked against the peer's origin again on every call, not only when the crawl indexed
+    it: the row is ours, but what makes it safe to call is that it sits on the peer, and a
+    row written by an older hub, or edited, must not send a buyer's call anywhere else.
+    """
+    url = str(getattr(fed.cap, "peer_endpoint", "") or "").strip()
+    if not url or fed.peer is None:
+        return ""
+    from aimarket_hub.federation_transport import peer_tool_endpoint
+
+    return url if peer_tool_endpoint({"endpoint": url}, fed.peer.url) == url else ""
+
+
 async def _fed_call_peer(d: SimpleNamespace, call: _Call, fed: _Fed, mcp_endpoint: Any,
                          headers: dict[str, str]):
     body, peer, config, _is_safe_path = call.body, fed.peer, d.config, d._is_safe_path
@@ -2708,7 +2727,13 @@ async def _fed_call_peer(d: SimpleNamespace, call: _Call, fed: _Fed, mcp_endpoin
     try:
         from aimarket_hub.outbound_http import safe_post
 
-        if mcp_endpoint:
+        tool_endpoint = _fed_tool_endpoint(fed)
+        if tool_endpoint:
+            # An x402 seller that answers at each tool's own URL and has no invoke route
+            # (mach402.dev, agent-exec.448c.org). Same bare input as the legacy path, and the
+            # same 402 passthrough and result handling below.
+            resp = await safe_post(tool_endpoint, json=body.input, headers=headers)
+        elif mcp_endpoint:
             # `source_hub` tells the far side where the call came from — EXCEPT on a
             # peer hub's own /invoke, where that field selects the peer's routing
             # branch. Sending our URL there asks it to route the call back to us,

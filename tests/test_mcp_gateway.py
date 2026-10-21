@@ -544,3 +544,42 @@ def test_invoke_still_requires_its_identifiers(monkeypatch, tmp_path, upstream):
         result = _call(client, "market_invoke", {"capability_id": "hub.echo@v1"})["result"]
     assert result["isError"] is True
     assert not upstream
+
+
+# ── search says when its list is not an answer (2026-10-21) ─────────────────────────────────
+# "translate text to german" came back as a confident list of unrelated tools, and a call with
+# no intent at all as the catalogue's first page dressed as matches.
+
+
+def test_search_marks_how_well_each_match_fits(monkeypatch, tmp_path):
+    with _hub_client(monkeypatch, tmp_path) as client:
+        result = _call(client, "market_search", {"intent": "echo"})["result"]
+    payload = json.loads(result["content"][0]["text"])
+    echo = next(row for row in payload["matches"] if row["capability_id"] == "hub.echo@v1")
+    assert 0.0 <= echo["relevance"] <= 1.0 and echo["match_type"]
+    assert echo["relevance"] >= 0.35 and "note" not in payload
+
+
+def test_search_without_intent_says_it_is_browsing(monkeypatch, tmp_path):
+    with _hub_client(monkeypatch, tmp_path) as client:
+        result = _call(client, "market_search", {})["result"]
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["note"].startswith("No intent was given")
+
+
+def test_search_for_something_the_catalogue_does_not_sell_says_so(monkeypatch, tmp_path):
+    with _hub_client(monkeypatch, tmp_path) as client:
+        result = _call(client, "market_search", {"intent": "translate text to german"})["result"]
+    payload = json.loads(result["content"][0]["text"])
+    assert payload.get("note"), payload
+    assert payload["note"].startswith(("No strong match", "Nothing in this catalogue matches"))
+
+
+def test_the_note_rule_itself():
+    from aimarket_hub.mcp_gateway import WEAK_MATCH_SCORE, _search_note
+
+    assert _search_note("weather", [{"relevance": 0.76}]) == ""
+    assert _search_note("translate", [{"relevance": WEAK_MATCH_SCORE - 0.1}]).startswith("No strong match")
+    assert _search_note("translate", []).startswith("Nothing")
+    assert _search_note("", [{"relevance": 0.9}]).startswith("No intent was given")
+    assert _search_note("x", [{"capability_id": "a"}]) == "", "no score known: no claim either way"

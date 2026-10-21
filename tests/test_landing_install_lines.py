@@ -34,21 +34,33 @@ import pytest
 LANDING = pathlib.Path(__file__).resolve().parents[1] / "aimarket_hub" / "landing.py"
 
 #: Distributions this project has published and therefore controls. Verified against PyPI on
-#: 2026-07-30. Adding a name here is a claim that we own it — check before you add, because the
-#: whole point of the list is that it is not aspirational.
+#: 2026-07-30; the ten plugin names above were registered by this project on 2026-07-31..08-02
+#: (author AI-Factory, repository alexar76/aimarket-plugins) and verified again on 2026-10-21.
+#: Adding a name here is a claim that we own it — check before you add, because the whole point
+#: of the list is that it is not aspirational.
 PUBLISHED = {
     "aimarket-agent",
+    "aimarket-auction",
     "aimarket-channels",
+    "aimarket-data-cap",
+    "aimarket-dataset",
     "aimarket-hub",
     "aimarket-mcp",
     "aimarket-mcp-packager",
     "aimarket-metis",
+    "aimarket-nft",
     "aimarket-oracle-core",
     "aimarket-oracle-gateway",
+    "aimarket-orchestrator",
+    "aimarket-personas",
     "aimarket-platon",
+    "aimarket-promo",
+    "aimarket-provenance",
     "aimarket-reputation",
     "aimarket-safety",
+    "aimarket-streaming",
     "aimarket-tee",
+    "aimarket-zk",
 }
 
 _INSTALL = re.compile(r"pip install\s+(?:-e\s+)?([^\s<`'\"]+)")

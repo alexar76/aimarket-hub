@@ -22,8 +22,10 @@ wearing the MCP name, and following it is correct.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
-__all__ = ["peer_is_aimarket_hub", "invoke_endpoint_candidates", "invoke_endpoint_for"]
+__all__ = ["peer_is_aimarket_hub", "invoke_endpoint_candidates", "invoke_endpoint_for",
+           "peer_tool_endpoint"]
 
 
 def peer_is_aimarket_hub(well_known: Any) -> bool:
@@ -70,3 +72,43 @@ def invoke_endpoint_for(base_url: str, well_known: Any) -> str:
     locally; the rule they share is which peers must ignore ``mcp_endpoint``.
     """
     return invoke_endpoint_candidates(base_url, well_known)[0]
+
+
+def peer_tool_endpoint(tool: Any, peer_url: str) -> str:
+    """The URL a peer sells this manifest tool at, or "" when routing must not use one.
+
+    The spec asks a tool for a name, a description and an input_schema. An x402 seller adds
+    ``endpoint`` and ``method`` and answers there, with no AI-Market invoke route at all: both
+    outside implementations that knocked on modelmarket.dev in October 2026 are built that way
+    (mach402.dev, agent-exec.448c.org). Their invoke candidates answer 404 and their tools carry
+    no ``capability_id``, so the assay had nothing to probe and routing nowhere to go.
+
+    Only for that shape: a tool with a ``capability_id`` is a hub-protocol listing and goes
+    through the peer's invoke route as before. The method must be POST (or unstated), and the
+    endpoint — absolute, or a path on the peer — must sit on exactly the peer's origin: a peer
+    names where its OWN tools answer, never someone else's host. Callers still apply their
+    SSRF guard; this only decides whether the peer's own manifest may point us there.
+    """
+    if not isinstance(tool, dict):
+        return ""
+    if str(tool.get("capability_id") or tool.get("id") or "").strip():
+        return ""
+    if str(tool.get("method") or "POST").strip().upper() != "POST":
+        return ""
+    raw = str(tool.get("endpoint") or "").strip()
+    if not raw or raw.startswith("//") or any(c in raw for c in "\r\n\t\\ "):
+        return ""
+    url = urljoin(str(peer_url or "").rstrip("/") + "/", raw) if raw.startswith("/") else raw
+    a, b = urlparse(str(peer_url or "")), urlparse(url)
+    if b.scheme not in ("http", "https") or b.scheme != a.scheme or b.username or b.password:
+        return ""
+    if (b.hostname or "").lower() != (a.hostname or "").lower() or not b.hostname:
+        return ""
+    default = {"https": 443, "http": 80}
+    try:
+        if (a.port or default[a.scheme]) != (b.port or default[b.scheme]):
+            return ""
+    except ValueError:
+        return ""
+    return url.split("#", 1)[0]
+

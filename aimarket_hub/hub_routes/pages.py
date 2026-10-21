@@ -115,6 +115,8 @@ def register(
                 'window.__HUB_BRAND = "modelmarket.dev";',
                 f'window.__HUB_BRAND = {json.dumps(name)};',
             )
+            # The social card shows the modelmarket.dev name; another hub's links unfurl without it.
+            html = re.sub(r'\s*<meta (?:property="og:image(?::[a-z]+)?"|name="twitter:card") content="[^"]*" />', "", html)
             if not config.ecosystem_links:
                 html = re.sub(
                     r'\s*<a href="https://(?:(?:use|edu)\.modelmarket\.dev|modelmarket\.dev/tools/)[^"]*"[^>]*>.*?</a>',
@@ -191,6 +193,18 @@ def register(
         return HTMLResponse(docs_pages.get(lang, docs_pages["en"]))
 
     _start_html_path = os.path.join(os.path.dirname(os.path.abspath(_API_FILE)), "static", "start.html")
+    _og_card_path = os.path.join(os.path.dirname(os.path.abspath(_API_FILE)), "static", "og-card.png")
+
+    @app.get("/og-card.png", include_in_schema=False)
+    async def og_card():
+        """The 1280x640 card a link to the reference home page unfurls with (dev.to, X, chats).
+
+        It carries the modelmarket.dev name, so only that deployment's home page points at it.
+        """
+        if not os.path.isfile(_og_card_path):
+            return Response(status_code=404)
+        return FileResponse(_og_card_path, media_type="image/png",
+                            headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/start", response_class=HTMLResponse)
     async def start_page():

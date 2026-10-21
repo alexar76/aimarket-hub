@@ -2812,3 +2812,57 @@ def test_a_peer_that_does_not_declare_direct_payment_still_owes_the_fee(tmp_path
         r = _fed_invoke(client, SELLER_PEER)
     assert r.status_code == 402
     assert r.json()["needed"] == pytest.approx(0.005)
+
+
+# ── A tool sold at its own URL on the peer (mach402.dev, agent-exec.448c.org) ──────────────
+
+DIRECT_PEER = "https://direct-seller.example.com"
+
+
+def _add_direct_capability(db, endpoint, *, price=0.02):
+    """What the crawl stores for a manifest tool with an endpoint and no capability_id."""
+    db.upsert_capability(Capability(
+        capability_id="scan_python", product_id="direct-seller.example.com", name="scan_python",
+        price_per_call_usd=price, source_hub=DIRECT_PEER, source_hub_name="Machina",
+        trust_score=0.5, peer_endpoint=endpoint,
+    ))
+
+
+_SELLER_DIRECT = {"payment_rails": {"seller_direct": {"enabled": True}}}
+
+
+def test_a_tool_sold_at_its_own_url_is_routed_there_and_its_402_passed_on(tmp_path, monkeypatch):
+    app, db, _config = _build(tmp_path, monkeypatch)
+    _add_peer(db, DIRECT_PEER)
+    _add_direct_capability(db, f"{DIRECT_PEER}/scan/python")
+    door = {"x402Version": 1, "error": "X-PAYMENT header is required", "accepts": [
+        {"scheme": "exact", "network": "base", "maxAmountRequired": "20000", "payTo": "0xabc"}]}
+    out = _wire(monkeypatch, _Outbound(_Resp(402, door), well_known=_SELLER_DIRECT))
+    with TestClient(app) as client:
+        r = _fed_invoke(client, DIRECT_PEER, product="direct-seller.example.com", capability="scan_python")
+    assert r.status_code == 402
+    # The tool's own URL with the bare input — not an envelope, not /capabilities/…/invoke.
+    assert out.posts == [(f"{DIRECT_PEER}/scan/python", {"q": "hi"})]
+
+
+def test_a_tool_sold_at_its_own_url_returns_its_answer(tmp_path, monkeypatch):
+    app, db, _config = _build(tmp_path, monkeypatch)
+    _add_peer(db, DIRECT_PEER)
+    _add_direct_capability(db, f"{DIRECT_PEER}/scan/python", price=0.0)
+    out = _wire(monkeypatch, _Outbound(_Resp(200, {"issues": [], "lines": 1}), well_known=_SELLER_DIRECT))
+    with TestClient(app) as client:
+        r = _fed_invoke(client, DIRECT_PEER, product="direct-seller.example.com", capability="scan_python")
+    assert r.status_code == 200, r.text
+    assert out.posts[0][0] == f"{DIRECT_PEER}/scan/python"
+    assert "issues" in json.dumps(r.json())
+
+
+def test_a_stored_tool_url_on_another_host_is_never_called(tmp_path, monkeypatch):
+    """The row is ours, but what makes the URL safe is that it sits on the peer."""
+    app, db, _config = _build(tmp_path, monkeypatch)
+    _add_peer(db, DIRECT_PEER)
+    _add_direct_capability(db, "https://elsewhere.example.com/steal", price=0.0)
+    out = _wire(monkeypatch, _Outbound(_Resp(200, {"ok": True}), well_known=_SELLER_DIRECT))
+    with TestClient(app) as client:
+        _fed_invoke(client, DIRECT_PEER, product="direct-seller.example.com", capability="scan_python")
+    assert out.posts and not any("elsewhere.example.com" in url for url, _ in out.posts)

@@ -27,7 +27,7 @@ Eight marketplace tools (market_search, market_invoke, and pipeline_prepare / pi
 
 ### market_search
 
-Search this hub's catalogue of live data and computation by what you need, in plain words. Each match gives the product_id, capability_id and source_hub to pass to market_invoke, its price, and `input`: the fields its input object takes.
+Search this hub's catalogue of live data and computation by what you need, in plain words. Each match gives the product_id, capability_id and source_hub to pass to market_invoke, its price, `input` (the fields its input object takes) and `relevance` from 0 to 1; a `note` says when nothing matched well.
 
 Required: intent (string). Optional: category (string), budget (number, USD per call), limit (integer, default 10, max 50).
 

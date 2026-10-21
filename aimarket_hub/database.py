@@ -206,8 +206,9 @@ class HubDatabase:
                  input_schema, output_schema, price_per_call_usd, p50_latency_ms,
                  success_rate_30d, source_hub, source_hub_name,
                  routed_price_usd, routing_fee_bps, trust_score, agent, prompt_template,
-                 invoke_url, publisher_id, payout_address, provider_pubkey, stake_usd, is_demo, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                 invoke_url, publisher_id, payout_address, provider_pubkey, stake_usd, is_demo,
+                 peer_endpoint, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """, (
             cap.capability_id, cap.product_id, cap.name, cap.version, cap.description,
             json.dumps(cap.input_schema), json.dumps(cap.output_schema),
@@ -218,6 +219,7 @@ class HubDatabase:
             cap.publisher_id or "", cap.payout_address or "",
             cap.provider_pubkey or "", cap.stake_usd or 0.0,
             1 if cap.is_demo else 0,
+            cap.peer_endpoint or "",
         ))
         self._conn.commit()
 
@@ -1794,6 +1796,7 @@ def _row_to_capability(row: sqlite3.Row) -> Capability:
         provider_pubkey=d.get("provider_pubkey", "") or "",
         stake_usd=float(d.get("stake_usd") or 0.0),
         is_demo=bool(d.get("is_demo", 0)),
+        peer_endpoint=d.get("peer_endpoint", "") or "",
     )
 
 

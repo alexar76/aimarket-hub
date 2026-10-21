@@ -1069,3 +1069,34 @@ class TestMeasuredLatencyIsNotUnknown:
     def test_non_finite_or_odd_values_fall_back_without_stopping_the_index(self, db, config, raw):
         cap = self._index(db, config, p50_latency_ms=raw, calls_observed=float("inf"))
         assert cap is not None and cap.p50_latency_ms == 3000
+
+
+class TestToolsSoldAtTheirOwnUrl:
+    """mach402.dev-shaped manifests (2026-10-21): name, endpoint, method and price_usd, and no
+    capability_id or product_id. The crawl indexed them at the $0.35 default price, with no
+    product an invoke would accept and no idea where the tool answers."""
+
+    def test_such_a_tool_is_indexed_at_its_price_with_its_url_and_a_product(self, tmp_path, monkeypatch):
+        import aimarket_hub.crawler as crawler_mod
+
+        monkeypatch.setattr(crawler_mod, "_url_is_safe", lambda u: u.startswith("https://"))
+        db = HubDatabase(tmp_path / "hub.db")
+        crawler = Crawler(config=HubConfig(), db=db)
+        peer = "https://mach402.example"
+        tools = [
+            {"name": "scan_python", "description": "x", "endpoint": f"{peer}/scan/python",
+             "method": "POST", "price_usd": 0.02, "input_schema": {"type": "object"}},
+            {"name": "relay", "description": "x", "endpoint": "https://elsewhere.example/r",
+             "method": "POST", "price_usd": 0.01},
+            {"capability_id": "hub.cap@v1", "product_id": "p1", "name": "hub.cap@v1",
+             "description": "x", "price_per_call_usd": 0.03, "endpoint": f"{peer}/hub"},
+        ]
+        assert crawler._index_manifest_capabilities({"tools": tools}, peer, "Machina") == 3
+        rows = {c.capability_id: c for c in db.list_capabilities(source_hub=peer)}
+        scan = rows["scan_python"]
+        assert scan.price_per_call_usd == pytest.approx(0.02)
+        assert scan.peer_endpoint == f"{peer}/scan/python"
+        assert scan.product_id == "mach402.example"
+        # Another host is never a door; a hub-protocol listing keeps its invoke route.
+        assert rows["relay"].peer_endpoint == "" and rows["relay"].price_per_call_usd == pytest.approx(0.01)
+        assert rows["hub.cap@v1"].peer_endpoint == "" and rows["hub.cap@v1"].product_id == "p1"

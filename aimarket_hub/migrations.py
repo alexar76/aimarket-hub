@@ -1554,6 +1554,17 @@ _register(59, "059_a2a_task_recovery", """
     ALTER TABLE a2a_tasks DROP COLUMN lease_owner;
 """)
 
+# 060: A peer that sells each tool at its own URL. The spec asks a manifest tool for a name, a
+# description and an input_schema; an x402 seller adds `endpoint` and answers there, with no
+# AI-Market invoke route at all (mach402.dev and agent-exec.448c.org, 2026-10-21). A routed
+# call to such a row goes to that URL with the bare input. Kept apart from invoke_url, which
+# means "this hub executes the listing itself" and must never come from a peer.
+_register(60, "060_capability_peer_endpoint", """
+    ALTER TABLE capabilities ADD COLUMN peer_endpoint TEXT DEFAULT '';
+""", """
+    ALTER TABLE capabilities DROP COLUMN peer_endpoint;
+""")
+
 def channel_ledger_versions() -> list[int]:
     """Migration versions whose DDL touches a channel-ledger table.
 

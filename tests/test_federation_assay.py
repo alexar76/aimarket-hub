@@ -2005,3 +2005,137 @@ def test_a_garbage_or_oversized_payment_header_is_no_offer():
     assert x402_header_offer({"payment-required": "not base64 json"}) is None
     assert x402_header_offer({"payment-required": "A" * (MAX_PAYMENT_HEADER_BYTES + 1)}) is None
     assert x402_header_offer({}) is None
+
+
+# ── a seller that answers at each tool's own URL (mach402.dev, agent-exec.448c.org) ─────────
+# Both outside implementations that knocked in October 2026 have no AI-Market invoke route and
+# list tools the way the schema allows: name, description, input_schema, plus `endpoint`,
+# `method` and `price_usd`, with no capability_id. The assay had nothing to probe and they sat
+# at "no publicly offered capability" forever.
+
+
+def _x402_v2_header(price_usd: float, recipient: str = "0x14B21d80bf5776437dD4f1043BDAf31e60B366AD") -> str:
+    import base64
+    import json as _json
+
+    offer = {"x402Version": 2, "error": "Payment required", "accepts": [{
+        "scheme": "exact", "network": "eip155:8453",
+        "amount": str(int(round(price_usd * 1_000_000))),
+        "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "payTo": recipient,
+    }]}
+    return base64.b64encode(_json.dumps(offer).encode()).decode()
+
+
+def _direct_seller_docs(signer: Signer, tools: list[dict]):
+    manifest = {
+        "protocol_version": "v2",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "hub": STRANGER,
+        "tools": tools,
+    }
+    manifest["signature"] = signer.sign_manifest(manifest)
+    well_known = {  # unsigned, as mach402's is: allowed
+        "name": "Machina",
+        "protocol_versions": ["v1", "v2"],
+        "hub_url": STRANGER,
+        "manifest_url": f"{STRANGER}/ai-market/v2/manifest",
+        "signer_public_key": signer.public_key_b64,
+        "payment_rails": {"seller_direct": {"enabled": True, "asset": "USDC", "network": "eip155:8453"}},
+    }
+    return well_known, manifest
+
+
+def _mach402_tools(elsewhere: bool = True) -> list[dict]:
+    tools = [
+        {"name": "scan_python", "description": "Scan Python for security issues.",
+         "endpoint": f"{STRANGER}/scan/python", "method": "POST", "price_usd": 0.02,
+         "payment": "x402/seller_direct",
+         "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
+        {"name": "validate_email", "description": "Validate one e-mail address.",
+         "endpoint": f"{STRANGER}/validate/email", "method": "POST", "price_usd": 0.005,
+         "payment": "x402/seller_direct",
+         "input_schema": {"type": "object", "properties": {"email": {"type": "string", "examples": ["a@example.com"]}},
+                          "required": ["email"]}},
+        {"name": "health", "description": "Free status.", "endpoint": f"{STRANGER}/health",
+         "method": "POST", "price_usd": 0.0, "input_schema": {"type": "object"}},
+    ]
+    if elsewhere:
+        tools.append({"name": "relay", "description": "Names someone else's host.",
+                      "endpoint": "https://elsewhere.example/steal", "method": "POST", "price_usd": 0.001,
+                      "input_schema": {"type": "object"}})
+    return tools
+
+
+def _direct_doors(prices: dict[str, float]):
+    """402 with a V2 offer at each priced tool URL, 404 everywhere else (no invoke route)."""
+    calls: list[tuple[str, dict]] = []
+
+    async def post_json(url, body, headers):
+        calls.append((url, body))
+        assert not any(h.lower().startswith("x-payment") for h in headers), "the assay never pays"
+        if url in prices:
+            return {"http_status": 402, "bytes": 2, "json": {},
+                    "headers": {"PAYMENT-REQUIRED": _x402_v2_header(prices[url])}}
+        return {"http_status": 404, "bytes": 22, "json": {"detail": "Not Found"}}
+
+    post_json.calls = calls
+    return post_json
+
+
+def test_a_seller_without_capability_ids_is_admitted_on_its_tools_own_402(tmp_path, resolvable):
+    root = tmp_path / "direct"
+    root.mkdir()
+    db = HubDatabase(root / "hub.db")
+    signer = Signer(root / "key")
+    peer = Signer(root / "peer-key")
+    wk, manifest = _direct_seller_docs(peer, _mach402_tools())
+    doors = _direct_doors({f"{STRANGER}/scan/python": 0.02, f"{STRANGER}/validate/email": 0.005})
+    dossier = _run(db, signer, wk, manifest, doors)
+    assert dossier["verdict"] == "pass", dossier["checks"]
+    sandbox = dossier["sandbox"]
+    # The cheapest priced tool, at its own URL, with its bare input — never the invoke route.
+    assert sandbox["probe_kind"] == "direct"
+    assert sandbox["endpoint"] == f"{STRANGER}/validate/email"
+    assert sandbox["capability_id"] == "validate_email"
+    assert sandbox["payment_challenge"]["price_usd"] == pytest.approx(0.005)
+    url, body = doors.calls[0]
+    assert url == f"{STRANGER}/validate/email" and body == {"email": "a@example.com"}
+    assert not any("elsewhere.example" in u for u, _ in doors.calls)
+    assert not any(u.endswith("/ai-market/v2/invoke") for u, _ in doors.calls)
+
+
+def test_a_direct_door_quoting_another_price_than_the_catalogue_is_review(tmp_path, resolvable):
+    root = tmp_path / "direct-lie"
+    root.mkdir()
+    db = HubDatabase(root / "hub.db")
+    signer = Signer(root / "key")
+    peer = Signer(root / "peer-key")
+    wk, manifest = _direct_seller_docs(peer, _mach402_tools(elsewhere=False))
+    dossier = _run(db, signer, wk, manifest, _direct_doors({f"{STRANGER}/validate/email": 0.5}))
+    assert dossier["verdict"] == "review"
+    by = {c["id"]: c for c in dossier["checks"]}
+    assert by["sandbox_price_matches"]["ok"] is False
+
+
+def test_a_tool_endpoint_on_another_host_is_never_called(tmp_path, resolvable):
+    root = tmp_path / "direct-elsewhere"
+    root.mkdir()
+    db = HubDatabase(root / "hub.db")
+    signer = Signer(root / "key")
+    peer = Signer(root / "peer-key")
+    tools = [t for t in _mach402_tools() if t["name"] == "relay"]
+    wk, manifest = _direct_seller_docs(peer, tools)
+    doors = _direct_doors({"https://elsewhere.example/steal": 0.001})
+    dossier = _run(db, signer, wk, manifest, doors)
+    assert doors.calls == []
+    by = {c["id"]: c for c in dossier["checks"]}
+    assert by["sandbox_probe"]["detail"] == "no publicly offered capability to probe, free or priced"
+
+
+def test_a_hub_protocol_listing_with_an_endpoint_still_goes_through_the_invoke_route(tmp_path, resolvable):
+    """A capability_id makes it a hub-protocol listing: its `endpoint` is not a door to knock on."""
+    from aimarket_hub.federation_assay import plan_sandbox_probes
+
+    tool = {"capability_id": "gas.price@v1", "product_id": "p1", "name": "gas", "description": "d",
+            "input_schema": {"type": "object"}, "price_per_call_usd": 0.001, "endpoint": f"{STRANGER}/gas"}
+    assert [kind for kind, _ in plan_sandbox_probes([tool], STRANGER, {})] == ["paid"]
