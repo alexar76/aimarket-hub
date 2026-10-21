@@ -391,12 +391,11 @@ def check_decimals(token: str, decimals: int) -> None:
     key = (token or "").lower()
     onchain = _DECIMALS_READ.get(key)
     if onchain is None:
-        for url in settle.rpc_urls():
-            try:
-                onchain = int(str(settle._rpc(url, "eth_call", [{"to": token, "data": "0x313ce567"}, "latest"], 5.0)), 16)
-                break
-            except Exception:  # noqa: BLE001 - try the next endpoint
-                continue
+        try:
+            onchain = int(str(settle.rpc_call(settle.rpc_urls(), "eth_call", [{"to": token, "data": "0x313ce567"}, "latest"],
+                                              timeout=5.0)), 16)
+        except Exception:  # noqa: BLE001 - no node answered: refused below
+            onchain = None
         if onchain is None:
             raise TopupError(503, "topup_unavailable", "the token's decimals could not be read from the chain; retry",
                              retryable=True)

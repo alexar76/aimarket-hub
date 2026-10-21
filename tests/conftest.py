@@ -46,3 +46,15 @@ def isolated_deposit_claims(tmp_path_factory, monkeypatch):
     monkeypatch.setenv(
         "AIMARKET_DEPOSIT_CLAIMS_DIR", str(tmp_path_factory.mktemp("deposit_claims"))
     )
+
+
+@pytest.fixture(autouse=True)
+def fresh_rpc_pools():
+    """Payment paths keep one rotating pool per RPC list for the life of the process, so a node
+    that refused rests across calls (chain_net.pool_for_urls). Tests reuse fake URLs such as
+    http://rpc.test; a rest one test earned must not reorder the next test's calls."""
+    from aimarket_hub import chain_net
+
+    chain_net.reset_pools()
+    yield
+    chain_net.reset_pools()

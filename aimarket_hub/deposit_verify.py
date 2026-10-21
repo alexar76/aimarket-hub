@@ -190,28 +190,29 @@ def token_address_for(chain: str, token: str) -> str:
         return ""
 
 
-def _make_rpc(urls: list[str], timeout: float) -> RpcCaller:
+def _post(url: str, body: dict, timeout: float) -> dict:
     import httpx
 
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.post(url, json=body, headers={"content-type": "application/json"})
+    resp.raise_for_status()
+    answer = resp.json()
+    if isinstance(answer, dict) and answer.get("error"):
+        # Raised, not returned: the pool then asks the next node, as this loop always did.
+        raise RuntimeError(str(answer["error"])[:160])
+    return answer if isinstance(answer, dict) else {"result": None}
+
+
+def _make_rpc(urls: list[str], timeout: float) -> RpcCaller:
+    from aimarket_hub import chain_net
+
     def call(method: str, params: list) -> Any:
-        last: Exception | None = None
-        for url in urls:
-            try:
-                with httpx.Client(timeout=timeout) as client:
-                    resp = client.post(
-                        url,
-                        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-                        headers={"content-type": "application/json"},
-                    )
-                resp.raise_for_status()
-                body = resp.json()
-                if isinstance(body, dict) and body.get("error"):
-                    raise RuntimeError(str(body["error"])[:160])
-                return body.get("result") if isinstance(body, dict) else None
-            except Exception as exc:  # try the next endpoint, remember the last reason
-                last = exc
-                continue
-        raise RuntimeError(f"no RPC endpoint answered {method}: {last}")
+        # In rotation over the same list: a node that refuses (429, a range cap) rests.
+        try:
+            pool = chain_net.pool_for_urls(urls, timeout=timeout, transport=_post)
+            return pool.call(method, params)
+        except chain_net.ChainNetError as exc:
+            raise RuntimeError(f"no RPC endpoint answered {method}: {exc}") from exc
 
     return call
 

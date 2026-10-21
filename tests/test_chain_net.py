@@ -57,6 +57,7 @@ class TestNetworkSelection:
         net = cn.active_network()
         assert net.id == "base" and net.is_evm and net.chain_id == 8453
         assert net.rpc_urls[0] == "https://mainnet.base.org"  # preferred default wins
+        assert "https://base.gateway.tenderly.co" in net.rpc_urls  # serves the deposit scan
         assert net.addresses["AIMarketEscrow"] == "0xa4cb6ef73B982B847fB06Ec75540d05D0311B2Eb"
         assert net.addresses["USDC"].lower().startswith("0x833589")
 
@@ -290,3 +291,131 @@ class TestHardening:
             assert cn.pool_for("base", timeout=4.0) is cn.pool_for("base", timeout=4.0)
         finally:
             cn._POOL_CACHE.clear()
+
+
+# ═══════════════════════════════════ rotation, refusals, list check ═════════
+class _Http429(Exception):
+    """urllib's HTTPError shape: a ``code`` and the reply ``headers``."""
+
+    def __init__(self, retry_after: str = ""):
+        super().__init__("HTTP Error 429: Too Many Requests")
+        self.code = 429
+        self.headers = {"Retry-After": retry_after} if retry_after else {}
+
+
+class TestRotationAndRefusals:
+    def _spec(self, urls):
+        return cn.NetworkSpec(id="base", kind=cn.EVM, display_name="Base", chain_id=8453,
+                              cluster=None, rpc_urls=tuple(urls), native_symbol="ETH", explorer_tx="")
+
+    def test_a_rotating_pool_starts_each_call_at_the_next_node(self):
+        t = FakeTransport()
+        pool = cn.RpcPool(self._spec(["https://a", "https://b", "https://c"]), transport=t, rotate=True)
+        for _ in range(4):
+            pool.call("eth_blockNumber")
+        assert t.calls == ["https://a", "https://b", "https://c", "https://a"]
+
+    def test_rotation_skips_a_resting_node(self):
+        clock = FakeClock()
+        t = FakeTransport(down={"https://b"})
+        pool = cn.RpcPool(self._spec(["https://a", "https://b", "https://c"]), transport=t, rotate=True,
+                          cooldown=30.0, clock=clock)
+        pool.call("eth_blockNumber")      # a
+        pool.call("eth_blockNumber")      # b down (asked twice: a transport error is retried) → c
+        t.calls.clear()
+        for _ in range(4):
+            pool.call("eth_blockNumber")
+        assert "https://b" not in t.calls and set(t.calls) == {"https://a", "https://c"}
+
+    def test_a_rate_limit_reply_fails_over_at_once_and_rests_the_node(self):
+        class _Limited(FakeTransport):
+            def __call__(self, url, body, timeout):
+                self.calls.append(url)
+                if url == "https://a":
+                    return {"jsonrpc": "2.0", "id": 1,
+                            "error": {"code": -32005, "message": "eth_getLogs is limited to 0 - 50 blocks range"}}
+                return {"jsonrpc": "2.0", "id": 1, "result": []}
+
+        t = _Limited()
+        pool = cn.RpcPool(self._spec(["https://a", "https://b"]), transport=t)
+        assert pool.call("eth_getLogs", [{}]) == []
+        assert t.calls == ["https://a", "https://b"]          # not asked twice: it refused, it is not down
+        assert pool._endpoints[0].healthy is False and "limited to" in pool._endpoints[0].last_error
+
+    def test_http_429_is_not_retried_and_rests_as_long_as_retry_after_asks(self):
+        clock = FakeClock()
+
+        class _T(FakeTransport):
+            def __call__(self, url, body, timeout):
+                self.calls.append(url)
+                if url == "https://a":
+                    raise _Http429(retry_after="120")
+                return {"result": "0x1"}
+
+        t = _T()
+        pool = cn.RpcPool(self._spec(["https://a", "https://b"]), transport=t, cooldown=30.0,
+                          max_cooldown=300.0, clock=clock)
+        assert pool.call("eth_getLogs", [{}]) == "0x1"
+        assert t.calls == ["https://a", "https://b"]
+        assert pool._endpoints[0].cooldown_until == clock.t + 120.0
+
+    def test_a_bad_request_still_raises_without_failover(self):
+        t = FakeTransport(errors={"https://a"})       # "boom": the request, not a limit
+        pool = cn.RpcPool(self._spec(["https://a", "https://b"]), transport=t, rotate=True)
+        with pytest.raises(cn.RpcError):
+            pool.call("eth_call", [{}])
+        assert t.calls == ["https://a"]
+
+    def test_all_down_names_every_node_by_host_only(self):
+        t = FakeTransport(down={"https://a.example/KEY", "https://b.example"})
+        pool = cn.RpcPool(self._spec(["https://a.example/KEY", "https://b.example"]), transport=t)
+        with pytest.raises(cn.AllEndpointsDown) as err:
+            pool.call("eth_blockNumber")
+        assert "https://a.example:" in str(err.value) and "https://b.example:" in str(err.value)
+        assert "KEY" not in str(err.value).replace("down: https://a.example/KEY", "")
+
+    def test_pool_for_urls_keeps_one_pool_per_list(self):
+        t = FakeTransport()
+        one = cn.pool_for_urls(["https://a", "https://b"], chain_id=8453, transport=t)
+        assert cn.pool_for_urls(["https://a", "https://b"], chain_id=8453, transport=t) is one
+        assert cn.pool_for_urls(["https://b", "https://a"], chain_id=8453, transport=t) is not one
+        cn.reset_pools()
+        assert cn.pool_for_urls(["https://a", "https://b"], chain_id=8453, transport=t) is not one
+
+
+class TestListCheck:
+    def _spec(self, urls):
+        return cn.NetworkSpec(id="base", kind=cn.EVM, display_name="Base", chain_id=8453,
+                              cluster=None, rpc_urls=tuple(urls), native_symbol="ETH", explorer_tx="")
+
+    def test_check_says_which_nodes_can_serve_the_scan(self):
+        heads = {"https://good": 1000, "https://limited": 1000, "https://stale": 900,
+                 "https://other-chain": 1000}
+
+        class _T:
+            def __init__(self):
+                self.windows = []
+
+            def __call__(self, url, body, timeout):
+                m = body["method"]
+                if m == "eth_chainId":
+                    return {"result": hex(1 if url == "https://other-chain" else 8453)}
+                if m == "eth_blockNumber":
+                    return {"result": hex(heads[url])}
+                if m == "eth_getLogs":
+                    if url == "https://limited":
+                        raise _Http429()
+                    f = body["params"][0]
+                    self.windows.append(int(f["toBlock"], 16) - int(f["fromBlock"], 16) + 1)
+                    return {"result": []}
+                raise AssertionError(m)
+
+        t = _T()
+        pool = cn.RpcPool(self._spec(list(heads)), transport=t)
+        rows = {r["url"]: r for r in pool.check(logs_filter={"address": "0xusdc", "topics": [], "window": 500})}
+        assert rows["https://good"]["usable"] and rows["https://good"]["logs"] == "ok"
+        assert not rows["https://limited"]["usable"] and rows["https://limited"]["logs"] == "refused"
+        assert not rows["https://stale"]["usable"] and rows["https://stale"]["lag"] == 100
+        assert not rows["https://other-chain"]["usable"] and "chain 1" in rows["https://other-chain"]["detail"]
+        assert set(t.windows) == {500}
+        assert pool._endpoints[1].healthy is False      # the check rests the refusing node too

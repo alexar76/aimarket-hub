@@ -530,10 +530,11 @@ operador abona a mano a la cuenta correcta con el `tx_hash`.
 | `AIMARKET_TOPUP_MIN_CONFIRMATIONS` | `2` | Confirmaciones antes de abonar un pago. |
 | `AIMARKET_TOPUP_VERIFY_DECIMALS` | `1` | Lee el `decimals()` del token antes de emitir una oferta (una vez por dirección). |
 | `AIMARKET_TOPUP_MIN_USD`, `_MAX_USD`, `_DAILY_USD`, `_MAX_OPEN_QUOTES`, `_QUOTE_TTL_S`, `_RETAIN_DAYS` | véase [la oferta de recarga](#la-oferta-de-recarga) | Límites. |
-| `AIMARKET_SETTLE_RPC_URL` | los valores por defecto de la cadena | Dónde se leen los pagos (compartido con el pago directo al vendedor). |
+| `AIMARKET_SETTLE_RPC_URL` | los valores por defecto de la cadena | Dónde se leen los pagos (compartido con el pago directo al vendedor): una lista separada por comas, consultada por turnos; un nodo que rechaza (HTTP 429, un tope de rango de bloques) descansa. Los nodos gratuitos limitan por IP: compruebe la lista desde la máquina del hub con `aimarket rpc-check`. |
 | `AIMARKET_DEPOSIT_WATCH` | `1` | Vigilar la cartera de recargas (requiere un `AIMARKET_TOPUP_PAY_TO` dedicado). `0` = solo canje presentado y abonos a mano. |
 | `AIMARKET_DEPOSIT_WATCH_INTERVAL_S` | `60` (mínimo 15) | Cada cuánto se lee la cartera. |
 | `AIMARKET_DEPOSIT_WATCH_CHUNK_BLOCKS` | `500` (10–2000) | Bloques por `eth_getLogs` (los nodos públicos de Base rechazan más de ~2000). |
+| `AIMARKET_DEPOSIT_WATCH_PAUSE_S` | `0.3` (0–5) | Pausa entre ventanas mientras un escaneo se pone al día (más de 4 ventanas por delante), para que los topes por IP de los nodos gratuitos no lo corten cada pocas ventanas. |
 | `AIMARKET_DEPOSIT_WATCH_LOOKBACK_BLOCKS` | `1800` (~1 h en Base) | Dónde empieza el primer escaneo; después continúa un cursor en la base de datos. |
 
 El well-known indica si la puerta está abierta, y en qué condiciones:

@@ -504,10 +504,11 @@ credits the right account by hand with the `tx_hash`.
 | `AIMARKET_TOPUP_MIN_CONFIRMATIONS` | `2` | Confirmations before a payment is credited. |
 | `AIMARKET_TOPUP_VERIFY_DECIMALS` | `1` | Read the token's `decimals()` before quoting (once per address). |
 | `AIMARKET_TOPUP_MIN_USD`, `_MAX_USD`, `_DAILY_USD`, `_MAX_OPEN_QUOTES`, `_QUOTE_TTL_S`, `_RETAIN_DAYS` | see [the quote](#the-quote) | Limits. |
-| `AIMARKET_SETTLE_RPC_URL` | the chain's defaults | Where payments are read (shared with seller-direct). |
+| `AIMARKET_SETTLE_RPC_URL` | the chain's defaults | Where payments are read (shared with seller-direct): a comma-separated list, asked in rotation; a node that refuses (HTTP 429, a block-range cap) rests. Free nodes cap per IP, so check the list from the hub's own machine with `aimarket rpc-check`. |
 | `AIMARKET_DEPOSIT_WATCH` | `1` | Watch the top-up wallet (needs a dedicated `AIMARKET_TOPUP_PAY_TO`). `0` = presenting and hand credits only. |
 | `AIMARKET_DEPOSIT_WATCH_INTERVAL_S` | `60` (at least 15) | How often the wallet is read. |
 | `AIMARKET_DEPOSIT_WATCH_CHUNK_BLOCKS` | `500` (10–2000) | Blocks per `eth_getLogs` (public Base nodes refuse more than ~2000). |
+| `AIMARKET_DEPOSIT_WATCH_PAUSE_S` | `0.3` (0–5) | Rest between windows while a scan catches up (more than 4 windows behind), so free nodes' per-IP caps do not stop it every few windows. |
 | `AIMARKET_DEPOSIT_WATCH_LOOKBACK_BLOCKS` | `1800` (~1 h on Base) | Where the very first scan starts; afterwards a cursor in the database resumes. |
 
 The well-known says whether the door is open, and on what terms:

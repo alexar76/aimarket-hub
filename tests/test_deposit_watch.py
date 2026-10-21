@@ -598,3 +598,58 @@ def test_a_token_with_other_decimals_is_not_credited_by_the_watcher(monkeypatch,
         reported["decimals"] = 6
         assert w.scan_once()["credited"] == 1
         assert balance(db, account) == pytest.approx(1.0)
+
+
+def test_a_node_that_answers_429_rests_while_the_next_one_serves_the_scan(monkeypatch, tmp_path, on):
+    """2026-10-08..21 the Independent hub's only watcher node (mainnet.base.org) answered 429 to
+    every eth_getLogs and the scan asked it again each minute for 13 days. With a list, the
+    refusing node rests and the next one in rotation reads the logs."""
+    import httpx
+
+    monkeypatch.setenv("AIMARKET_SETTLE_RPC_URL", "http://limited.test,http://rpc.test")
+    asked: list[tuple[str, str]] = []
+
+    def rpc(url, method, params, timeout):
+        asked.append((url, method))
+        if url == "http://limited.test" and method == "eth_getLogs":
+            request = httpx.Request("POST", url)
+            raise httpx.HTTPStatusError("429 Too Many Requests", request=request,
+                                        response=httpx.Response(429, request=request, headers={"Retry-After": "60"}))
+        return on(method, params)
+
+    monkeypatch.setattr(settle, "_rpc", rpc)
+    with hub(monkeypatch, tmp_path) as (client, db):
+        account, _ = funded_account(client, db, 0.0)
+        assert client.post(f"/ai-market/v2/accounts/{account}/payer-wallets", json={"address": SENDER},
+                           headers=ADMIN).status_code == 200
+        w = deposit_watch.Watcher(
+            store=deposit_watch.DepositStore(db._conn), ledger=credits.CreditsLedger(db._conn),
+            topups=topup.TopupStore(db._conn), payments=settle.PaymentStore(db._conn),
+            claim_deposit=lambda *, stack, **kw: channels.claim_deposit_as(stack, **kw),
+            release_deposit=lambda *, stack, **kw: channels.release_deposit_as(stack, **kw),
+            claim_holder=lambda **kw: channels.deposit_claim_holder(**kw))
+        for n in range(1, 4):
+            on.transfer(tx(70 + n), SENDER, 1_000_000)
+            assert w.scan_once()["credited"] == 1
+        assert balance(db, account) == pytest.approx(3.0)
+    logs = [url for url, method in asked if method == "eth_getLogs"]
+    first_refusal = logs.index("http://limited.test")
+    assert set(logs[first_refusal + 1:]) == {"http://rpc.test"}       # asked once, then left to rest
+
+
+def test_a_scan_that_catches_up_rests_between_windows_and_a_current_one_does_not(monkeypatch, tmp_path, on):
+    """Catching up 13 days back to back, the Independent node's scan was refused after ~10 windows
+    and waited a minute each time; paced, the same node served 1138 in a row."""
+    rests: list[float] = []
+    monkeypatch.setattr(deposit_watch, "_rest", rests.append)
+    monkeypatch.setenv("AIMARKET_DEPOSIT_WATCH_PAUSE_S", "0.25")
+    with hub(monkeypatch, tmp_path) as (client, db):
+        w = watcher(db, on)
+        key = f"base:{WALLET.lower()}"
+        w.scan_once()                              # at the head: nothing to catch up
+        assert rests == []
+        on.head += 20 * 500                        # 20 windows behind
+        w.scan_once()
+        assert rests and set(rests) == {0.25}
+        assert len(rests) == 20 - deposit_watch.CATCH_UP_CHUNKS   # none once 4 or fewer were left
+        assert w.store.cursor(key) == on.head + 1

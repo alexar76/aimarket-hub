@@ -147,6 +147,14 @@ def main(argv: list[str] | None = None) -> int:
                        help="Public URL to check (default: AIMARKET_HUB_URL)")
     doc_p.add_argument("--json", action="store_true", help="Print the raw dossier")
 
+    # rpc-check
+    rpc_p = sub.add_parser(
+        "rpc-check", help="Ask every chain RPC node this hub's payment paths use, from this machine",
+    )
+    rpc_p.add_argument("--window", type=int, default=None,
+                       help="eth_getLogs block window to try (default: the deposit watcher's chunk)")
+    rpc_p.add_argument("--json", action="store_true", help="Print the rows as JSON")
+
     # serve
     serve_p = sub.add_parser("serve", help="Start the hub API server")
     serve_p.add_argument(
@@ -211,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_add(args)
     if args.command == "doctor":
         return _cmd_doctor(args)
+    if args.command == "rpc-check":
+        return _cmd_rpc_check(args)
     if args.command == "node":
         return _cmd_node(args, node_p)
     if args.command == "serve":
@@ -820,6 +830,58 @@ _DOCTOR_HINTS: dict[str, str] = {
                         "matching its output_schema).",
     "sandbox_key_mismatch": "A receipt was signed by a key that is not this hub's.",
 }
+
+
+def _cmd_rpc_check(args) -> int:
+    """Ask each chain node the payment paths use what they will ask it, from this machine.
+
+    Free RPC nodes cap per source IP, so only a check run where the hub runs says anything.
+    Two lists, because the overrides differ: settlement and the deposit watcher read
+    AIMARKET_SETTLE_RPC_URL when it is set, deposit verification AIMARKET_RPC_<CHAIN>. The
+    watcher's own eth_getLogs (the token's Transfers into the top-up wallet, one chunk wide)
+    is tried on the first list — the call public Base nodes refused with 429 or a range cap
+    while answering eth_chainId and eth_blockNumber. Exit 1 when no node can serve the scan.
+    """
+    import json as _json
+
+    from aimarket_hub import chain_net, deposit_verify, deposit_watch, settle, x402
+
+    chain_id = x402.chain_id() or None
+    profile = x402.asset_profile() or {}
+    wallet = deposit_watch.dedicated_wallet() or "0x" + "0" * 36 + "dead"
+    window = args.window or deposit_watch.chunk_blocks()
+    logs = {"address": str(profile.get("address") or "").lower(),
+            "topics": [deposit_watch.TRANSFER_TOPIC, None, "0x" + wallet[2:].rjust(64, "0")], "window": window}
+    lists = [("settlement + deposit watcher", settle.rpc_urls(chain_id), logs if logs["address"] else None),
+             ("deposit verification", deposit_verify.rpc_urls_for(x402.chain()), None)]
+    report, scan_ok = [], 0
+    for label, urls, flt in lists:
+        if not urls:
+            report.append({"list": label, "rows": [], "detail": "no RPC configured"})
+            continue
+        pool = chain_net.RpcPool(chain_net.NetworkSpec(
+            id=x402.chain(), kind=chain_net.EVM, display_name=x402.chain(), chain_id=chain_id, cluster=None,
+            rpc_urls=tuple(urls), native_symbol="", explorer_tx=""), transport=settle._pool_transport, timeout=15.0)
+        rows = pool.check(logs_filter=flt)
+        if flt is not None:
+            scan_ok = sum(1 for r in rows if r["usable"])
+        report.append({"list": label, "rows": rows})
+    if args.json:
+        print(_json.dumps({"chain": x402.chain(), "chain_id": chain_id, "window": window, "lists": report}, indent=2))
+        return 0 if scan_ok else 1
+    print(f"{BOLD}AIMarket Hub — rpc-check{RESET}  {x402.chain()} ({chain_id}), eth_getLogs window {window} blocks")
+    for entry in report:
+        print(f"\n{BOLD}{entry['list']}{RESET}")
+        if not entry["rows"]:
+            print(f"  {RED}✗{RESET} {entry.get('detail', '')}")
+        for r in entry["rows"]:
+            mark = f"{GREEN}✓{RESET}" if r["usable"] else f"{RED}✗{RESET}"
+            lag = "-" if r["lag"] is None else r["lag"]
+            note = f"  {DIM}{r['detail']}{RESET}" if r["detail"] else ""
+            print(f"  {mark} {r['url']:<44} lag {lag!s:>3}  {r['ms']:>5} ms  logs {r['logs'] or '-'}{note}")
+    verdict = f"{GREEN}{scan_ok} node(s){RESET}" if scan_ok else f"{RED}no node{RESET}"
+    print(f"\n{verdict} can serve the deposit watcher's scan; calls rotate over the list and a refusing node rests.")
+    return 0 if scan_ok else 1
 
 
 def _cmd_doctor(args) -> int:

@@ -532,10 +532,11 @@ emporter ce paiement. L'opérateur crédite le bon compte à la main avec le `tx
 | `AIMARKET_TOPUP_MIN_CONFIRMATIONS` | `2` | Les confirmations exigées avant qu'un paiement soit crédité. |
 | `AIMARKET_TOPUP_VERIFY_DECIMALS` | `1` | Lit le `decimals()` du jeton avant d'émettre une offre (une fois par adresse). |
 | `AIMARKET_TOPUP_MIN_USD`, `_MAX_USD`, `_DAILY_USD`, `_MAX_OPEN_QUOTES`, `_QUOTE_TTL_S`, `_RETAIN_DAYS` | voir [l'offre de recharge](#loffre-de-recharge) | Limites. |
-| `AIMARKET_SETTLE_RPC_URL` | les valeurs par défaut de la chaîne | Où les paiements sont lus (partagé avec le paiement direct au vendeur). |
+| `AIMARKET_SETTLE_RPC_URL` | les valeurs par défaut de la chaîne | Où les paiements sont lus (partagé avec le paiement direct au vendeur) : une liste séparée par des virgules, interrogée à tour de rôle ; un nœud qui refuse (HTTP 429, plafond de plage de blocs) est mis au repos. Les nœuds gratuits limitent par IP : vérifiez la liste depuis la machine du hub avec `aimarket rpc-check`. |
 | `AIMARKET_DEPOSIT_WATCH` | `1` | Surveiller le portefeuille de recharge (exige un `AIMARKET_TOPUP_PAY_TO` dédié). `0` = présentation et crédit manuel seulement. |
 | `AIMARKET_DEPOSIT_WATCH_INTERVAL_S` | `60` (au moins 15) | Fréquence de lecture du portefeuille. |
 | `AIMARKET_DEPOSIT_WATCH_CHUNK_BLOCKS` | `500` (10–2000) | Blocs par `eth_getLogs` (les nœuds publics de Base refusent au-delà de ~2000). |
+| `AIMARKET_DEPOSIT_WATCH_PAUSE_S` | `0.3` (0–5) | Pause entre les fenêtres quand un scan rattrape son retard (plus de 4 fenêtres), pour que les plafonds par IP des nœuds gratuits ne l'arrêtent pas toutes les quelques fenêtres. |
 | `AIMARKET_DEPOSIT_WATCH_LOOKBACK_BLOCKS` | `1800` (~1 h sur Base) | Où commence le tout premier balayage ; ensuite un curseur en base reprend. |
 
 Le well-known indique si la porte est ouverte, et à quelles conditions :

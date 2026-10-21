@@ -343,6 +343,21 @@ def _rpc(url: str, method: str, params: list[Any], timeout: float) -> Any:
     return body.get("result")
 
 
+def _pool_transport(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
+    # Through _rpc, looked up at call time: the pool keeps this function, and tests replace _rpc.
+    return {"result": _rpc(url, body["method"], body["params"], timeout)}
+
+
+def rpc_call(urls: list[str], method: str, params: list[Any], *, chain_id: int | None = None,
+             timeout: float = 15.0) -> Any:
+    """One JSON-RPC call over ``urls`` in rotation: a node that refuses (429, a block-range
+    cap) rests and the next one answers. Raises chain_net.ChainNetError when none did."""
+    from aimarket_hub import chain_net
+
+    pool = chain_net.pool_for_urls(urls, chain_id=chain_id, timeout=timeout, transport=_pool_transport)
+    return pool.call(method, params)
+
+
 def rpc_urls(chain_id: int | None = None) -> list[str]:
     """Where to ask whether the seller was paid. Same exclusive-override rule
     as deposit verification: a bubble RPC must not fall through to mainnet."""

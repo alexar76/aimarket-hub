@@ -413,10 +413,11 @@ curl -s -X POST $HUB/ai-market/v2/account/payer-wallets -H "X-API-Key: $KEY" -H 
 | `AIMARKET_TOPUP_MIN_CONFIRMATIONS` | `2` | 付款入账之前所需的确认数。 |
 | `AIMARKET_TOPUP_VERIFY_DECIMALS` | `1` | 报价之前读取代币的 `decimals()`（每个地址一次）。 |
 | `AIMARKET_TOPUP_MIN_USD`, `_MAX_USD`, `_DAILY_USD`, `_MAX_OPEN_QUOTES`, `_QUOTE_TTL_S`, `_RETAIN_DAYS` | 见[充值报价](#充值报价) | 限额。 |
-| `AIMARKET_SETTLE_RPC_URL` | 各链的默认值 | 读取付款的位置（与直付卖家共用）。 |
+| `AIMARKET_SETTLE_RPC_URL` | 各链的默认值 | 读取付款的位置（与直付卖家共用）：逗号分隔的列表，轮流询问；拒绝服务的节点（HTTP 429、区块范围上限）会暂停使用。免费节点按 IP 限流，请在 hub 所在机器上用 `aimarket rpc-check` 检查列表。 |
 | `AIMARKET_DEPOSIT_WATCH` | `1` | 监视充值钱包（需要专用的 `AIMARKET_TOPUP_PAY_TO`）。`0` = 只能出示兑付或手动入账。 |
 | `AIMARKET_DEPOSIT_WATCH_INTERVAL_S` | `60`（至少 15） | 读取钱包的频率。 |
 | `AIMARKET_DEPOSIT_WATCH_CHUNK_BLOCKS` | `500`（10–2000） | 每次 `eth_getLogs` 的区块数（Base 公共节点拒绝超过约 2000）。 |
+| `AIMARKET_DEPOSIT_WATCH_PAUSE_S` | `0.3`（0–5） | 扫描追赶进度时（落后超过 4 个窗口）在窗口之间暂停，避免免费节点的按 IP 限流每隔几个窗口就中断扫描。 |
 | `AIMARKET_DEPOSIT_WATCH_LOOKBACK_BLOCKS` | `1800`（Base 上约 1 小时） | 首次扫描的起点；之后由数据库中的游标继续。 |
 
 well-known 会说明该入口是否开放，以及开放的条件：

@@ -110,6 +110,25 @@ def lookback_blocks() -> int:
     return max(0, _int("AIMARKET_DEPOSIT_WATCH_LOOKBACK_BLOCKS", 1800))
 
 
+#: A scan with more windows than this ahead of it is catching up, and rests between them.
+CATCH_UP_CHUNKS = 4
+
+
+def catch_up_pause_s() -> float:
+    """Rest between log windows while a scan catches up. Free nodes cap requests per IP per
+    second, and one refusal ends the scan until the next interval: on 2026-10-21 the Independent
+    node, 13 days behind, read ~10 windows a minute back to back; paced at ~3 a second, the same
+    node served 1138 in a row."""
+    try:
+        return min(5.0, max(0.0, float(os.getenv("AIMARKET_DEPOSIT_WATCH_PAUSE_S", "0.3"))))
+    except ValueError:
+        return 0.3
+
+
+def _rest(seconds: float) -> None:
+    time.sleep(seconds)
+
+
 def unavailable_reason() -> str:
     reason = topup.unavailable_reason()
     if reason:
@@ -346,13 +365,14 @@ class Watcher:
     def rpc(self, method: str, params: list[Any]) -> Any:
         if self._rpc is not None:
             return self._rpc(method, params)
-        last: Exception | None = None
-        for url in settle.rpc_urls(x402.chain_id()):
-            try:
-                return settle._rpc(url, method, params, 15.0)
-            except Exception as exc:  # noqa: BLE001 - next node
-                last = exc
-        raise Retry(f"no RPC answered {method}: {last}")
+        # In rotation, not first-come: a scan that catches up reads hundreds of log windows, and
+        # free nodes cap them per IP. The Independent node's only one (mainnet.base.org) answered
+        # 429 to every eth_getLogs for 13 days (2026-10-08..21) while the scan retried it alone.
+        chain_id = x402.chain_id()
+        try:
+            return settle.rpc_call(settle.rpc_urls(chain_id), method, params, chain_id=chain_id, timeout=15.0)
+        except Exception as exc:  # noqa: BLE001 - every node refused or none is configured
+            raise Retry(f"no RPC answered {method}: {exc}") from exc
 
     def _context(self) -> dict[str, Any]:
         profile = x402.asset_profile() or {}
@@ -621,6 +641,8 @@ class Watcher:
                 outcomes[self.handle_receipt(tx_hash=tx, receipt=receipt, block=entry["block"])] += 1
             self.store.set_cursor(key, end + 1)
             start = end + 1
+            if (safe - start) // chunk_blocks() + 1 > CATCH_UP_CHUNKS:
+                _rest(catch_up_pause_s())
         return {"scanned": True, "head": head, "next_block": start, **dict(outcomes),
                 **({"revisited": revisited} if revisited else {})}
 
