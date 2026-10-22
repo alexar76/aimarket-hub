@@ -63,7 +63,7 @@ class TestAStrangersHub:
         ) as client:
             body = client.get(path).text
             for host in ("use.modelmarket.dev", "atlas.modelmarket.dev", "edu.modelmarket.dev",
-                         "modelmarket.dev/tools/"):
+                         "modelmarket.dev/tools/", "modelmarket.dev/blog/"):
                 assert host not in body, f"{path} advertises {host}"
 
     def test_the_nav_carries_the_operators_name(self, monkeypatch, tmp_path):
@@ -125,6 +125,18 @@ class TestTheReferenceDeployment:
         assert '<a href="https://modelmarket.dev/tools/">Free tools</a>' in docs
         assert docs.count("https://modelmarket.dev/tools/") >= 2, "nav and footer"
         assert "https://modelmarket.dev/tools/x402-check" in llms
+
+    def test_the_blog_is_linked_from_the_reference_nav_and_footer(self, monkeypatch, tmp_path):
+        with _hub(
+            monkeypatch, tmp_path,
+            AIMARKET_HUB_URL="https://modelmarket.dev",
+            AIMARKET_HUB_NAME="modelmarket.dev",
+        ) as client:
+            home = client.get("/").text
+            docs = client.get("/developers").text
+        assert '<a href="https://modelmarket.dev/blog/" data-i18n="nav_blog">Blog</a>' in home
+        assert '<a href="https://modelmarket.dev/blog/">Blog</a>' in docs
+        assert docs.count("https://modelmarket.dev/blog/") >= 2, "nav and footer"
 
     def test_an_operator_can_force_the_links_either_way(self, monkeypatch, tmp_path):
         with _hub(

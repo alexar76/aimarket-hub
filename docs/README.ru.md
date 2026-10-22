@@ -53,7 +53,7 @@ Cursor: `.cursor/mcp.json`. Claude Desktop: `claude_desktop_config.json`. Ски
 > Уже есть свой API? `aimarket node` делает его узлом без хаба → [узел из своего API](run-a-node.ru.md).
 > Сервера нет вовсе? Продайте функцию на Python через HESTIA → [продать функцию без сервера](https://github.com/alexar76/hestia/blob/main/docs/sell-without-a-server.ru.md).
 
-> **Экосистема:** [обзор AICOM и живые демо](https://ecosystem.modelmarket.dev/) · **Версия пакета:** `3.5.4` (pyproject) · **Сообщество:** [Discord · Pollux](https://discord.gg/aimarket) · [Telegram · Castor](https://t.me/just_for_agents)
+> **Экосистема:** [обзор AICOM и живые демо](https://ecosystem.modelmarket.dev/) · **Версия пакета:** `3.5.4` (pyproject) · **Сообщество:** [Discord · Pollux](https://discord.gg/JjWxGhW9pP) · [Telegram · Castor](https://t.me/just_for_agents)
 
 **Федеративный хаб для обнаружения AI-capability, маршрутизации микроплатежей и расширяемого через плагины invoke.**
 
@@ -778,7 +778,7 @@ pytest tests/ -q --cov=aimarket_hub
 
 | Канал | Близнец | Лучше всего для |
 |---------|------|----------|
-| [Discord](https://discord.gg/aimarket) | Pollux | Помощь, идеи, show-and-tell |
+| [Discord](https://discord.gg/JjWxGhW9pP) | Pollux | Помощь, идеи, show-and-tell |
 | [Telegram](https://t.me/just_for_agents) | Castor | Релизы, дайджесты, быстрые новости |
 
 **Карта экосистемы:** [Alien Monitor](https://monitor.modelmarket.dev/) · [AICOM](https://magic-ai-factory.com)

@@ -58,7 +58,7 @@ Cursor: `.cursor/mcp.json`。Claude Desktop: `claude_desktop_config.json`。技�
 > 已经有自己的 API？`aimarket node` 无需枢纽就能把它变成节点 → [运行节点](run-a-node.zh.md)。
 > 完全没有服务器？在 HESTIA 上出售一个 Python 函数 → [无需服务器出售](https://github.com/alexar76/hestia/blob/main/docs/sell-without-a-server.zh.md)。
 
-> **生态：** [AICOM 概览与在线演示](https://ecosystem.modelmarket.dev/) · **包版本：** `3.5.4` (pyproject) · **社区：** [Discord · Pollux](https://discord.gg/aimarket) · [Telegram · Castor](https://t.me/just_for_agents)
+> **生态：** [AICOM 概览与在线演示](https://ecosystem.modelmarket.dev/) · **包版本：** `3.5.4` (pyproject) · **社区：** [Discord · Pollux](https://discord.gg/JjWxGhW9pP) · [Telegram · Castor](https://t.me/just_for_agents)
 
 **用于 AI capability 发现、微支付路由与可插件扩展调用的联邦枢纽（Hub）。**
 
@@ -717,7 +717,7 @@ pip install -e ".[dev]"
 
 | 频道 | 孪生 | 最适合 |
 |---------|------|----------|
-| [Discord](https://discord.gg/aimarket) | Pollux | 求助、想法、展示 |
+| [Discord](https://discord.gg/JjWxGhW9pP) | Pollux | 求助、想法、展示 |
 | [Telegram](https://t.me/just_for_agents) | Castor | 发布、摘要、快讯 |
 
 **生态地图：** [Alien Monitor](https://monitor.modelmarket.dev/) · [AICOM](https://magic-ai-factory.com)

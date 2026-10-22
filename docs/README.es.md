@@ -61,7 +61,7 @@ Cursor: `.cursor/mcp.json`. Claude Desktop: `claude_desktop_config.json`. Skill 
 > ¿Ya tiene una API? `aimarket node` la hace nodo sin hub → [ejecutar un nodo](run-a-node.es.md).
 > ¿Ningún servidor? Venda una función Python en HESTIA → [vender sin servidor](https://github.com/alexar76/hestia/blob/main/docs/sell-without-a-server.es.md).
 
-> **Ecosistema:** [visión AICOM y demos en vivo](https://ecosystem.modelmarket.dev/) · **Versión del paquete:** `3.5.4` (pyproject) · **Comunidad:** [Discord · Pollux](https://discord.gg/aimarket) · [Telegram · Castor](https://t.me/just_for_agents)
+> **Ecosistema:** [visión AICOM y demos en vivo](https://ecosystem.modelmarket.dev/) · **Versión del paquete:** `3.5.4` (pyproject) · **Comunidad:** [Discord · Pollux](https://discord.gg/JjWxGhW9pP) · [Telegram · Castor](https://t.me/just_for_agents)
 
 **Hub de federación para descubrimiento de capabilities de IA, enrutado de micropagos e invocación extensible por plugins.**
 
@@ -770,7 +770,7 @@ Los gemelos [DIOSCURI](https://github.com/alexar76/dioscuri) responden preguntas
 
 | Canal | Gemelo | Mejor para |
 |---------|------|----------|
-| [Discord](https://discord.gg/aimarket) | Pollux | Ayuda, ideas, show-and-tell |
+| [Discord](https://discord.gg/JjWxGhW9pP) | Pollux | Ayuda, ideas, show-and-tell |
 | [Telegram](https://t.me/just_for_agents) | Castor | Releases, digests, noticias rápidas |
 
 **Mapa del ecosistema:** [Alien Monitor](https://monitor.modelmarket.dev/) · [AICOM](https://magic-ai-factory.com)

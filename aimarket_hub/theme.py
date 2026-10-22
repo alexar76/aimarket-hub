@@ -54,6 +54,7 @@ def drop_missing_links(html: str) -> str:
 #: Nav items pointing at the reference ecosystem's other properties.
 ECOSYSTEM_NAV_ITEMS = (
     ("https://modelmarket.dev/tools/", "Free tools", "tools"),
+    ("https://modelmarket.dev/blog/", "Blog", "blog"),
     ("https://edu.modelmarket.dev/", "Learn", "learn"),
     ("https://use.modelmarket.dev/#onboard", "Use cases", "usecases"),
 )
@@ -499,6 +500,7 @@ def footer_html() -> str:
     ]
     if BRAND.get("ecosystem_links"):
         left.append('<a href="https://modelmarket.dev/tools/">Free x402 and MCP checks</a>')
+        left.append('<a href="https://modelmarket.dev/blog/">Blog</a>')
         left.append(
             '<a href="https://use.modelmarket.dev/#onboard" target="_blank" rel="noopener">'
             "Use cases</a>"

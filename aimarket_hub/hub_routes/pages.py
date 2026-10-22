@@ -119,7 +119,7 @@ def register(
             html = re.sub(r'\s*<meta (?:property="og:image(?::[a-z]+)?"|name="twitter:card") content="[^"]*" />', "", html)
             if not config.ecosystem_links:
                 html = re.sub(
-                    r'\s*<a href="https://(?:(?:use|edu)\.modelmarket\.dev|modelmarket\.dev/tools/)[^"]*"[^>]*>.*?</a>',
+                    r'\s*<a href="https://(?:(?:use|edu)\.modelmarket\.dev|modelmarket\.dev/(?:tools|blog)/)[^"]*"[^>]*>.*?</a>',
                     "", html,
                     flags=re.DOTALL,
                 )

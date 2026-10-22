@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -18,7 +19,10 @@ from aimarket_hub.database import HubDatabase
 from aimarket_hub.models import Capability, Peer
 
 DAY = 24 * 3600
-T0 = 1_790_000_000.0
+# A few days back from the real clock, not a fixed date: search reads the verdict with no `now`, so
+# observations count only inside the 30-day window behind time.time(). With T0 fixed at 2026-09-21
+# the two search tests began to fail on 2026-10-21, when the first observation left that window.
+T0 = time.time() - 3 * DAY
 PACK = {"artifact": "industrial-sentinel", "container": "ghcr.io/example/sentinel:1.4.2",
         "agent_skill": {"catalog": "https://skills.example/sentinel", "path": "skills/sentinel"},
         "paid_routes": ["/wallet-balance", "/gas-price", "/wallet-activity"], "purpose": "install " * 20}
