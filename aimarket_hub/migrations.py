@@ -1565,6 +1565,29 @@ _register(60, "060_capability_peer_endpoint", """
     ALTER TABLE capabilities DROP COLUMN peer_endpoint;
 """)
 
+# 061: Idempotency-Key on paid invokes (aimarket_hub/idempotency.py). The first answer to a
+# (credential, key) pair, kept 24 h, so a retry after a timeout replays it instead of paying
+# again. `scope` is a hash of the paying credential, never the credential; times are epoch
+# seconds (REAL), not text, so their age is never read through a session time zone.
+_register(61, "061_invoke_idempotency", """
+    CREATE TABLE IF NOT EXISTS invoke_idempotency (
+        scope TEXT NOT NULL,
+        idem_key TEXT NOT NULL,
+        request_sha256 TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'running',
+        http_status INTEGER NOT NULL DEFAULT 0,
+        response_headers TEXT NOT NULL DEFAULT '[]',
+        response_body TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        finished_at REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (scope, idem_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_invoke_idempotency_created ON invoke_idempotency(created_at);
+""", """
+    DROP INDEX IF EXISTS idx_invoke_idempotency_created;
+    DROP TABLE IF EXISTS invoke_idempotency;
+""")
+
 def channel_ledger_versions() -> list[int]:
     """Migration versions whose DDL touches a channel-ledger table.
 

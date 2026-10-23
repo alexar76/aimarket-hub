@@ -68,6 +68,8 @@ Translations of these terms follow the [localization glossary](https://github.co
 | In the tree | every hop, `funded_by: "own"` | every hop, `funded_by: "allowance"` (or `own` for a hop the provider chose to pay itself) |
 | Maximum depth | the hub's, 3 — every hop pays for itself, the depth only bounds the tree | the buyer's `max_depth` (1–3, default 1) |
 
+The grant goes only over TLS or to the operator's own hosts (loopback, `AIMARKET_INVOKE_HOST_GATEWAY`): a provider at a plain-`http` public URL gets the job token alone and pays its own subcontractors.
+
 Both modes can live in one tree: a provider holding a grant may still pay a particular purchase
 with its own key, and that node shows `funded_by: "own"`.
 
@@ -235,6 +237,9 @@ stateDiagram-v2
     Held --> Captured: the child delivered
     Held --> BackToAllowance: the child failed, the allowance is still open
     Held --> BackToBalance: the child failed after the root closed
+    Held --> Orphaned: the process died mid-call
+    Orphaned --> BackToAllowance: an hour later the sweep releases it
+    Orphaned --> BackToBalance: same, once the allowance is settled
     BackToAllowance --> [*]: a retry can be paid from it
     BackToBalance --> [*]: refunded to the buyer<br/>and given back to the root mandate's counters
     Captured --> [*]

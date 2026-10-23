@@ -123,3 +123,18 @@ testpaths = ["tests"]
 markers = [
     "live: touches a real network (Base RPC) — run with `-m live`, excluded by default.",
 ]
+
+# The money gate (.github/workflows/ci.yml): bug-finding rules over the code that moves,
+# holds or authorizes money. The rest of the package is not held to it yet; widening the
+# path list in CI is how it grows.
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E9", "F", "B", "PLE"]
+
+[tool.ruff.lint.per-file-ignores]
+# Facades over mixins: their imports are what the mixins read at call time, and what tests patch.
+"aimarket_hub/channels.py" = ["F401"]
+"aimarket_hub/verified_settlement.py" = ["F401"]

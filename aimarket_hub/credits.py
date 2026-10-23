@@ -43,7 +43,7 @@ import secrets
 import time
 from typing import Any
 from aimarket_hub import security_posture
-from aimarket_hub.db_backend import returning_one
+from aimarket_hub.db_backend import atomic, returning_one
 from aimarket_hub.paging import page_limit
 
 
@@ -101,6 +101,8 @@ SIGNUP_GRANT_NOTE = "signup grant"
 # An account the operator opens with a starting balance is a decision, not a
 # giveaway, so it must not eat the budget that protects self-serve signups.
 OPERATOR_GRANT_NOTE = "operator opening balance"
+# The row every self-serve signup updates first (job_counters), so budget checks queue.
+_SIGNUP_COUNTER = "credits:signup-grant"
 
 
 def signup_grant_usd() -> float:
@@ -191,6 +193,36 @@ class CreditsLedger:
     ) -> dict[str, Any]:
         """Mint an account and return its key ONCE. The key is never recoverable after
         this call — only its hash is stored."""
+        with atomic(self._conn):
+            return self._insert_account(label, grant_usd, grant_note)
+
+    def open_signup_account(self, label: str = "") -> dict[str, Any]:
+        """A self-serve account, with the signup grant if the grant budget still has room.
+
+        The budget check and the grant are one transaction, and every signup first updates
+        the same counter row, so they run one at a time on every worker and replica (the row
+        lock on PostgreSQL, the write lock on SQLite). Checked and minted as two steps, as
+        until 2026-10-22, concurrent signups on more than one process all read the same
+        remaining budget and all minted: each one past the ceiling was a grant the operator
+        never agreed to. ``grant_note`` says why an account opened at zero.
+        """
+        grant = signup_grant_usd()
+        self._conn.execute(
+            "INSERT INTO job_counters (counter, n) VALUES (?, 0) ON CONFLICT DO NOTHING", (_SIGNUP_COUNTER,),
+        )
+        self._conn.commit()
+        note = ""
+        with atomic(self._conn):
+            self._conn.execute("UPDATE job_counters SET n = n + 1 WHERE counter = ?", (_SIGNUP_COUNTER,))
+            if grant > 0:
+                allowed, reason = self.grant_within_budget(grant)
+                if not allowed:
+                    grant, note = 0.0, reason
+            account = self._insert_account(label, grant, SIGNUP_GRANT_NOTE)
+        return {**account, **({"grant_note": note} if note else {})}
+
+    def _insert_account(self, label: str, grant_usd: float, grant_note: str) -> dict[str, Any]:
+        """The rows of a new account; the caller commits (inside ``atomic``)."""
         api_key = _mint_key()
         account_id = "acct_" + secrets.token_hex(8)
         grant_mc = max(0, usd_to_mc(grant_usd))
@@ -201,7 +233,6 @@ class CreditsLedger:
         )
         if grant_mc:
             self._log(account_id, "grant", grant_mc, note=grant_note or SIGNUP_GRANT_NOTE)
-        self._conn.commit()
         return {
             "account_id": account_id,
             "api_key": api_key,
@@ -272,43 +303,45 @@ class CreditsLedger:
             return {"error": "grant amount must be positive"}
         reference = (reference or "").strip()[:200]
         note = (note or "")[:200]
-        if reference:
-            existing = self._conn.execute(
-                "SELECT account_id, amount_mc FROM credit_topups WHERE reference = ?",
-                (reference,),
-            ).fetchone()
-            if existing:
-                if str(existing["account_id"]) != account_id or int(existing["amount_mc"]) != amount_mc:
-                    return {"error": "top-up reference already belongs to a different account or amount"}
+        try:
+            with atomic(self._conn):
+                if reference:
+                    existing = self._conn.execute(
+                        "SELECT account_id, amount_mc FROM credit_topups WHERE reference = ?",
+                        (reference,),
+                    ).fetchone()
+                    if existing:
+                        if str(existing["account_id"]) != account_id or int(existing["amount_mc"]) != amount_mc:
+                            return {"error": "top-up reference already belongs to a different account or amount"}
+                        return {
+                            "account_id": account_id,
+                            "credited_usd": mc_to_usd(amount_mc),
+                            "balance_usd": self.balance(account_id),
+                            "reference": reference,
+                            "idempotent_replay": True,
+                        }
+                    self._conn.execute(
+                        "INSERT INTO credit_topups (reference, account_id, amount_mc, note) VALUES (?, ?, ?, ?)",
+                        (reference, account_id, amount_mc, note),
+                    )
+                cur = self._conn.execute(
+                    "UPDATE credit_accounts SET balance_mc = balance_mc + ?, granted_mc = granted_mc + ? "
+                    "WHERE account_id = ? AND status = 'active'",
+                    (amount_mc, amount_mc, account_id),
+                )
+                if not _changed(cur):
+                    # Raised, not returned, so the reference row written above rolls back with it.
+                    raise _UnknownAccount(account_id)
+                self._log(account_id, "grant", amount_mc, note=note)
                 return {
                     "account_id": account_id,
                     "credited_usd": mc_to_usd(amount_mc),
                     "balance_usd": self.balance(account_id),
                     "reference": reference,
-                    "idempotent_replay": True,
+                    "idempotent_replay": False,
                 }
-            self._conn.execute(
-                "INSERT INTO credit_topups (reference, account_id, amount_mc, note) VALUES (?, ?, ?, ?)",
-                (reference, account_id, amount_mc, note),
-            )
-        cur = self._conn.execute(
-            "UPDATE credit_accounts SET balance_mc = balance_mc + ?, granted_mc = granted_mc + ? "
-            "WHERE account_id = ? AND status = 'active'",
-            (amount_mc, amount_mc, account_id),
-        )
-        if not _changed(cur):
-            if reference:
-                self._conn.rollback()
+        except _UnknownAccount:
             return {"error": f"unknown or disabled account {account_id}"}
-        self._log(account_id, "grant", amount_mc, note=note)
-        self._conn.commit()
-        return {
-            "account_id": account_id,
-            "credited_usd": mc_to_usd(amount_mc),
-            "balance_usd": self.balance(account_id),
-            "reference": reference,
-            "idempotent_replay": False,
-        }
 
     def deposit(self, account_id: str, amount_mc: int, *, reference: str, note: str = "") -> dict[str, Any]:
         """Credit money the buyer PAID (a USDC top-up), once per ``reference``.
@@ -323,8 +356,6 @@ class CreditsLedger:
         operator disabled is still credited: the money has arrived, and a disabled account
         cannot spend it anyway.
         """
-        from aimarket_hub.db_backend import atomic
-
         amount_mc = int(amount_mc)
         reference = (reference or "").strip()[:200]
         if amount_mc <= 0:
@@ -423,32 +454,33 @@ class CreditsLedger:
             return {"error": "hold amount must be positive"}
         if not receipt_id:
             return {"error": "hold requires a receipt id"}
-        existing = self._conn.execute(
-            "SELECT status FROM credit_holds WHERE receipt_id = ?", (receipt_id,),
-        ).fetchone()
-        if existing:
-            return {"error": f"receipt {receipt_id} already used"}
-        cur = self._conn.execute(
-            "UPDATE credit_accounts SET balance_mc = balance_mc - ?, held_mc = held_mc + ? "
-            "WHERE account_id = ? AND status = 'active' AND balance_mc >= ?",
-            (amount_mc, amount_mc, account_id, amount_mc),
-        )
-        if not _changed(cur):
-            return {"error": (
-                f"insufficient credit: {mc_to_usd(amount_mc)} needed, "
-                f"{self.balance(account_id)} available"
-            )}
-        self._conn.execute(
-            "INSERT INTO credit_holds (receipt_id, account_id, amount_mc, status) "
-            "VALUES (?, ?, ?, 'held')",
-            (receipt_id, account_id, amount_mc),
-        )
-        self._log(account_id, "hold", amount_mc, receipt_id=receipt_id)
-        self._conn.commit()
-        return {"held_usd": mc_to_usd(amount_mc), "remaining_balance": self.balance(account_id)}
+        with atomic(self._conn):
+            existing = self._conn.execute(
+                "SELECT status FROM credit_holds WHERE receipt_id = ?", (receipt_id,),
+            ).fetchone()
+            if existing:
+                return {"error": f"receipt {receipt_id} already used"}
+            cur = self._conn.execute(
+                "UPDATE credit_accounts SET balance_mc = balance_mc - ?, held_mc = held_mc + ? "
+                "WHERE account_id = ? AND status = 'active' AND balance_mc >= ?",
+                (amount_mc, amount_mc, account_id, amount_mc),
+            )
+            if not _changed(cur):
+                return {"error": (
+                    f"insufficient credit: {mc_to_usd(amount_mc)} needed, "
+                    f"{self.balance(account_id)} available"
+                )}
+            self._conn.execute(
+                "INSERT INTO credit_holds (receipt_id, account_id, amount_mc, status) "
+                "VALUES (?, ?, ?, 'held')",
+                (receipt_id, account_id, amount_mc),
+            )
+            self._log(account_id, "hold", amount_mc, receipt_id=receipt_id)
+            return {"held_usd": mc_to_usd(amount_mc), "remaining_balance": self.balance(account_id)}
 
     def _claim_resolution(self, receipt_id: str, status: str) -> Any:
-        """Move a hold out of 'held' and say whether THIS call did it.
+        """Move a hold out of 'held' and say whether THIS call did it. Call it inside the
+        ``atomic`` block that moves the money.
 
         The status change comes first and decides the winner. The old order — read the
         status, then move the money, then mark the row — let two concurrent resolutions of
@@ -456,20 +488,23 @@ class CreditsLedger:
         a capture. RETURNING hands the row only to the statement that changed it; a row
         count would not do, because on the shared SQLite connection it is read from a
         connection-global counter another thread can overwrite (see db_backend.claim_unique).
+
+        The claim and the money move commit together. Until 2026-10-22 the claim committed
+        on its own first, so that another thread's failed statement could not roll it back
+        under a balance change that still committed — and that opened the opposite hole: a
+        process that died (or a foreign rollback that landed) between the two left a hold
+        marked resolved whose money never moved, which no sweep looks at again. One
+        transaction under the connection's lock closes both (tests/test_ledger_crash_consistency.py).
+        On PostgreSQL the claim's row lock makes a concurrent resolver wait for the commit
+        and then find the row resolved.
         """
-        won = returning_one(
+        return returning_one(
             self._conn,
             "UPDATE credit_holds SET status = ?, resolved_at = datetime('now') "
             "WHERE receipt_id = ? AND status = 'held' "
             "RETURNING account_id, amount_mc, parent_receipt_id",
             (status, receipt_id),
-            # Committed before the money moves, in the statement's own critical section: on
-            # the shared SQLite connection a rollback that another thread's failed statement
-            # triggers could otherwise undo the claim while the balance change that depends
-            # on it still commits — the hold would resolve twice.
-            commit=True,
         )
-        return won
 
     def _unresolved_answer(self, receipt_id: str, key: str) -> dict[str, Any]:
         row = self._conn.execute(
@@ -482,19 +517,19 @@ class CreditsLedger:
     def capture_hold(self, receipt_id: str) -> dict[str, Any]:
         """Turn a reservation into a recorded debit. A no-op on an already-resolved hold,
         so a late exception on a settled invoke cannot double-charge."""
-        won = self._claim_resolution(receipt_id, "captured")
-        if won is None:
-            return self._unresolved_answer(receipt_id, "captured_usd")
-        amount_mc = int(won["amount_mc"])
-        account_id = str(won["account_id"])
-        self._conn.execute(
-            "UPDATE credit_accounts SET held_mc = held_mc - ?, spent_mc = spent_mc + ? "
-            "WHERE account_id = ?",
-            (amount_mc, amount_mc, account_id),
-        )
-        self._log(account_id, "capture", amount_mc, receipt_id=receipt_id)
-        self._conn.commit()
-        return {"captured_usd": mc_to_usd(amount_mc), "remaining_balance": self.balance(account_id)}
+        with atomic(self._conn):
+            won = self._claim_resolution(receipt_id, "captured")
+            if won is None:
+                return self._unresolved_answer(receipt_id, "captured_usd")
+            amount_mc = int(won["amount_mc"])
+            account_id = str(won["account_id"])
+            self._conn.execute(
+                "UPDATE credit_accounts SET held_mc = held_mc - ?, spent_mc = spent_mc + ? "
+                "WHERE account_id = ?",
+                (amount_mc, amount_mc, account_id),
+            )
+            self._log(account_id, "capture", amount_mc, receipt_id=receipt_id)
+            return {"captured_usd": mc_to_usd(amount_mc), "remaining_balance": self.balance(account_id)}
 
     def release_hold(self, receipt_id: str) -> dict[str, Any]:
         """Hand a reservation back. Ungated and idempotent for the same reason the channel
@@ -507,36 +542,35 @@ class CreditsLedger:
         to the balance like any other release. Either way the account's ``held_mc`` stays
         exact: money returned to the parent is still held, just under the parent's id.
         """
-        won = self._claim_resolution(receipt_id, "released")
-        if won is None:
-            return self._unresolved_answer(receipt_id, "released_usd")
-        amount_mc = int(won["amount_mc"])
-        account_id = str(won["account_id"])
-        parent = str(won["parent_receipt_id"] or "")
-        if parent:
-            back = returning_one(
-                self._conn,
-                "UPDATE credit_holds SET amount_mc = amount_mc + ? "
-                "WHERE receipt_id = ? AND status = 'held' RETURNING receipt_id",
-                (amount_mc, parent),
+        with atomic(self._conn):
+            won = self._claim_resolution(receipt_id, "released")
+            if won is None:
+                return self._unresolved_answer(receipt_id, "released_usd")
+            amount_mc = int(won["amount_mc"])
+            account_id = str(won["account_id"])
+            parent = str(won["parent_receipt_id"] or "")
+            if parent:
+                back = returning_one(
+                    self._conn,
+                    "UPDATE credit_holds SET amount_mc = amount_mc + ? "
+                    "WHERE receipt_id = ? AND status = 'held' RETURNING receipt_id",
+                    (amount_mc, parent),
+                )
+                if back is not None:
+                    self._log(account_id, "release", amount_mc, receipt_id=receipt_id,
+                              note=f"back to allowance {parent}"[:200])
+                    return {
+                        "released_usd": mc_to_usd(amount_mc),
+                        "returned_to": parent,
+                        "remaining_balance": self.balance(account_id),
+                    }
+            self._conn.execute(
+                "UPDATE credit_accounts SET held_mc = held_mc - ?, balance_mc = balance_mc + ? "
+                "WHERE account_id = ?",
+                (amount_mc, amount_mc, account_id),
             )
-            if back is not None:
-                self._log(account_id, "release", amount_mc, receipt_id=receipt_id,
-                          note=f"back to allowance {parent}"[:200])
-                self._conn.commit()
-                return {
-                    "released_usd": mc_to_usd(amount_mc),
-                    "returned_to": parent,
-                    "remaining_balance": self.balance(account_id),
-                }
-        self._conn.execute(
-            "UPDATE credit_accounts SET held_mc = held_mc - ?, balance_mc = balance_mc + ? "
-            "WHERE account_id = ?",
-            (amount_mc, amount_mc, account_id),
-        )
-        self._log(account_id, "release", amount_mc, receipt_id=receipt_id)
-        self._conn.commit()
-        return {"released_usd": mc_to_usd(amount_mc), "remaining_balance": self.balance(account_id)}
+            self._log(account_id, "release", amount_mc, receipt_id=receipt_id)
+            return {"released_usd": mc_to_usd(amount_mc), "remaining_balance": self.balance(account_id)}
 
     def transfer_hold(
         self, parent_receipt_id: str, receipt_id: str, amount_usd: float,
@@ -555,55 +589,37 @@ class CreditsLedger:
             return {"error": "hold amount must be positive"}
         if not receipt_id or not parent_receipt_id or receipt_id == parent_receipt_id:
             return {"error": "transfer_hold needs two distinct receipt ids"}
-        if self._conn.execute(
-            "SELECT 1 FROM credit_holds WHERE receipt_id = ?", (receipt_id,),
-        ).fetchone():
-            return {"error": f"receipt {receipt_id} already used"}
-        taken = returning_one(
-            self._conn,
-            "UPDATE credit_holds SET amount_mc = amount_mc - ? "
-            "WHERE receipt_id = ? AND status = 'held' AND amount_mc >= ? "
-            "RETURNING account_id, amount_mc",
-            (amount_mc, parent_receipt_id, amount_mc),
-            # The decrement is the claim on the allowance; committed with it, before the child
-            # row, so a rollback on the shared connection can never leave the child hold
-            # without it.
-            commit=True,
-        )
-        if taken is None:
-            return {"error": "the allowance is closed or cannot cover this price"}
-        account_id = str(taken["account_id"])
-        try:
+        # The decrement and the child row are one transaction. Committing the decrement first
+        # (as until 2026-10-22) meant a process that died before the child row existed took
+        # the money out of the allowance for a child nobody would ever release; a child row
+        # that fails to insert now simply rolls the decrement back with it.
+        with atomic(self._conn):
+            if self._conn.execute(
+                "SELECT 1 FROM credit_holds WHERE receipt_id = ?", (receipt_id,),
+            ).fetchone():
+                return {"error": f"receipt {receipt_id} already used"}
+            taken = returning_one(
+                self._conn,
+                "UPDATE credit_holds SET amount_mc = amount_mc - ? "
+                "WHERE receipt_id = ? AND status = 'held' AND amount_mc >= ? "
+                "RETURNING account_id, amount_mc",
+                (amount_mc, parent_receipt_id, amount_mc),
+            )
+            if taken is None:
+                return {"error": "the allowance is closed or cannot cover this price"}
+            account_id = str(taken["account_id"])
             self._conn.execute(
                 "INSERT INTO credit_holds (receipt_id, account_id, amount_mc, status, parent_receipt_id) "
                 "VALUES (?, ?, ?, 'held', ?)",
                 (receipt_id, account_id, amount_mc, parent_receipt_id),
             )
-        except Exception:
-            # Give the money back — to the allowance while it is open, otherwise to the balance
-            # (it is still counted in held_mc, and nothing else would ever release it).
-            back = returning_one(
-                self._conn,
-                "UPDATE credit_holds SET amount_mc = amount_mc + ? WHERE receipt_id = ? AND status = 'held' "
-                "RETURNING receipt_id",
-                (amount_mc, parent_receipt_id),
-            )
-            if back is None:
-                self._conn.execute(
-                    "UPDATE credit_accounts SET held_mc = held_mc - ?, balance_mc = balance_mc + ? "
-                    "WHERE account_id = ?",
-                    (amount_mc, amount_mc, account_id),
-                )
-            self._conn.commit()
-            raise
-        self._log(account_id, "hold", amount_mc, receipt_id=receipt_id,
-                  note=f"from allowance {parent_receipt_id}"[:200])
-        self._conn.commit()
-        return {
-            "held_usd": mc_to_usd(amount_mc),
-            "allowance_left_usd": mc_to_usd(int(taken["amount_mc"])),
-            "remaining_balance": self.balance(account_id),
-        }
+            self._log(account_id, "hold", amount_mc, receipt_id=receipt_id,
+                      note=f"from allowance {parent_receipt_id}"[:200])
+            return {
+                "held_usd": mc_to_usd(amount_mc),
+                "allowance_left_usd": mc_to_usd(int(taken["amount_mc"])),
+                "remaining_balance": self.balance(account_id),
+            }
 
     def hold_status(self, receipt_id: str) -> dict[str, Any] | None:
         """Who a hold belongs to and where it stands, or None when there is no such hold."""
@@ -645,39 +661,39 @@ class CreditsLedger:
         if amount_mc == 0:
             return {"debited_usd": 0.0, "remaining_balance": self.balance(account_id)}
         column = "collateral_mc" if as_collateral else "spent_mc"
-        cur = self._conn.execute(
-            f"UPDATE credit_accounts SET balance_mc = balance_mc - ?, {column} = {column} + ? "
-            "WHERE account_id = ? AND status = 'active' AND balance_mc >= ?",
-            (amount_mc, amount_mc, account_id, amount_mc),
-        )
-        if not _changed(cur):
-            return {"error": (
-                f"insufficient credit: {mc_to_usd(amount_mc)} needed, "
-                f"{self.balance(account_id)} available"
-            )}
-        self._log(
-            account_id, "collateral" if as_collateral else "debit", amount_mc,
-            receipt_id=receipt_id, note=note,
-        )
-        self._conn.commit()
-        return {"debited_usd": mc_to_usd(amount_mc), "remaining_balance": self.balance(account_id)}
+        with atomic(self._conn):
+            cur = self._conn.execute(
+                f"UPDATE credit_accounts SET balance_mc = balance_mc - ?, {column} = {column} + ? "
+                "WHERE account_id = ? AND status = 'active' AND balance_mc >= ?",
+                (amount_mc, amount_mc, account_id, amount_mc),
+            )
+            if not _changed(cur):
+                return {"error": (
+                    f"insufficient credit: {mc_to_usd(amount_mc)} needed, "
+                    f"{self.balance(account_id)} available"
+                )}
+            self._log(
+                account_id, "collateral" if as_collateral else "debit", amount_mc,
+                receipt_id=receipt_id, note=note,
+            )
+            return {"debited_usd": mc_to_usd(amount_mc), "remaining_balance": self.balance(account_id)}
 
     def return_collateral(self, account_id: str, amount_usd: float, note: str = "") -> dict[str, Any]:
         """Give posted collateral back — an unstake, or a stake the ledger then refused."""
         amount_mc = usd_to_mc(amount_usd)
         if amount_mc <= 0:
             return {"error": "amount must be positive"}
-        cur = self._conn.execute(
-            "UPDATE credit_accounts SET balance_mc = balance_mc + ?, "
-            "collateral_mc = CASE WHEN collateral_mc >= ? THEN collateral_mc - ? ELSE 0 END "
-            "WHERE account_id = ?",
-            (amount_mc, amount_mc, amount_mc, account_id),
-        )
-        if not _changed(cur):
-            return {"error": f"unknown account {account_id}"}
-        self._log(account_id, "collateral_return", amount_mc, note=note)
-        self._conn.commit()
-        return {"returned_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
+        with atomic(self._conn):
+            cur = self._conn.execute(
+                "UPDATE credit_accounts SET balance_mc = balance_mc + ?, "
+                "collateral_mc = CASE WHEN collateral_mc >= ? THEN collateral_mc - ? ELSE 0 END "
+                "WHERE account_id = ?",
+                (amount_mc, amount_mc, amount_mc, account_id),
+            )
+            if not _changed(cur):
+                return {"error": f"unknown account {account_id}"}
+            self._log(account_id, "collateral_return", amount_mc, note=note)
+            return {"returned_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
 
     def refund(self, account_id: str, amount_usd: float, note: str = "") -> dict[str, Any]:
         """Put money back (safety refusal, operator goodwill). Separate from `grant` so the
@@ -685,17 +701,17 @@ class CreditsLedger:
         amount_mc = usd_to_mc(amount_usd)
         if amount_mc <= 0:
             return {"error": "refund amount must be positive"}
-        cur = self._conn.execute(
-            "UPDATE credit_accounts SET balance_mc = balance_mc + ?, "
-            "spent_mc = CASE WHEN spent_mc >= ? THEN spent_mc - ? ELSE 0 END "
-            "WHERE account_id = ?",
-            (amount_mc, amount_mc, amount_mc, account_id),
-        )
-        if not _changed(cur):
-            return {"error": f"unknown account {account_id}"}
-        self._log(account_id, "refund", amount_mc, note=note)
-        self._conn.commit()
-        return {"refunded_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
+        with atomic(self._conn):
+            cur = self._conn.execute(
+                "UPDATE credit_accounts SET balance_mc = balance_mc + ?, "
+                "spent_mc = CASE WHEN spent_mc >= ? THEN spent_mc - ? ELSE 0 END "
+                "WHERE account_id = ?",
+                (amount_mc, amount_mc, amount_mc, account_id),
+            )
+            if not _changed(cur):
+                return {"error": f"unknown account {account_id}"}
+            self._log(account_id, "refund", amount_mc, note=note)
+            return {"refunded_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
 
     def pay_publisher(self, account_id: str, amount_usd: float, *,
                       receipt_id: str = "", note: str = "") -> dict[str, Any]:
@@ -715,15 +731,15 @@ class CreditsLedger:
         amount_mc = usd_to_mc(amount_usd)
         if amount_mc <= 0:
             return {"error": "payout amount must be positive"}
-        cur = self._conn.execute(
-            "UPDATE credit_accounts SET balance_mc = balance_mc + ? WHERE account_id = ?",
-            (amount_mc, account_id),
-        )
-        if not _changed(cur):
-            return {"error": f"unknown account {account_id}"}
-        self._log(account_id, "payout", amount_mc, receipt_id=receipt_id, note=note)
-        self._conn.commit()
-        return {"paid_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
+        with atomic(self._conn):
+            cur = self._conn.execute(
+                "UPDATE credit_accounts SET balance_mc = balance_mc + ? WHERE account_id = ?",
+                (amount_mc, account_id),
+            )
+            if not _changed(cur):
+                return {"error": f"unknown account {account_id}"}
+            self._log(account_id, "payout", amount_mc, receipt_id=receipt_id, note=note)
+            return {"paid_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
 
     def payouts_total_usd(self) -> float:
         row = self._conn.execute(
@@ -870,6 +886,10 @@ class CreditsLedger:
             "VALUES (?, ?, ?, ?, ?)",
             (account_id, kind, int(amount_mc), receipt_id or "", (note or "")[:200]),
         )
+
+
+class _UnknownAccount(Exception):
+    """A grant to an account that does not exist or is disabled; rolls its reference row back."""
 
 
 def _changed(cursor: Any) -> bool:

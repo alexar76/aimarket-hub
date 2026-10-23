@@ -338,3 +338,22 @@ class TestLedgerUnavailable:
         body = r.json()
         assert body["error"] == error
         assert "DATABASE_URL" not in r.text and "AIFACTORY_PROD" not in r.text
+
+    def test_an_unconfigured_ledger_is_a_state_not_a_traceback(self, unopenable, caplog):
+        """modelmarket.dev runs without ACEX ledgers: every public read logged a full traceback
+        (311 in a day before 2026-10-23). Now the reads still answer 503, and the reason is
+        logged once per ledger per process, as a warning."""
+        import logging
+
+        import aimarket_hub.acex_storage as storage
+
+        storage._warned.clear()
+        caplog.set_level(logging.WARNING)
+        for _ in range(3):
+            for path in ("/ai-market/v2/capital/listings", "/ai-market/v2/capital/audit",
+                         "/ai-market/v2/capital/holdings?holder=0xabc"):
+                assert unopenable.get(path).status_code == 503
+        assert unopenable.get("/ai-market/v2/capital/pricing").status_code == 200
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR or r.exc_info]
+        warned = [r.getMessage() for r in caplog.records if "ACEX" in r.getMessage() and r.levelno == logging.WARNING]
+        assert len(warned) == 2, warned          # one for the IPO ledger, one for the audit ledger

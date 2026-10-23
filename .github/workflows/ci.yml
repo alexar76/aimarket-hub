@@ -41,6 +41,17 @@ jobs:
         # monorepo siblings; here they come from PyPI at the versions published with this hub.
         run: pip install -e ".[dev,escrow]" "aimarket-provenance==2.3.0" "aimarket-agent==2.5.1"
 
+      - name: Ruff — the code that moves or authorizes money
+        # Bug-finding rules only ([tool.ruff] in pyproject.toml): undefined names, unused or
+        # shadowed bindings, bugbear. The crash and race tests for the same code run below.
+        run: |
+          pip install ruff==0.15.15
+          ruff check aimarket_hub/credits.py aimarket_hub/subcontract.py aimarket_hub/invoke_funding.py \
+            aimarket_hub/mandates.py aimarket_hub/channels.py aimarket_hub/channel_ledger aimarket_hub/settle.py \
+            aimarket_hub/x402.py aimarket_hub/supply_security.py aimarket_hub/topup.py \
+            aimarket_hub/verified_settlement.py aimarket_hub/settlement_service aimarket_hub/escrow_bridge \
+            aimarket_hub/db_backend.py aimarket_hub/idempotency.py aimarket_hub/hub_routes/accounts.py aimarket_hub/hub_routes/invoke.py
+
       - name: Pytest + coverage badge
         run: bash scripts/ci_coverage_badge.sh -- tests/ -q --tb=short -k "not cross_hub" --maxfail=5 --cov=aimarket_hub
 
@@ -55,3 +66,39 @@ jobs:
           assert got == expected, f"{got!r} != {expected!r}"
           print(f"aimarket-hub {got}")
           PY
+
+  money-postgres:
+    # The ledger, subcontracting and signup-grant races on PostgreSQL, where each request has
+    # its own session and row locks (not the shared SQLite connection's lock) keep money exact.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: hub_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      AIMARKET_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/hub_test
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install hub (dev + escrow + postgres)
+        run: pip install -e ".[dev,escrow,postgres]" "aimarket-provenance==2.3.0" "aimarket-agent==2.5.1"
+
+      - name: Money races and crash recovery on PostgreSQL
+        run: |
+          pytest -q --tb=short tests/test_money_races_postgres.py tests/test_invoke_idempotency.py tests/test_credits_rail.py \
+            tests/test_credits_invoke.py tests/test_credit_hold_recovery.py tests/test_subcontract.py \
+            tests/test_subcontract_chains.py tests/test_mandates.py tests/test_mandates_hardening.py
+
+      - name: Money path under load, then a ledger audit (PostgreSQL)
+        run: python scripts/load_money_path.py --invokes 600 --concurrency 32 --database-url "$AIMARKET_TEST_DATABASE_URL"

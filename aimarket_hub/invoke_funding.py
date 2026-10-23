@@ -38,6 +38,24 @@ logger = logging.getLogger(__name__)
 _X402_HEADERS = ("X-PAYMENT", "PAYMENT", "PAYMENT-SIGNATURE")
 
 
+def grant_may_travel_to(invoke_url: str) -> bool:
+    """Whether the job's grant may be sent to this provider URL.
+
+    The grant is a bearer credential for the root buyer's allowance: whoever reads it can
+    spend what is left of it until the job ends. It goes over TLS, or to a host the operator
+    runs (loopback, a named invoke gateway), never in clear text across the internet. A
+    plain-http provider elsewhere still gets the job token (linkage, no money) and pays for
+    its own subcontractors.
+    """
+    from urllib.parse import urlparse
+
+    from aimarket_hub.outbound_http import invoke_gateway_hosts, resolve_invoke_url
+
+    target = urlparse(resolve_invoke_url(invoke_url or ""))
+    host = (target.hostname or "").lower()
+    return target.scheme == "https" or host in {"127.0.0.1", "localhost", "::1"} or host in set(invoke_gateway_hosts())
+
+
 def _refusal(exc: MandateError | SubcontractError) -> JSONResponse:
     return JSONResponse(status_code=exc.status, content=exc.body())
 
@@ -458,6 +476,53 @@ def sweep_stale_credit_holds(*, credits_ledger: Any, store: mandates.MandateStor
     ).fetchall()
     for row in [r for r in orphaned if (age := _age_s(r["created_at"], now)) is not None and age > max_age_s][:limit]:
         store.settle(row["receipt_id"], int(row["amount_mc"] or 0) * 10 if row["credit_status"] == "captured" else 0)
+    return released
+
+
+def sweep_orphaned_child_holds(*, credits_ledger: Any, store: mandates.MandateStore,
+                               now: float | None = None, limit: int = 50, max_age_s: float = 3600.0) -> int:
+    """Release the holds of subcontracted calls that died before resolving them.
+
+    A child's price is a hold carved out of its job's allowance. Its own request captures or
+    releases it; a process that dies mid-call leaves it 'held'. The invoke sweep above skips
+    children (they belong to an allowance) and the allowance sweep releases only the
+    allowance, so until 2026-10-22 nothing ever released such a child: its price stayed frozen
+    in the buyer's account. An hour is far past any provider timeout. A child released while
+    its allowance is still held goes back into the allowance, which then settles as usual;
+    once the allowance has settled the money goes to the balance, and the root mandate's
+    counters get it back too (what :func:`finish` does for a child that fails late).
+    Verification holds stay with their verifier, as above.
+    """
+    if credits_ledger is None:
+        return 0
+    from aimarket_hub.channels import UNRESOLVED_SETTLEMENT_STATUSES
+    from aimarket_hub.credits import usd_to_mc
+
+    now = time.time() if now is None else now
+    conn = credits_ledger._conn
+    marks = ",".join("?" for _ in UNRESOLVED_SETTLEMENT_STATUSES)
+    rows = conn.execute(
+        "SELECT h.receipt_id, h.created_at, h.parent_receipt_id, "
+        "(SELECT g.mandate_digest FROM job_grants g WHERE g.allowance_receipt = h.parent_receipt_id) AS mandate_digest "
+        "FROM credit_holds h WHERE h.status = 'held' AND h.parent_receipt_id != '' "
+        "AND h.receipt_id NOT LIKE 'appeal_%' "
+        f"AND NOT EXISTS (SELECT 1 FROM verified_settlements v WHERE v.nonce = h.receipt_id "
+        f"AND v.status IN ({marks})) LIMIT ?",
+        (*UNRESOLVED_SETTLEMENT_STATUSES, max(limit * 20, 500)),
+    ).fetchall()
+    stale = [r for r in rows if (age := _age_s(r["created_at"], now)) is not None and age > max_age_s]
+    released = 0
+    for row in stale[:limit]:
+        result = credits_ledger.release_hold(row["receipt_id"])
+        if result.get("error") or result.get("already"):
+            continue
+        released += 1
+        if not result.get("returned_to") and row["mandate_digest"]:
+            try:
+                store.give_back(row["parent_receipt_id"], usd_to_mc(result.get("released_usd") or 0.0) * 10)
+            except Exception as exc:  # noqa: BLE001 - the money is back; this is the counter
+                logger.error("mandates: giving back orphaned child %s to %s raised: %s",
+                             row["receipt_id"], row["parent_receipt_id"], exc)
     return released
 
 

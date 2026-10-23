@@ -57,6 +57,8 @@
 | 在树中 | 每一跳都是 `funded_by: "own"` | 每一跳都是 `funded_by: "allowance"`（提供方选择自己付款的那一跳则为 `own`） |
 | 最大深度 | 枢纽的上限 3——每一跳自己付款，深度只限制树的规模 | 买家的 `max_depth`（1–3，默认 1） |
 
+grant 只通过 TLS 发送，或发往运营方自己的主机（loopback、`AIMARKET_INVOKE_HOST_GATEWAY`）：公网明文 `http` 地址上的提供方只收到作业令牌，自行支付其分包方。
+
 两种模式可以共存于一棵树中：持有 grant 的提供方仍可用自己的密钥支付某一次特定的购买，该节点显示 `funded_by: "own"`。
 
 ## 一个作业的完整流程
@@ -202,6 +204,9 @@ stateDiagram-v2
     Held --> Captured: 子调用已交付
     Held --> BackToAllowance: 子调用失败，分包额度仍开放
     Held --> BackToBalance: 子调用在根关闭之后失败
+    Held --> Orphaned: 进程在调用中途终止
+    Orphaned --> BackToAllowance: 一小时后由清理任务释放
+    Orphaned --> BackToBalance: 同上，若额度已经结算
     BackToAllowance --> [*]: 可用来支付一次重试
     BackToBalance --> [*]: 退款给买家<br/>并退回根授权书的计数器
     Captured --> [*]

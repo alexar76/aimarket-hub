@@ -8,13 +8,16 @@ import contextlib
 import json
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aimarket_hub import credits as hub_credits
 from aimarket_hub.channels import APPEAL_BOND_PREFIX
 from aimarket_hub.channels import hold_state
 from aimarket_hub.metrics import record_verify_appeal
 from aimarket_hub.signing import RECEIPT_SIG_VERSION
+
+if TYPE_CHECKING:  # annotations only; the classes live in the facade module
+    from aimarket_hub.verified_settlement import DeliveryVerdict, _Reading
 
 logger = logging.getLogger("aimarket_hub.verified_settlement")
 

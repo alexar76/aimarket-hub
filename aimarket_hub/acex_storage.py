@@ -53,9 +53,26 @@ def resolve_sqlite_path(raw: str, *, label: str) -> Path:
     return path
 
 
+class LedgerNotConfigured(RuntimeError):
+    """A production hub with no PostgreSQL URL for an ACEX ledger: the ledger is off by
+    configuration, which is a state, not a fault. Callers answer it (a 503 on a public read,
+    no accrual on an invoke) without a traceback; the reason is logged once per process."""
+
+
+_warned: set[str] = set()
+
+
+def warn_not_configured_once(exc: LedgerNotConfigured, ledger: str) -> None:
+    if ledger not in _warned:
+        _warned.add(ledger)
+        logger.warning("%s — ACEX %s reads answer 503 and invokes accrue nothing until it is set", exc, ledger)
+
+
 def require_postgres_url(url: str, *, ledger: str) -> None:
+    # Until 2026-10-23 this raised a bare RuntimeError that every caller logged with a full
+    # traceback: 311 of them in one day on modelmarket.dev, which runs without ACEX ledgers.
     if is_production() and not url.startswith(("postgresql://", "postgres://")):
-        raise RuntimeError(
+        raise LedgerNotConfigured(
             f"production ACEX {ledger} ledger requires "
             f"AIMARKET_ACEX_{ledger.upper()}_DATABASE_URL or DATABASE_URL=postgresql://...; "
             "SQLite fallback is disabled when AIFACTORY_PROD=1"

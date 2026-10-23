@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
+from aimarket_hub.acex_storage import LedgerNotConfigured
 from aimarket_hub.api_models import AuditClaimRequest, AuditSyncRequest, IpoRequest
 from aimarket_hub.database import HubDatabase
 
@@ -135,6 +136,8 @@ def register(
                     "listings": acex_ipo.list_listings(limit=min(limit, 500)),
                     "protocol_version": "v2",
                 }
+            except LedgerNotConfigured:
+                return _acex_ledger_unavailable("listings", listings=[])
             except Exception:
                 logger.exception("ACEX listings read failed")
                 return _acex_ledger_unavailable("listings", listings=[])
@@ -143,6 +146,8 @@ def register(
         async def capital_listing(listing_id: str):
             try:
                 res = acex_ipo.listing_state(listing_id)
+            except LedgerNotConfigured:
+                return _acex_ledger_unavailable("listings")
             except Exception:
                 logger.exception("ACEX listings read failed")
                 return _acex_ledger_unavailable("listings")
@@ -160,6 +165,8 @@ def register(
         async def capital_holdings(holder: str):
             try:
                 positions = acex_ipo.holder_positions(holder)
+            except LedgerNotConfigured:
+                return _acex_ledger_unavailable("listings", holder=holder, positions=[])
             except Exception:
                 logger.exception("ACEX listings read failed")
                 return _acex_ledger_unavailable("listings", holder=holder, positions=[])
@@ -175,6 +182,8 @@ def register(
             # public GET as an unhandled RuntimeError — a 500 on modelmarket.dev, 2026-09-30.
             try:
                 listings = acex_audit.list_audit_states(limit=min(limit, 500))
+            except LedgerNotConfigured:
+                return _acex_ledger_unavailable("audit", listings=[])
             except Exception:
                 logger.exception("ACEX audit ledger read failed")
                 return _acex_ledger_unavailable("audit", listings=[])
@@ -184,6 +193,8 @@ def register(
         async def capital_audit_detail(listing_id: str):
             try:
                 res = acex_audit.listing_audit_state(listing_id)
+            except LedgerNotConfigured:
+                return _acex_ledger_unavailable("audit")
             except Exception:
                 logger.exception("ACEX audit ledger read failed")
                 return _acex_ledger_unavailable("audit")

@@ -651,3 +651,47 @@ class TestFederatedChild:
         assert sub["spent_usd"] == 0
         assert PEER_INVOKE not in providers.seen
         assert buyer_left == pytest.approx(1.0 - 0.010)
+
+
+def test_the_grant_never_travels_in_clear_text_to_a_public_provider(monkeypatch, tmp_path):
+    """The grant spends the buyer's allowance. A provider registered at a plain-http public
+    URL gets the job token (linkage) but not the grant, so it pays its own subcontractors."""
+    with hub(monkeypatch, tmp_path) as (client, db):
+        providers = Providers(client.app_ref)
+        import aimarket_hub.outbound_http as outbound
+
+        monkeypatch.setattr(outbound, "safe_post", providers.post)
+        list_provider(db, "brief.make@v1", "brief", 0.010, url="http://brief.test/invoke")
+
+        async def brief(body, headers, p):
+            return 200, {"result": {"ok": True}}
+
+        providers.add("http://brief.test/invoke", brief)
+        account, api_key = _buyer(client, db)
+        r = client.post("/ai-market/v2/invoke", headers={"X-API-Key": api_key},
+                        json={**BRIEF, "subcontract": {"allowance_usd": 0.005}})
+        assert r.status_code == 200, r.text
+        seen = providers.seen["http://brief.test/invoke"][0]
+        assert subcontract.JOB_HEADER in seen
+        assert subcontract.GRANT_HEADER not in seen
+        # The unspent allowance came back in full.
+        assert r.json()["subcontracting"]["released_usd"] == pytest.approx(0.005)
+        assert balance(db, account) == pytest.approx(1.0 - 0.010)
+
+
+@pytest.mark.parametrize("url,ok", [
+    ("https://brief.test/invoke", True),
+    ("http://brief.test/invoke", False),
+    ("http://127.0.0.1:9000/invoke", True),
+    ("http://localhost:9000/invoke", True),
+    ("http://203.0.113.9/invoke", False),
+    ("ftp://brief.test/invoke", False),
+    ("", False),
+])
+def test_where_a_grant_may_be_sent(url, ok, monkeypatch):
+    from aimarket_hub import invoke_funding
+
+    monkeypatch.delenv("AIMARKET_INVOKE_HOST_GATEWAY", raising=False)
+    assert invoke_funding.grant_may_travel_to(url) is ok
+    monkeypatch.setenv("AIMARKET_INVOKE_HOST_GATEWAY", "kova-api")
+    assert invoke_funding.grant_may_travel_to("http://kova-api:8000/invoke") is True

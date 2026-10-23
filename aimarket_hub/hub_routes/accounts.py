@@ -161,19 +161,15 @@ def register(
                 status_code=403,
                 detail="grant_usd is operator-only; this request is not admin-authenticated",
             )
-        elif grant > 0:
+        if is_admin:
+            account = ledger.create_account(label=label, grant_usd=grant, grant_note=credits.OPERATOR_GRANT_NOTE)
+        else:
             # A farmed grant is bounded by a budget, not by telling people from
             # bots — which is not a thing this hub can do. When the budget is
             # spent the account is still opened, just at zero, so a real buyer
-            # can still top up and work.
-            allowed, reason = ledger.grant_within_budget(grant)
-            if not allowed:
-                grant, grant_note = 0.0, reason
-        account = ledger.create_account(
-            label=label,
-            grant_usd=grant,
-            grant_note=credits.OPERATOR_GRANT_NOTE if is_admin else credits.SIGNUP_GRANT_NOTE,
-        )
+            # can still top up and work. The check and the grant are one step.
+            account = ledger.open_signup_account(label=label)
+            grant_note = account.pop("grant_note", "")
         return {
             "success": True,
             **account,
@@ -580,7 +576,7 @@ def register(
         try:
             amount = float(body.get("amount_usd"))
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="amount_usd must be a number")
+            raise HTTPException(status_code=400, detail="amount_usd must be a number") from None
         tx_hash = str(body.get("tx_hash") or "").strip().lower()
         if tx_hash:
             # Money that arrived on chain but that no top-up quote can match (a plain transfer,
@@ -657,7 +653,7 @@ def register(
         try:
             amount = float(body.get("amount_usd"))
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="amount_usd must be a number")
+            raise HTTPException(status_code=400, detail="amount_usd must be a number") from None
         account = ledger.account(account_id)
         if account is None:
             raise HTTPException(status_code=404, detail=f"unknown account {account_id}")

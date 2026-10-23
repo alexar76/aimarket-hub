@@ -571,7 +571,7 @@ class _PgRow:
         return key in self._index if isinstance(key, str) else key in self._values
 
     def __repr__(self) -> str:
-        return f"_PgRow({dict(zip(self._names, self._values))!r})"
+        return f"_PgRow({dict(zip(self._names, self._values, strict=False))!r})"
 
 
 def _sqlite_like_row(cursor: Any) -> Any:

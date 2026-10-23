@@ -36,7 +36,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from aimarket_hub.db_backend import returning_one
+from aimarket_hub.db_backend import atomic, returning_one
 
 logger = logging.getLogger(__name__)
 
@@ -298,9 +298,28 @@ class JobStore:
             grant_secret=grant_secret if grant else "",
             grant=grant,
         )
-        self._ensure_node(job_id, ctx.node, parent=parent, depth=depth, product_id=product_id,
-                          capability_id=capability_id, funded_by=ctx.funded_by)
-        self._conn.commit()
+        # The read above only gives a precise refusal. The parent can finish between it and
+        # the insert (a concurrent request closing the call), so the child is written in the
+        # same transaction as a write that requires the parent still running: a no-op UPDATE
+        # of the parent's row, which on PostgreSQL also holds the row lock until the child is
+        # in, so finish_node waits for this join or this join sees the finish.
+        with atomic(self._conn):
+            running = returning_one(
+                self._conn,
+                "UPDATE job_nodes SET status = status WHERE receipt_id = ? AND job_id = ? "
+                "AND status = 'running' RETURNING receipt_id",
+                (parent, job_id),
+            )
+            if running is not None:
+                self._conn.execute(
+                    "INSERT INTO job_nodes (receipt_id, job_id, parent_receipt, depth, product_id, capability_id, "
+                    "funded_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (ctx.node, job_id, parent, depth, product_id, capability_id, ctx.funded_by),
+                )
+        if running is None:
+            self._give(f"children:{parent}")
+            self._give(f"nodes:{job_id}")
+            raise SubcontractError(403, "job_invalid", "the call this job token was issued to has finished")
         return ctx
 
     def _take(self, counter: str, limit: int) -> bool:

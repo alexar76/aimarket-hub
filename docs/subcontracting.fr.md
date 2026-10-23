@@ -69,6 +69,8 @@ Les traductions de ces termes suivent le [glossaire de localisation](https://git
 | Dans l'arbre | chaque saut, `funded_by: "own"` | chaque saut, `funded_by: "allowance"` (ou `own` pour un saut que le fournisseur a choisi de payer lui-même) |
 | Profondeur maximale | celle du hub, 3 — chaque saut paie pour lui-même, la profondeur ne borne que l'arbre | le `max_depth` de l'acheteur (1–3, 1 par défaut) |
 
+Le grant ne voyage que sur TLS ou vers les hôtes de l'opérateur (loopback, `AIMARKET_INVOKE_HOST_GATEWAY`) : un fournisseur à une URL publique en `http` clair ne reçoit que le jeton de tâche et paie lui-même ses sous-traitants.
+
 Les deux modes peuvent cohabiter dans un même arbre : un fournisseur qui détient un grant peut tout
 de même payer un achat donné avec sa propre clé, et ce nœud affiche `funded_by: "own"`.
 
@@ -250,6 +252,9 @@ stateDiagram-v2
     Held --> Captured: l'enfant a livré
     Held --> BackToAllowance: l'enfant a échoué, l'enveloppe est encore ouverte
     Held --> BackToBalance: l'enfant a échoué après la fermeture de la racine
+    Held --> Orphaned: le processus est mort en cours d'appel
+    Orphaned --> BackToAllowance: une heure plus tard le balayage la libère
+    Orphaned --> BackToBalance: idem, une fois l'enveloppe réglée
     BackToAllowance --> [*]: elle peut financer une nouvelle tentative
     BackToBalance --> [*]: remboursée à l'acheteur<br/>et rendue aux compteurs du mandat racine
     Captured --> [*]

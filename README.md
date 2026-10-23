@@ -562,6 +562,19 @@ notifications, URL inputs and extended cards fail with their standard A2A error 
 body is capped at 128 KiB, search results at 20, and version negotiation fails closed. Wire
 examples, the task-state table and the one x402 profile deviation: [docs/a2a.md](docs/a2a.md).
 
+### Retrying a paid call
+
+A timed-out `POST /ai-market/v2/invoke` paid with `X-API-Key` (or a ledger channel and its
+secret) may or may not have run. Send an `Idempotency-Key` (1–128 of `A-Z a-z 0-9 . _ : -`) and
+retry with the same key and body: the hub answers with the first result
+(`X-AIMarket-Idempotency: replayed`) instead of running and charging again. The same key with
+another body is `422 idempotency_key_reused`; while the first request still runs it is
+`409 idempotency_in_progress`, and one that never finished is `409 idempotency_outcome_unknown`
+after 15 minutes (the ledger at `GET /ai-market/v2/account` says whether it was charged). Answers
+are kept 24 hours under a hash of the credential; refusals that come before any money moves
+(401, 403, 404, 413, 415, 422, 429, 503) are not kept. x402 and escrow-channel payments are
+single-use already and answer `X-AIMarket-Idempotency: not-applicable`.
+
 ### x402 interoperability
 
 The hub speaks [x402](https://docs.x402.org/) — the machine-payment standard that became a

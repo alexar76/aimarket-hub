@@ -679,13 +679,18 @@ class MandateStore:
             cursor = row["parent_digest"]
         rows.reverse()
         chain = [self.get(r["digest"]) for r in rows]
+        # A document that cannot be read (deleted between the two reads) refuses the chain.
+        # Dropped instead, as until 2026-10-22, it shifted every later row onto the wrong
+        # mandate in the zip below, and the last row's revocation was never checked.
+        if any(m is None for m in chain):
+            raise MandateError(403, "mandate_invalid", "a mandate in this chain can no longer be read")
         mandates: list[Mandate] = [m for m in chain if m is not None]
-        for row, mandate in zip(rows, mandates):
+        for row, mandate in zip(rows, mandates, strict=True):
             if row["revoked_at"]:
                 raise MandateError(403, "mandate_invalid", f"mandate {row['digest']} was revoked")
             if not mandate.live_at(now):
                 raise MandateError(403, "mandate_invalid", f"mandate {row['digest']} is not valid now")
-        for parent, child in zip(mandates, mandates[1:]):
+        for parent, child in zip(mandates, mandates[1:], strict=False):
             check_link(child, parent)
         return mandates
 

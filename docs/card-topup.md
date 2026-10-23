@@ -218,13 +218,20 @@ spent, and the hub cannot recall spent credit.
    it must be the country of the legal entity that receives the payouts.
 2. A **restricted key** with one permission, *Checkout Sessions: Write* (Developers → API keys →
    Create restricted key → Custom permissions). It is all the hub needs: create a checkout and read
-   it back. Put it in `STRIPE_SECRET_KEY_FILE` (a docker secret), or `STRIPE_SECRET_KEY`.
+   it back. Put it in `AIMARKET_STRIPE_SECRET_KEY_FILE` (a docker secret), or
+   `AIMARKET_STRIPE_SECRET_KEY`.
 3. A webhook endpoint in the Dashboard: `https://<hub>/ai-market/v2/stripe/webhook`, events
    `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
    `checkout.session.expired`, `charge.dispute.created`, `charge.refunded`. Its signing secret goes
-   in `STRIPE_WEBHOOK_SECRET_FILE` (or `STRIPE_WEBHOOK_SECRET`).
+   in `AIMARKET_STRIPE_WEBHOOK_SECRET_FILE` (or `AIMARKET_STRIPE_WEBHOOK_SECRET`).
 4. `AIMARKET_CARD_TOPUP_ENABLED=1`; the credits rail must be on (`AIMARKET_CREDITS_ENABLED=1`).
 5. Optionally a tax mode (`AIMARKET_CARD_TOPUP_TAX`) after the Dashboard steps of that mode.
+
+The shared service environment filter forwards only the hub's `AIMARKET_STRIPE_*`
+credentials. It rejects unscoped `STRIPE_*` names to keep the Factory's merchant account
+out of the hub. Standalone deployments still accept those legacy names when no scoped
+name is configured. An explicitly empty scoped value or an unreadable scoped secret
+file keeps the card door closed; it never falls back to a different merchant.
 
 The well-known says whether the door is open and why not:
 `payment_rails.credits.topup_card` = `{"enabled", "provider": "stripe-checkout", "create",

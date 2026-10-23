@@ -34,7 +34,8 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from aimarket_hub import credits, invoke_funding, provider_request_auth, settle, verified_settlement, x402
+from aimarket_hub import credits, invoke_funding, provider_request_auth, settle, subcontract, verified_settlement, x402
+from aimarket_hub.acex_storage import LedgerNotConfigured
 from aimarket_hub.api_models import InvokeRequest
 from aimarket_hub.channels import (
     capture_hold,
@@ -291,7 +292,7 @@ def register(
             try:
                 plan = PipelineInput.model_validate(body.input)
             except ValidationError:
-                raise HTTPException(422, "pipeline.run input requires run_id, access_token and optional signed transactions")
+                raise HTTPException(422, "pipeline.run input requires run_id, access_token and optional signed transactions") from None
             result = await late.pipeline_provider.invoke(plan, _mcp_caller(request))
             status = 200 if result["status"] in ("completed", "failed") else 202
             return JSONResponse(status_code=status, content=result, headers={"Cache-Control": "no-store"})
@@ -1364,6 +1365,10 @@ async def _local_call_provider(d: SimpleNamespace, call: _Call, local: _Local):
         # this local branch: none of it is ever forwarded to a peer.
         if funding is not None:
             provider_headers.update(funding.provider_headers(hub_jobs))
+            if subcontract.GRANT_HEADER in provider_headers and not invoke_funding.grant_may_travel_to(invoke_url):
+                provider_headers.pop(subcontract.GRANT_HEADER)
+                d.logger.warning("subcontract: grant withheld from %s (plain http outside the operator's hosts)",
+                               urlparse(invoke_url).hostname)
         # Private Hub→provider token: only for operator-named local
         # gateway hosts (e.g. kova-api). Use the post-rewrite host so
         # localhost→gateway remaps still get the token. Never forward
@@ -1717,6 +1722,8 @@ def _local_accrue_acex(d: SimpleNamespace, call: _Call, local: _Local):
                     "to_pool_usd": accrued["to_pool_usd"],
                     "revenue_share_bps": accrued["revenue_share_bps"],
                 }
+        except LedgerNotConfigured:
+            pass                     # ACEX is off on this hub by configuration (logged once)
         except Exception as exc:
             logger.warning("ACEX accrue failed for %s: %s", body.product_id, exc)
 
@@ -1731,6 +1738,8 @@ def _local_accrue_acex(d: SimpleNamespace, call: _Call, local: _Local):
                     "audit_fee_bps": audit_acc["audit_fee_bps"],
                     "bridge": audit_acc.get("bridge"),
                 }
+        except LedgerNotConfigured:
+            pass
         except Exception as exc:
             logger.warning("ACEX audit accrue failed for %s: %s", body.product_id, exc)
     return acex_revenue, acex_audit_rewards

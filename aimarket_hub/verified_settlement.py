@@ -140,6 +140,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from aimarket_hub import credits as hub_credits
+from aimarket_hub.acex_storage import LedgerNotConfigured
 from aimarket_hub.channels import (
     APPEAL_BOND_PREFIX,
     UNRESOLVED_SETTLEMENT_STATUSES,
@@ -1347,11 +1348,15 @@ class VerifiedSettlementService(SettlementSchedulingMixin, SettlementVerifyingMi
         try:
             from aimarket_hub import acex_ipo
             acex_ipo.accrue_revenue(product_id, price)
+        except LedgerNotConfigured:
+            pass                     # ACEX is off on this hub by configuration (logged once)
         except Exception as exc:
             logger.warning("ACEX accrue failed for %s: %s", product_id, exc)
         try:
             from aimarket_hub import acex_audit
             acex_audit.accrue_audit_rewards(product_id, price)
+        except LedgerNotConfigured:
+            pass
         except Exception as exc:
             logger.warning("ACEX audit accrue failed for %s: %s", product_id, exc)
 

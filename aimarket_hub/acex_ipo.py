@@ -40,6 +40,8 @@ import uuid
 from typing import Any
 
 from aimarket_hub.acex_storage import (
+    LedgerNotConfigured,
+    warn_not_configured_once,
     require_postgres_url,
     resolve_database_url,
     resolve_sqlite_path,
@@ -632,7 +634,11 @@ def _get_ledger() -> AcexIpoLedger:
     if _ledger is None:
         with _ledger_lock:
             if _ledger is None:
-                _ledger = AcexIpoLedger()
+                try:
+                    _ledger = AcexIpoLedger()
+                except LedgerNotConfigured as exc:
+                    warn_not_configured_once(exc, "ipo")
+                    raise
     return _ledger
 
 

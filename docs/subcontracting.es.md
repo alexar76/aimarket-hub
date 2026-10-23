@@ -69,6 +69,8 @@ Las traducciones de estos términos siguen el [glosario de localización](https:
 | En el árbol | cada salto, `funded_by: "own"` | cada salto, `funded_by: "allowance"` (u `own` para un salto que el proveedor decidió pagar él mismo) |
 | Profundidad máxima | la del hub, 3: cada salto paga por sí mismo, la profundidad solo acota el árbol | el `max_depth` del comprador (1–3, 1 por defecto) |
 
+El grant viaja solo por TLS o a hosts del propio operador (loopback, `AIMARKET_INVOKE_HOST_GATEWAY`): un proveedor en una URL pública con `http` sin cifrar recibe solo el token del trabajo y paga a sus subcontratistas por su cuenta.
+
 Los dos modos pueden convivir en un mismo árbol: un proveedor que tiene un grant puede igualmente
 pagar una compra concreta con su propia clave, y ese nodo muestra `funded_by: "own"`.
 
@@ -247,6 +249,9 @@ stateDiagram-v2
     Held --> Captured: la hija entregó
     Held --> BackToAllowance: la hija falló, la asignación sigue abierta
     Held --> BackToBalance: la hija falló después de que la raíz cerrara
+    Held --> Orphaned: el proceso murió a mitad de la llamada
+    Orphaned --> BackToAllowance: una hora después la limpieza la libera
+    Orphaned --> BackToBalance: lo mismo, si la asignación ya se liquidó
     BackToAllowance --> [*]: con ella se puede pagar un reintento
     BackToBalance --> [*]: se reembolsa al comprador<br/>y se devuelve a los contadores del mandato raíz
     Captured --> [*]

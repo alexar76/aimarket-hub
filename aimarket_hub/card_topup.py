@@ -42,7 +42,8 @@ recorded on the row and logged as an error for the operator; credit already spen
 recalled by the hub, which is why the per-account daily limit exists.
 
 Off unless ``AIMARKET_CARD_TOPUP_ENABLED=1`` and both Stripe secrets are set
-(``STRIPE_SECRET_KEY[_FILE]``, ``STRIPE_WEBHOOK_SECRET[_FILE]``). Guide: docs/credits-topup.md.
+(``AIMARKET_STRIPE_SECRET_KEY[_FILE]``, ``AIMARKET_STRIPE_WEBHOOK_SECRET[_FILE]``).
+Standalone deployments also accept legacy ``STRIPE_*`` names. Guide: docs/card-topup.md.
 """
 from __future__ import annotations
 
@@ -105,12 +106,20 @@ def _secret(name: str) -> str:
     return (os.getenv(name) or "").strip()
 
 
+def _stripe_secret(name: str) -> str:
+    """Prefer service-scoped credentials; a configured but unreadable secret stays closed."""
+    scoped = f"AIMARKET_{name}"
+    if scoped in os.environ or f"{scoped}_FILE" in os.environ:
+        return _secret(scoped)
+    return _secret(name)
+
+
 def secret_key() -> str:
-    return _secret("STRIPE_SECRET_KEY")
+    return _stripe_secret("STRIPE_SECRET_KEY")
 
 
 def webhook_secret() -> str:
-    return _secret("STRIPE_WEBHOOK_SECRET")
+    return _stripe_secret("STRIPE_WEBHOOK_SECRET")
 
 
 def switched_on() -> bool:

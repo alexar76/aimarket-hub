@@ -970,6 +970,13 @@ def create_app(
                 )
                 if n:
                     logger.warning("subcontract: settled %d stale allowance(s)", n)
+                # After the allowances: a child released while its allowance still holds goes
+                # back into it, so the order decides only where the money passes, not where it ends.
+                orphans = invoke_funding.sweep_orphaned_child_holds(
+                    credits_ledger=hub_credits, store=hub_mandates, limit=50,
+                )
+                if orphans:
+                    logger.warning("subcontract: released %d orphaned child hold(s)", orphans)
             except Exception as exc:  # noqa: BLE001 - a bad cycle must never kill the loop
                 logger.warning("subcontract: allowance sweep failed: %s", exc)
 
@@ -1058,6 +1065,10 @@ def create_app(
     app.openapi = lambda: openapi_merge.merged(_own_openapi())  # type: ignore[method-assign]
     # CORS: default to empty allowlist (require AIMARKET_CORS_ORIGINS to enable cross-origin).
     # Previous default of ["*"] enabled drive-by CSRF on state-changing endpoints.
+    # Idempotency-Key on paid invokes, innermost so every other layer sees a replay as an answer.
+    from aimarket_hub.idempotency import InvokeIdempotency
+
+    app.add_middleware(InvokeIdempotency, conn=db._conn)
     _cors_env = os.environ.get("AIMARKET_CORS_ORIGINS", "").strip()
     _cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()] if _cors_env else []
     app.add_middleware(
@@ -1071,7 +1082,7 @@ def create_app(
             "X-Payment", "PAYMENT-SIGNATURE", "X-Payment-Nonce", "X-Payment-Secret",
             "X-AIMarket-Sandbox-Visitor", "X-Market-Signature", "X-AIMarket-Routing-Hub",
             "X-AIMarket-Routing-Fee", "X-AIMarket-Buyer", "X-AIMarket-Crawler", "X-Provider-Signature",
-            "A2A-Version", "A2A-Extensions",
+            "A2A-Version", "A2A-Extensions", "Idempotency-Key",
         ],
     )
 

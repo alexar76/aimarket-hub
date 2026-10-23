@@ -11,13 +11,16 @@ import json
 import logging
 import random
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aimarket_hub import credits as hub_credits
 from aimarket_hub.channels import APPEAL_BOND_PREFIX
 from aimarket_hub.channels import channel_secret_error
 from aimarket_hub.channels import hold_channel
 from aimarket_hub.channels import hold_state
+
+if TYPE_CHECKING:  # annotations only; the classes live in the facade module
+    from aimarket_hub.verified_settlement import _Reading
 
 logger = logging.getLogger("aimarket_hub.verified_settlement")
 
