@@ -73,6 +73,29 @@ def register(
     hub_ui_i18n_path = os.path.join(hub_root, "hub-ui-i18n.json")
     studio_ui_i18n_path = os.path.join(hub_root, "studio-ui-i18n.json")
 
+    ui_en_cache: dict[str, Any] = {"mtime": None, "script": ""}
+
+    def _ui_en_script() -> str:
+        """ui.en of hub-ui-i18n.json as the page's inline #hub-ui-en, read again when the file
+        changes. The page falls back to it when the dictionary fetch fails, so it shows English
+        rather than its i18n keys."""
+        try:
+            mtime = os.path.getmtime(hub_ui_i18n_path)
+        except OSError:
+            return ""
+        if ui_en_cache["mtime"] != mtime:
+            try:
+                with open(hub_ui_i18n_path, encoding="utf-8") as f:
+                    doc = json.load(f)
+                en = (doc.get("ui") or doc).get("en") or {}
+                body = json.dumps(en, ensure_ascii=False, separators=(",", ":"))
+                # Inside <script>, "</script" or "<!--" in a string would end or bend the element.
+                ui_en_cache["script"] = body.replace("<", "\\u003c")
+            except (OSError, ValueError, AttributeError):
+                ui_en_cache["script"] = ""
+            ui_en_cache["mtime"] = mtime
+        return ui_en_cache["script"]
+
     def _load_terminal_home() -> str:
         """The home page, wearing this operator's name.
 
@@ -85,6 +108,13 @@ def register(
             return docs_pages["en"]
         with open(terminal_home_path, encoding="utf-8") as f:
             html = f.read()
+        ui_en = _ui_en_script()
+        if ui_en:
+            html = html.replace(
+                '<script type="application/json" id="hub-ui-en">{}</script>',
+                f'<script type="application/json" id="hub-ui-en">{ui_en}</script>',
+                1,
+            )
         name = config.hub_name.strip() or "AIMarket Hub"
         if name != "modelmarket.dev":
             html = html.replace(

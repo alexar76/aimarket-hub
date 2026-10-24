@@ -167,3 +167,80 @@ def test_every_stylesheet_the_landing_links_is_served(monkeypatch, tmp_path):
             for font in fonts:
                 got = client.get(urljoin(urljoin("/", href), font))
                 assert got.status_code == 200, f"font {font} from {href} -> {got.status_code}"
+
+
+# ── A dictionary that does not arrive ───────────────────────────────────────────────────
+#
+# On 2026-10-24 modelmarket.dev showed its tab as "page_title" and the page as NAV_WIDGET,
+# SEARCH_BTN, badge_federation, S_CAPS: the dictionary fetch had failed (it had 4 s), the
+# loader then installed an empty dictionary, and t() fell back to the KEY, overwriting the
+# English the server had already rendered.
+
+def test_the_served_page_carries_english_inline(tmp_path, monkeypatch):
+    import json
+
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("AIMARKET_DB_PATH", str(tmp_path / "en.db"))
+    monkeypatch.setenv("AIMARKET_HUB_NAME", "modelmarket.dev")
+    monkeypatch.setenv("AIMARKET_HUB_URL", "https://modelmarket.dev")
+
+    from aimarket_hub.api import create_app
+
+    html = TestClient(create_app()).get("/").text
+    m = re.search(r'<script type="application/json" id="hub-ui-en">(.*?)</script>', html, re.S)
+    assert m, "no inline English dictionary"
+    inline = json.loads(m.group(1))
+    en = json.loads((PAGE.parent / "hub-ui-i18n.json").read_text())["ui"]["en"]
+    assert inline == en
+    assert inline["page_title"] and inline["nav_widget"] and inline["s_caps"]
+
+
+def _t_under_node(prelude: str, calls: list) -> list:
+    import json
+    import shutil
+    import subprocess
+
+    if shutil.which("node") is None:
+        pytest.skip("node not installed")
+    match = re.search(r"^  function t\(.*?^  }$", _page(), re.S | re.M)
+    assert match, "t() not found in terminal-home.html"
+    script = (prelude + "\n" + match.group(0) + "\nconsole.log(JSON.stringify(["
+              + ",".join(calls) + "]));")
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def test_no_dictionary_means_english_not_keys():
+    # No fetched dictionary, no inline pack (a page served as a bare file): the markup's own
+    # text is what shows.
+    got = _t_under_node(
+        "let UI = null; let hubLang = 'ru'; const UI_EN = {};",
+        ["t('nav_widget', null, 'Widget')", "t('page_title', null, 'Hub — AI Economy')"],
+    )
+    assert got == ["Widget", "Hub — AI Economy"]
+
+
+def test_inline_english_covers_strings_made_at_run_time():
+    got = _t_under_node(
+        "let UI = null; let hubLang = 'fr'; const UI_EN = {conn_connecting: 'Connecting…'};",
+        ["t('conn_connecting')"],
+    )
+    assert got == ["Connecting…"]
+
+
+def test_a_loaded_dictionary_still_wins():
+    got = _t_under_node(
+        "let UI = {ru: {nav_widget: 'Виджет'}, en: {nav_widget: 'Widget'}}; let hubLang = 'ru';"
+        " const UI_EN = {nav_widget: 'Widget'};",
+        ["t('nav_widget', null, 'Widget')"],
+    )
+    assert got == ["Виджет"]
+
+
+def test_a_failed_load_never_installs_an_empty_dictionary():
+    code = _code_only()
+    assert "UI = { en: {} }" not in code, (
+        "an empty dictionary makes every lookup miss, and the page turns into its keys"
+    )

@@ -8,6 +8,7 @@
 <meta property="og:title" content="modelmarket.dev — AI Economy Live" />
 <meta property="og:description" content="Bloomberg Terminal for AI agents. Real-time invocations, federation graph, micropayments." />
 <script type="application/json" id="hub-ssr-live">{}</script>
+<script type="application/json" id="hub-ui-en">{}</script>
 <meta property="og:url" content="https://modelmarket.dev/" />
 <meta property="og:image" content="https://modelmarket.dev/og-card.png" />
 <meta property="og:image:width" content="1280" />
@@ -1297,6 +1298,27 @@
   let sparkInv = [], sparkRev = [];
   let UI = null;
   let capI18n = null;
+  // English as served. The server inlines ui.en into #hub-ui-en, and the markup's own text is
+  // kept per element before anything is translated. A dictionary that does not arrive (slow
+  // network, a 404 under a prefix, a blocked fetch) then leaves the page in English: t() used
+  // to fall back to the KEY, and the tab read "page_title" with NAV_WIDGET, SEARCH_BTN and
+  // S_CAPS on the page (seen on modelmarket.dev, 2026-10-24).
+  const UI_EN = (() => {
+    try { return JSON.parse(document.getElementById('hub-ui-en').textContent) || {}; }
+    catch (_) { return {}; }
+  })();
+  const SERVED_TITLE = document.title;
+  const SERVED = new WeakMap();
+  function served(el) {
+    if (!SERVED.has(el)) {
+      SERVED.set(el, {
+        text: el.textContent,
+        placeholder: el.getAttribute('placeholder'),
+        title: el.getAttribute('title'),
+      });
+    }
+    return SERVED.get(el);
+  }
   let hubLang = (() => {
     const q = new URLSearchParams(location.search).get('lang');
     if (q && LANGS.includes(q)) return q;
@@ -1306,9 +1328,9 @@
     return LANGS.includes(nav) ? nav : 'en';
   })();
 
-  function t(key, vars) {
+  function t(key, vars, fallback) {
     const pack = (UI && UI[hubLang]) || (UI && UI.en) || {};
-    let s = pack[key] || (UI && UI.en && UI.en[key]) || key;
+    let s = pack[key] || (UI && UI.en && UI.en[key]) || UI_EN[key] || fallback || key;
     if (vars) {
       for (const [k, v] of Object.entries(vars)) {
         s = s.split('{' + k + '}').join(String(v));
@@ -1325,10 +1347,10 @@
     // the operator's name in <title>, and this line overwrote it. Substitute the brand and
     // keep the localised suffix.
     const brand = (window.__HUB_BRAND || 'modelmarket.dev');
-    document.title = t('page_title').replace('modelmarket.dev', brand);
+    document.title = t('page_title', null, SERVED_TITLE).replace('modelmarket.dev', brand);
     document.querySelectorAll('[data-i18n]').forEach(el => {
       const key = el.getAttribute('data-i18n');
-      if (key) el.textContent = t(key);
+      if (key) el.textContent = t(key, null, served(el).text);
     });
     // Conn label is owned by setConn / poll — never wipe Live back to Connecting.
     document.getElementById('conn-text').textContent = connOk
@@ -1336,27 +1358,31 @@
       : t('conn_connecting');
     document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
       const key = el.getAttribute('data-i18n-placeholder');
-      if (key) el.setAttribute('placeholder', t(key));
+      if (key) el.setAttribute('placeholder', t(key, null, served(el).placeholder));
     });
     document.querySelectorAll('[data-i18n-title]').forEach(el => {
       const key = el.getAttribute('data-i18n-title');
-      if (key) el.setAttribute('title', t(key));
+      if (key) el.setAttribute('title', t(key, null, served(el).title));
     });
     document.querySelectorAll('#lang-switch button').forEach(b => {
       b.classList.toggle('on', b.dataset.lang === hubLang);
     });
     const decoder = document.getElementById('decoder');
     const decoderToggle = decoder && decoder.querySelector('.decoder-toggle');
-    if (decoderToggle) decoderToggle.textContent = t(decoder.open ? 'decoder_close' : 'decoder_open');
+    if (decoderToggle) {
+      decoderToggle.textContent = decoder.open
+        ? t('decoder_close', null, 'Collapse decoder')
+        : t('decoder_open', null, served(decoderToggle).text);
+    }
     const traceClose = document.getElementById('trace-close');
-    if (traceClose) traceClose.setAttribute('aria-label', t('close').replace(/\s*✕$/, ''));
+    if (traceClose) traceClose.setAttribute('aria-label', t('close', null, 'Close').replace(/\s*✕$/, ''));
   }
 
-  async function fetchJson(url, ms) {
+  async function fetchJson(url, ms, cache) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), ms || 4000);
     try {
-      const r = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+      const r = await fetch(url, { cache: cache || 'no-store', signal: ctrl.signal });
       if (!r.ok) throw new Error(String(r.status));
       return await r.json();
     } finally {
@@ -1378,12 +1404,19 @@
   // dictionary's page_title carries the reference brand and would otherwise win.
   window.__HUB_BRAND = "modelmarket.dev";
 
+  // 75 KB, served with max-age=300: the HTTP cache may answer, and a slow link gets 10 s. A
+  // failure keeps English (see UI_EN) and is retried three times; it never blanks the page.
+  const UI_RETRY_MS = [5000, 20000, 60000];
+  let uiRetries = 0;
   async function loadUiI18n() {
     try {
-      const data = await fetchJson(UI_I18N_URL, 4000);
+      const data = await fetchJson(UI_I18N_URL, 10000, 'default');
       UI = data.ui || data;
-    } catch (_) { /* keep English markup until next retry */ }
-    if (!UI) UI = { en: {} };
+    } catch (_) {
+      if (uiRetries < UI_RETRY_MS.length) {
+        setTimeout(() => loadUiI18n().catch(() => {}), UI_RETRY_MS[uiRetries++]);
+      }
+    }
     applyStaticI18n();
     try { renderKnockRail(); } catch (_) { /* rail not in the DOM yet */ }
   }
@@ -1592,7 +1625,9 @@
   const decoderEl = document.getElementById('decoder');
   decoderEl.addEventListener('toggle', () => {
     const label = decoderEl.querySelector('.decoder-toggle');
-    label.textContent = t(decoderEl.open ? 'decoder_close' : 'decoder_open');
+    label.textContent = decoderEl.open
+      ? t('decoder_close', null, 'Collapse decoder')
+      : t('decoder_open', null, served(label).text);
   });
 
   /* Feed */

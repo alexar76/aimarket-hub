@@ -8,6 +8,7 @@ seeds the HTML from the same public summary `/ai-market/v2/stats/live` publishes
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -124,8 +125,12 @@ def test_get_slash_seeds_live_numbers(tmp_path, monkeypatch):
     assert 'id="s-hubs">2</div>' in html
     assert "atlas.situation.brief@v1" in html
     assert "7 invocations" in html
-    # The JS placeholder string must not be what a crawler is left with.
-    assert "Marketplace warming up" not in html
+    # The JS placeholder string must not be what a crawler is left with. The inline English
+    # dictionary (#hub-ui-en, the page's fallback when its fetch fails) carries every string as
+    # data, so only the markup outside it is read here.
+    markup = re.sub(r'<script type="application/json" id="hub-ui-en">.*?</script>', "", html,
+                    flags=re.S)
+    assert "Marketplace warming up" not in markup
     summary, events = snapshot(db, hub_url="https://modelmarket.dev")
     assert summary["total_invocations"] == 7
     assert summary["external_invocations"] == 7
