@@ -310,6 +310,22 @@ is paid by a row in a table, not by the chain. It is a prepaid convenience, and 
 is the only place `publisher_share_bps` applies — a catalogue sale settled on the
 market rail explicitly skips it, because the seller was already paid on-chain.
 
+For a fixed-price credit call, the hub reserves before the provider and captures only
+the reserved price on success; supported failures release it. This path has no
+output-metered overage. Release after a timeout cannot undo a provider's external
+action, and a new request can repeat that action. Ordinary abandoned credit holds
+are recovered only when older than 3600 seconds by a scheduler running at startup
+and every 120 seconds by default; this is not an exact client deadline and the
+scheduler can be disabled. A key/balance has no automatic expiry or hourly money
+cap. Signed mandates supply separate limits when `require_mandate=True` prevents
+raw-key bypass.
+
+Release and the trusted operator's `CreditsLedger.refund` adjust service credit;
+neither sends USDC. The latter is not a receipt-bound, replay-safe customer refund.
+No self-service cash withdrawal is provided: an actual return is a separate operator
+payment and reconciliation of its outstanding liability. See the full
+[credit lifecycle](credits-topup.md#credit-lifecycle) and [mandate limits](mandates.md).
+
 ---
 
 ## 3. Channels and escrow
@@ -317,7 +333,7 @@ market rail explicitly skips it, because the seller was already paid on-chain.
 Deposits, holds and `debitChannel`. By default a deposit is a plain transfer to the
 **operator's settlement wallet**, not into `AIMarketEscrow` — so channel balances
 are an operator liability and the contract's non-custodial guarantees describe a
-path the default does not take. Collection of an authorized debit is a human act.
+path the default does not take. A ledger settlement record is not an on-chain transfer.
 
 This rail is **not** how a seller is paid for a catalogue sale, and the market rail
 above does not depend on it. Two switches decide how custodial it actually is:
@@ -346,6 +362,13 @@ invoke and nothing presented it unless someone ran the CLI.
 `AIMARKET_ESCROW_COLLECT_INTERVAL_S` now runs a bounded pass inside the hub, still
 inside the bridge's own submit policy and spend caps — so the interval changes only
 how promptly the hub asks, never how much it can take.
+
+For the transfer-funded channel ledger, the default 24-hour TTL is enforced by a
+sweep, not by every debit/hold: an expired row still marked `open` can accept them
+until the sweep. An unresolved hold postpones close/expiry. Closing or expiring
+records the unspent amount as `refund_owed_usd`; `refund_executed_usd` is **0** in
+this ledger. It does not broadcast a refund. This is separate from the optional
+escrow bridge and does not establish a contract guarantee for credits.
 
 Remaining open items are tracked in [KI-11](https://github.com/alexar76/aicom/blob/main/docs/known-issues.md).
 

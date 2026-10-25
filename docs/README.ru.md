@@ -57,7 +57,7 @@ Cursor: `.cursor/mcp.json`. Claude Desktop: `claude_desktop_config.json`. Ски
 
 **Федеративный хаб для обнаружения AI-capability, маршрутизации микроплатежей и расширяемого через плагины invoke.**
 
-Эталонная реализация [AIMarket Protocol v2](https://github.com/alexar76/aimarket-protocol/blob/main/spec.md). Одна HTTP-поверхность, чтобы **искать** по федеративному каталогу, **открывать платёжные каналы**, **вызывать (invoke)** capability с хуками safety и compliance и **проводить расчёт (settle)** ончейн — без кастодиальных кошельков.
+Эталонная реализация [AIMarket Protocol v2](https://github.com/alexar76/aimarket-protocol/blob/main/spec.md). Одна HTTP-поверхность, чтобы **искать** по федеративному каталогу, **открывать платёжные каналы**, **вызывать (invoke)** capability с хуками safety и compliance и **проводить расчёт (settle)** ончейн — режим хранения средств зависит от выбранного платёжного пути.
 
 | | |
 |---|---|
@@ -334,7 +334,7 @@ aimarket invoke demo-hello/greet@v1 --input '{"name":"dev"}'
 | `POST` | `/ai-market/v2/supply/register` | Публикация community capability + `invoke_url` |
 | `POST` | `/ai-market/v2/invoke` | Вызов capability (хуки плагинов, safety gate) |
 | `POST` | `/ai-market/v2/channel/open` | Открыть предоплаченный платёжный канал |
-| `POST` | `/ai-market/v2/channel/close` | Закрыть канал — расчёт + возврат остатка |
+| `POST` | `/ai-market/v2/channel/close` | Закрыть канал — записать расчёт и долг по возврату |
 | `POST` | `/ai-market/v2/federation/announce` | Анонс peer-хаба |
 | `GET` | `/ai-market/v2/federation/peers` | Известные peers + оценки доверия + статус пина (`key_mismatch`) |
 | `GET` | `/ai-market/v2/federation/assay` | Последний sandbox-scorecard (`pass` по умолчанию допускает) |
@@ -405,7 +405,7 @@ sequenceDiagram
   end
 
   Client->>Hub: channel/close(channel_id)
-  Hub-->>Client: settlement + unused balance
+  Hub-->>Client: settlement + refund_owed_usd (no payout)
 ```
 
 | Плагин | Категория | Ценность в одной строке |
@@ -493,7 +493,16 @@ flowchart TB
 | Token | USDC | `AIMARKET_PAYMENT_TOKEN` — дефолт леджера; рекламируемый каталог — `AIMARKET_PAYMENT_TOKENS` (`USDT,USDC,ETH`) |
 | Recipient | env обязателен | `AIMARKET_PAYMENT_RECIPIENT` |
 
-Принцип протокола: **без кастоди** — каналы ончейн-конструкты; хаб держит только состояние леджера.
+**Хранение средств зависит от платёжного пути.** Seller-direct платит продавцу
+ончейн; prepaid credits и обычные каналы с переводом оператору — обязательства
+оператора, получившего деньги. Гарантии escrow-контракта относятся только к явно
+выбранному escrow-backed пути. Закрытие/expiry канала ledger записывает долг по
+возврату при `refund_executed_usd=0`, не выплачивая USDC. TTL по умолчанию 24 часа
+применяет sweep: до него строка `open` принимает debit/hold и после expiry,
+а незавершённый hold откладывает закрытие. Для credit holds, срока ключа,
+лимитов мандата и фактического возврата денег действуют отдельные правила:
+[жизненный цикл кредитов](credits-topup.ru.md#credit-lifecycle) ·
+[мандаты](mandates.ru.md) · [платёжные пути](money-rails.md).
 
 **Авторизация депозита.** В production (`AIFACTORY_PROD=1`, verify stub выключен) канал кредитуется
 только депозитом, который верифицирован ончейн, привязан к кошельку, который реально заплатил,
@@ -626,7 +635,8 @@ sequenceDiagram
   end
 
   User->>Hub: channel/close
-  Hub->>Chain: settle spent + refund remainder
+  Hub->>Hub: record settlement + refund_owed_usd
+  Note over User,Hub: refund_executed_usd = 0; payout is separate
 ```
 
 В любом случае таблицы, которые владелец копии не использует, просто никогда не читаются. У store

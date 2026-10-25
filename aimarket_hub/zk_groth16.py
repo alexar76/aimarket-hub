@@ -423,7 +423,25 @@ class Groth16Prover:
         `reason`, `simulated: False`, `backend: "groth16"`.
         """
         if isinstance(proof, dict):
-            proof = self._from_dict(proof)
+            try:
+                proof = self._from_dict(proof)
+            except (KeyError, IndexError, TypeError, ValueError):
+                return self._mark({"valid": False, "reason": "Malformed proof envelope"})
+
+        # snarkjs constrains public_signals, whereas the envelope signature and
+        # replay store use the named fields. They must describe the SAME values:
+        # otherwise a proof can be swapped beneath another signed envelope and
+        # its real nullifier never gets consumed. Canonical field encodings also
+        # prevent one scalar being claimed under multiple textual replay keys.
+        signals = proof.public_signals
+        if not isinstance(signals, list) or len(signals) != 3 or any(
+            not isinstance(value, str) or not value.isascii() or not value.isdecimal()
+            or len(value) > 78 or str(int(value)) != value or int(value) >= _BN254_R
+            for value in signals
+        ):
+            return self._mark({"valid": False, "reason": "Malformed proof public signals"})
+        if signals != [proof.input_commitment, proof.nullifier, proof.schema_hash]:
+            return self._mark({"valid": False, "reason": "Proof public signals do not match signed envelope"})
 
         # 1. Hub signature is mandatory — refuse proofs with no caller-supplied key.
         if not prover_public_key:

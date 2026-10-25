@@ -49,3 +49,14 @@ def test_hsts_only_behind_https(client):
     assert "Strict-Transport-Security" not in client.get("/start").headers
     r = client.get("/start", headers={"X-Forwarded-Proto": "https"})
     assert r.headers["Strict-Transport-Security"] == "max-age=31536000"
+
+
+@pytest.mark.parametrize("header", ["Authorization", "X-API-Key", "X-Payment-Channel-Secret", "X-Payment-Secret"])
+def test_custom_credentials_never_allow_a_cached_response(client, header):
+    response = client.get("/ai-market/v2/health", headers={header: "test-secret"})
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_account_and_key_issuing_responses_are_never_cached(client):
+    assert client.get("/ai-market/v2/account").headers["Cache-Control"] == "no-store"
+    assert client.post("/ai-market/v2/accounts", json={}).headers["Cache-Control"] == "no-store"

@@ -37,9 +37,10 @@ buyer's balance. ``AIMARKET_CARD_TOPUP_TAX_BEHAVIOR`` says whether it is added o
 A webhook can be lost. ``POST /card-topups/{id}/refresh`` asks Stripe for the session and runs
 the same check, so a paid top-up is never stranded on a delivery failure.
 
-What this door does NOT do: refunds, and taking back credit on a chargeback. A dispute is
-recorded on the row and logged as an error for the operator; credit already spent cannot be
-recalled by the hub, which is why the per-account daily limit exists.
+Verified refunds and disputes freeze new credit spending until a trusted operator reviews
+the account. Balances and existing reservations are preserved for reconciliation; this door
+does not issue refunds or take credit back. Credit already spent cannot be recalled by the
+hub, which is why the per-account daily limit also exists.
 
 Off unless ``AIMARKET_CARD_TOPUP_ENABLED=1`` and both Stripe secrets are set
 (``AIMARKET_STRIPE_SECRET_KEY[_FILE]``, ``AIMARKET_STRIPE_WEBHOOK_SECRET[_FILE]``).
@@ -58,7 +59,7 @@ import time
 from typing import Any, Callable
 
 from aimarket_hub import credits
-from aimarket_hub.db_backend import returning_one
+from aimarket_hub.db_backend import atomic, returning_one
 from aimarket_hub.paging import page_limit
 from aimarket_hub.topup import TopupError, cents
 
@@ -282,7 +283,7 @@ def verify_signature(payload: bytes, header: str, secret: str, *, now: float | N
 
 
 class CardTopupStore:
-    """``card_topups``: every state change is ONE conditional statement."""
+    """``card_topups``: conditional transitions, with reversal freezes in one transaction."""
 
     def __init__(self, conn: Any):
         self._conn = conn
@@ -354,13 +355,46 @@ class CardTopupStore:
     def expired(self, topup_id: str) -> None:
         self._write("UPDATE card_topups SET status = ? WHERE topup_id = ? AND status = ?", (EXPIRED, topup_id, OPEN))
 
-    def disputed(self, topup_id: str, detail: str) -> None:
-        self._write("UPDATE card_topups SET status = ?, detail = ? WHERE topup_id = ?",
-                    (DISPUTED, detail[:300], topup_id))
+    def _review_reversal(self, topup_id: str, status: str, detail: str) -> bool:
+        """Freeze new spending with the reversal, atomically and once per transition.
 
-    def refunded(self, topup_id: str, detail: str) -> None:
-        self._write("UPDATE card_topups SET status = ?, detail = ? WHERE topup_id = ?",
-                    (REFUNDED, detail[:300], topup_id))
+        Money stays in the ledger for reconciliation. Only the existing admin
+        account-status route can reactivate the account; duplicate webhooks must
+        not undo a later trusted reconciliation. In-flight holds can still settle
+        or release, but cannot fund NEW subcontracted calls.
+        """
+        allowed = (CREDITED,) if status == DISPUTED else (CREDITED, DISPUTED)
+        placeholders = ",".join("?" for _ in allowed)
+        with atomic(self._conn):
+            row = returning_one(
+                self._conn,
+                "UPDATE card_topups SET status = ?, detail = ? WHERE topup_id = ? "
+                f"AND status IN ({placeholders}) RETURNING account_id",
+                (status, detail[:300], topup_id, *allowed),
+            )
+            if row is None:
+                return False
+            account_id = str(row["account_id"])
+            account = returning_one(
+                self._conn,
+                "UPDATE credit_accounts SET status = 'disabled' WHERE account_id = ? RETURNING account_id",
+                (account_id,),
+            )
+            if account is None:
+                raise TopupError(503, "reversal_pending", "the funding account could not be frozen yet",
+                                 retryable=True)
+            self._conn.execute(
+                "INSERT INTO credit_ledger (account_id, kind, amount_mc, receipt_id, note) "
+                "VALUES (?, 'review_freeze', 0, ?, ?)",
+                (account_id, f"card:{topup_id}:{status}", f"Stripe {status}: operator review required"),
+            )
+            return True
+
+    def disputed(self, topup_id: str, detail: str) -> bool:
+        return self._review_reversal(topup_id, DISPUTED, detail)
+
+    def refunded(self, topup_id: str, detail: str) -> bool:
+        return self._review_reversal(topup_id, REFUNDED, detail)
 
     def committed_cents(self, account_id: str, *, hours: float = 24.0, now: float | None = None) -> int:
         """What this account has bought by card in the window, plus checkouts still open:
@@ -654,22 +688,22 @@ def handle_webhook(*, store: CardTopupStore, ledger: Any, payload: bytes, signat
     if kind == "charge.dispute.created":
         row = _reversal_row(store, ledger, str(obj.get("payment_intent") or ""))
         if row is not None:
-            store.disputed(row["topup_id"], f"dispute {str(obj.get('id'))[:40]}: {str(obj.get('reason'))[:60]}")
-            logger.error("card top-up: DISPUTE on %s (account %s, $%.2f) — review the account; credit already "
-                         "spent cannot be recalled", row["topup_id"], row["account_id"], int(row["amount_cents"]) / 100)
+            if store.disputed(row["topup_id"], f"dispute {str(obj.get('id'))[:40]}: {str(obj.get('reason'))[:60]}"):
+                logger.error("card top-up: DISPUTE on %s (account %s, $%.2f) — account frozen for review; credit already "
+                             "spent cannot be recalled", row["topup_id"], row["account_id"], int(row["amount_cents"]) / 100)
             return {"outcome": "disputed", "topup_id": row["topup_id"]}
         return {"outcome": "ignored"}
     if kind == "charge.refunded":
         # Refunds are made in Stripe, by the operator — or, under Managed Payments, by Stripe
         # itself within 60 days. The money left; the credit may already be spent, so the hub
-        # records it and says so instead of guessing what to take back.
+        # freezes new spending for operator review without inventing a confiscation.
         row = _reversal_row(store, ledger, str(obj.get("payment_intent") or ""))
         if row is not None and row["status"] in (CREDITED, DISPUTED):
             refunded = obj.get("amount_refunded")
-            store.refunded(row["topup_id"], f"refunded {refunded} cents in Stripe")
-            logger.error("card top-up: REFUND of %s cents on %s (account %s, credit $%.2f) — correct the balance by "
-                         "hand if the credit should go", refunded, row["topup_id"], row["account_id"],
-                         int(row["amount_cents"]) / 100)
+            if store.refunded(row["topup_id"], f"refunded {refunded} cents in Stripe"):
+                logger.error("card top-up: REFUND of %s cents on %s (account %s, credit $%.2f) — account frozen; correct the balance by "
+                             "hand if the credit should go", refunded, row["topup_id"], row["account_id"],
+                             int(row["amount_cents"]) / 100)
             return {"outcome": "refunded", "topup_id": row["topup_id"]}
         return {"outcome": "ignored"}
     return {"outcome": "ignored"}

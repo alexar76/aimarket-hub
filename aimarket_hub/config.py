@@ -159,7 +159,7 @@ class HubConfig:
 
     # Database (SQLite path or PostgreSQL URL)
     db_path: str = field(default_factory=lambda: os.getenv("AIMARKET_DB_PATH", "data/hub.db"))
-    database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
+    database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""), repr=False)
 
     # Federation
     crawl_interval_s: int = field(default_factory=lambda: int(os.getenv("AIMARKET_CRAWL_INTERVAL_S", "3600")))
@@ -195,7 +195,7 @@ class HubConfig:
     # own account there, charges the buyer the catalogued price plus its fee, and keeps the
     # spread. The peer consented by issuing the key — unlike AIMARKET_SELLS_FOR, which
     # declares this hub the seller of somebody else's work with no consent anywhere.
-    peer_api_keys: dict[str, str] = field(default_factory=lambda: _parse_peer_api_keys(
+    peer_api_keys: dict[str, str] = field(repr=False, default_factory=lambda: _parse_peer_api_keys(
         os.getenv("AIMARKET_PEER_API_KEYS", "")))
 
     # --- Open federation -------------------------------------------------
@@ -249,7 +249,7 @@ class HubConfig:
         or "1"
     ).strip().lower() not in ("0", "false", "no"))
     federation_judge_url: str = field(default_factory=federation_judge_url_from_env)
-    federation_judge_key: str = field(default_factory=federation_judge_key_from_env)
+    federation_judge_key: str = field(default_factory=federation_judge_key_from_env, repr=False)
     federation_judge_model: str = field(default_factory=federation_judge_model_from_env)
     # When auto-admit is on and a key exists, a judge error blocks admit (fail-closed).
     federation_judge_required: bool = field(default_factory=lambda: os.getenv("AIMARKET_FEDERATION_JUDGE_REQUIRED", "0").strip().lower() in ("1", "true", "yes"))

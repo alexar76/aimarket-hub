@@ -18,6 +18,7 @@
 - [谁持有什么](#谁持有什么)
 - [端到端流程](#端到端流程)
 - [资金去向](#资金去向)
+- [使用额度：预留、过期与退款](#credit-lifecycle)
 - [充值报价](#充值报价)
 - [支付报价](#支付报价)
 - [兑付一笔付款](#兑付一笔付款)
@@ -94,6 +95,19 @@ flowchart LR
 - 额度是运营者所欠的预付服务。枢纽会公布它：`stats.credits.topped_up_usd`（购买的额度），旁边是 `outstanding_credit_usd`（仍以余额、预留和保证金形式欠下的全部金额）和 `credits_earned_usd`（已花费）。
 - 购买的额度与赠送的额度分开记录（`topped_up_usd` 对 `granted_usd`）：注册赠送预算和偿付能力报告都不能把流入的资金误当作送出去的额度。
 - 额度一旦到账，其花费方式与运营者发放的额度完全相同：先预留，交付时再扣费（[subcontracting.zh.md](subcontracting.zh.md#资金如何流动) 展示了一个作业的完整账本）。
+
+<a id="credit-lifecycle"></a>
+
+## 使用额度：预留、过期与退款
+
+- **固定价格调用先预留。** 在调用提供方之前，hold 将价格从可用余额转入 `held`；成功后 capture 扣除同一金额。已处理的提供方错误路径会释放预留。余额不足时不会调用提供方。此路径不按输出量计费，也不在交付后追加超额费用；提供方响应中的 `charged_usd` 不能增加实际扣款。
+- **释放预留无法撤销外部工作。** 超时后预留可能已返还，但提供方已经执行了操作。新请求或普通重试可能重复该操作。REST 的 [`Idempotency-Key` 机制](../README.md#retrying-a-paid-call)可以返回受支持请求已保存的结果；额度账本本身不保证提供方恰好执行一次，MCP 重试也不会自动获得此保证。
+- **遗留预留在超过阈值后恢复，而非精确到期。** 普通遗留 credit hold 只有在年龄**大于 3600 秒**时才可释放。调度器在启动时运行，之后默认每 **120 秒**运行一次（`AIMARKET_SUBCONTRACT_SWEEP_S`）；值 ≤0 会禁用它。扫描数量限制及所有者状态可能推迟恢复。验证预留、申诉保证金和分包额度具有各自的生命周期。
+- **密钥和余额不会自动过期。** 停用账户会阻止其密钥；轮换使旧密钥失效但保留余额。单独的 API 密钥没有每小时金额上限。请求限流按 IP/会话身份计数，而非按密钥花费计数。若需 `perCall`、按 UTC 自然日计算的 `perDay`、`total` 以及不包含边界时刻的 `validUntil`，请使用[授权书](mandates.zh.md)，并开启 `require_mandate=True`，防止原始 API 密钥绕过限制。
+- **返还额度不等于支付 USDC。** Release 恢复服务额度。`CreditsLedger.refund` 是受信任运营者的账务调整，并非绑定 receipt 的客户退款；重复调用可能重复增加额度。两者都不会发送 USDC，也没有自助提现。未使用余额仍是运营者的负债（`outstanding_credit_usd`）；实际退款需要运营者另行付款并核对账目。
+- **通道是另一种支付路径。** 转账注资通道的默认 TTL 为 24 小时，但由扫描执行：在扫描之前，`open` 行即使超过 `expires_at` 仍可接受 debit/hold；待处理 hold 会推迟关闭/过期。关闭/过期只记录 `refund_owed_usd`，`refund_executed_usd=0`，不会发送资金。不能把 escrow 合约的保证套用于该账本或预付额度。参见[支付路径](money-rails.md)。
+
+这些场景通过真实应用/SQLite 代码和虚拟资金进行验证：[账本](../tests/test_micky_credit_lifecycle.py)、[MCP/invoke](../tests/test_micky_mcp_payment_flow.py)、[过期恢复](../tests/test_micky_expiry_recovery.py)。它们不验证真实链上的付款，也不验证正在运行的生产枢纽。
 
 ## 充值报价
 

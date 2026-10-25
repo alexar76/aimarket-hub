@@ -524,20 +524,10 @@ class SupplySecurity:
             raise ValueError("capability missing provider_pubkey")
         if not signature_b64:
             raise ValueError("provider response signature required (X-Provider-Signature)")
-        # Preferred: signature bound to the REQUEST (capability + product + input hash),
-        # so a provider can't replay a previously-signed response for a different
-        # request. Fall back to the legacy result-only canonical for providers that
-        # have not yet upgraded, with a deprecation warning — this closes replay for
-        # updated providers without breaking existing federation signatures.
+        # Only request-bound signatures authenticate this invocation. A legacy
+        # result-only signature can be replayed for another input or capability.
         bound = _bound_response_canonical(cap.capability_id, product_id, input_payload, result)
         if self.signer.verify(pubkey, signature_b64, bound):
-            return
-        if self.signer.verify(pubkey, signature_b64, _response_canonical(result)):
-            logger.warning(
-                "provider %s signed a legacy result-only response (replayable); "
-                "provider should upgrade to the request-bound signature",
-                cap.capability_id,
-            )
             return
         raise ValueError("invalid provider response signature")
 

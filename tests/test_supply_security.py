@@ -118,7 +118,10 @@ def hub_client(monkeypatch, keys_and_signer):
                 inp = (k.get("json") or {}).get("input", {})
                 name = inp.get("name", "world")
                 result = {"greeting": f"Hello, {name}!"}
-                canonical = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                from aimarket_hub.supply_security import _bound_response_canonical
+                request_body = k.get("json") or {}
+                canonical = _bound_response_canonical(request_body.get("capability_id", ""),
+                    request_body.get("product_id", ""), inp, result)
                 sig = provider_signer.sign_canonical(canonical)
                 return _ProviderResp({"success": True, "result": result}, {"X-Provider-Signature": sig})
             return _ProviderResp({"output": {}})
@@ -180,9 +183,16 @@ class TestSupplySecurityUnit:
         cap = validate_manifest({**MANIFEST, "provider_pubkey": pubkey, "publisher_id": "p1"})
         cap.provider_pubkey = pubkey
         result = {"greeting": "hi"}
-        canonical = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        from aimarket_hub.supply_security import _bound_response_canonical
+        canonical = _bound_response_canonical(cap.capability_id, "", None, result)
         sig = provider_signer.sign_canonical(canonical)
         sec.verify_provider_response(cap, result, sig)
+        legacy = provider_signer.sign_canonical(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+        with pytest.raises(ValueError, match="invalid provider"):
+            sec.verify_provider_response(cap, result, legacy)
+        for altered in ({"product_id": "other"}, {"input_payload": {"name": "other"}}):
+            with pytest.raises(ValueError, match="invalid provider"):
+                sec.verify_provider_response(cap, result, sig, **altered)
         with pytest.raises(ValueError, match="invalid provider"):
             sec.verify_provider_response(cap, result, base64.b64encode(b"\x00" * 64).decode())
 

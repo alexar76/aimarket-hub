@@ -14,6 +14,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from aimarket_hub.signing import Signer  # noqa: E402
+from aimarket_hub.supply_security import _bound_response_canonical  # noqa: E402
 
 
 _KEY = Path(__file__).resolve().parent / "provider_key"
@@ -45,7 +46,10 @@ class Handler(BaseHTTPRequestHandler):
         inp = body.get("input") or {}
         name = str(inp.get("name") or "world")
         result = {"greeting": f"Hello, {name}!", "from": "hello-capability"}
-        sig = _SIGNER.sign_canonical(_canonical_result(result))
+        sig = _SIGNER.sign_canonical(_bound_response_canonical(
+            str(body.get("capability_id") or "greet@v1"),
+            str(body.get("product_id") or "demo-hello"), inp, result,
+        ))
         payload = json.dumps({"success": True, "result": result}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

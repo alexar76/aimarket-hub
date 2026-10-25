@@ -17,6 +17,13 @@
 
 这三个涉及资金的部分都建立在**额度轨道（credits rail）**上——这是枢纽唯一自行计量资金的轨道。授权书或分包额度（allowance）从不与支付通道、x402 付款或沙箱访客 id 一同出现：枢纽拒绝这种组合（`400 mandate_rail_unsupported`，对 grant 则为 `403 job_invalid`），而不是去执行一个它看不见的限额。
 
+## 金额限制与过期边界
+
+- `perCall` 限制单次调用预留的金额，包括适用的路由费。`perDay` 按 **UTC 自然日**计算，而非滚动 24 小时；`total` 是可选的累计预算。这些是金额限制，不是请求次数限制；没有内置的每小时金额上限。
+- 授权书及其所有祖先仅在 `validFrom <= now < validUntil` 时可用。**恰好到达 `validUntil` 就已经过期。** 这会终止对新工作的授权，但不承诺取消已开始的工作或执行链上退款。
+- 关联出资账户所有者时，请设置 `require_mandate=True`。仅注册授权书并不能阻止持有原始 API 密钥的人在授权书之外消费。按 IP/会话计数的请求限流不是按密钥计算的金额预算。
+- 底层预付余额和 API 密钥没有自动 TTL。预留恢复和内部额度返还遵循[额度生命周期](credits-topup.zh.md#credit-lifecycle)，并非现金支付，也不具有 escrow 合约的保证。
+
 ## 所有者：为智能体出资而无需交出你的密钥
 
 ```python
@@ -55,7 +62,7 @@ reg = httpx.post(f"{HUB}/ai-market/v2/mandates", json=doc).json()
 | `402 mandate_unfunded` | 链的根签发方没有关联到本枢纽上的账户（第 1 步）。 |
 | `403 mandate_invalid` "register the parent mandate first" | 一份再授权，其父授权书未在此处注册。 |
 | `403 mandate_invalid` "… already registered a different mandate with id …" | 该签发方已经注册过另一份具有相同 `id` 的文档。每个签发方的一个凭证 id 只指代一份授权书；请用新的 `id` 签发新授权书（除非你传入 `mandate_id=`，`issue_mandate` 会生成一个 `urn:uuid:`）。 |
-| `403 mandate_invalid` "the mandate has already expired" | `validUntil` 已过去。`validFrom` 尚未到来的授权书可以注册，读取时为 `pending`。 |
+| `403 mandate_invalid` "the mandate has already expired" | `now >= validUntil`（不包含结束边界）。`validFrom` 尚未到来的授权书可以注册，读取时为 `pending`。 |
 | `403 mandate_invalid` "numbers in a mandate must be integers" | 任何位置出现小数，或整数超出 ±(2^53 − 1)。金额是整数 µUSD。 |
 | `400 mandate_malformed` | 请求体不是 JSON 对象、没有规范形式，或其规范形式超过 16 KiB。 |
 | `413 mandate_malformed` | 原始请求体超过 20 KiB。 |

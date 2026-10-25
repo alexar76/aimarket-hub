@@ -23,6 +23,13 @@ con un canal de pago, un pago x402 o un id de visitante del sandbox: el hub rech
 (`400 mandate_rail_unsupported`, o `403 job_invalid` para un grant) en lugar de hacer cumplir un
 límite que no puede ver.
 
+## Límites monetarios y frontera de vencimiento
+
+- `perCall` limita lo reservado para una llamada, incluida la comisión de enrutamiento cuando corresponda. `perDay` usa un **día natural UTC**, no una ventana móvil de 24 horas; `total` es el presupuesto total opcional. Son límites monetarios, no contadores de solicitudes, y no existe un límite monetario horario incorporado.
+- Un mandato y toda su cadena de ancestros solo son utilizables con `validFrom <= now < validUntil`. **Exactamente en `validUntil` ya ha caducado.** Se acaba la autorización de trabajo nuevo; no es una promesa de cancelar trabajo iniciado ni de reembolsar on-chain.
+- Active `require_mandate=True` al vincular al propietario de la cuenta financiadora. Registrar un mandato por sí solo no impide que alguien con la API key original gaste fuera de él. El rate limit por IP/sesión no es un presupuesto monetario por clave.
+- El saldo prepagado y la API key subyacentes no tienen TTL automático. La recuperación de reservas y la devolución interna de crédito siguen el [ciclo del crédito](credits-topup.es.md#credit-lifecycle); no son pagos de dinero ni garantías del contrato escrow.
+
 ## Propietario: financiar a un agente sin entregarle tu clave
 
 ```python
@@ -64,7 +71,7 @@ rechaza:
 | `402 mandate_unfunded` | El emisor raíz de la cadena no está vinculado a una cuenta en este hub (paso 1). |
 | `403 mandate_invalid` "register the parent mandate first" | Una redelegación cuyo padre no está registrado aquí. |
 | `403 mandate_invalid` "… already registered a different mandate with id …" | El emisor ya registró otro documento con el mismo `id`. Un id de credencial nombra un solo mandato por emisor; emite el nuevo con un `id` nuevo (`issue_mandate` genera un `urn:uuid:` salvo que pases `mandate_id=`). |
-| `403 mandate_invalid` "the mandate has already expired" | `validUntil` está en el pasado. Un mandato cuyo `validFrom` todavía no ha llegado se registra y se lee como `pending`. |
+| `403 mandate_invalid` "the mandate has already expired" | `now >= validUntil` (la frontera final es exclusiva). Un mandato cuyo `validFrom` todavía no ha llegado se registra y se lee como `pending`. |
 | `403 mandate_invalid` "numbers in a mandate must be integers" | Un número con decimales en cualquier parte, o un entero fuera de ±(2^53 − 1). Los importes son µUSD enteros. |
 | `400 mandate_malformed` | El cuerpo no es un objeto JSON, no tiene forma canónica o su forma canónica supera 16 KiB. |
 | `413 mandate_malformed` | El cuerpo en bruto supera 20 KiB. |

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,20 @@ def test_honest_proof_verifies_and_replay_is_caught(prover):
     )
     assert not second["valid"]
     assert "replay" in second["reason"].lower()
+
+
+def test_real_proof_cannot_replay_under_a_resigned_envelope_nullifier(prover):
+    proof = prover.prove_input(CAPABILITY, REAL_SCHEMA, SECRET_INPUT)
+    assert prover.verify_input_proof(
+        proof, CAPABILITY, prover.signer.public_key_b64, REAL_SCHEMA
+    )["valid"]
+    forged = replace(proof, nullifier="1" if proof.nullifier != "1" else "2")
+    forged.sign(prover.signer)
+    result = prover.verify_input_proof(
+        forged, CAPABILITY, prover.signer.public_key_b64, REAL_SCHEMA
+    )
+    assert not result["valid"] and "envelope" in result["reason"].lower()
+    assert prover._nullifiers.count() == 1
 
 
 def test_forged_schema_hash_cannot_mint_a_second_nullifier(prover):

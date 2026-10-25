@@ -48,6 +48,20 @@ def register(
         """
         response = await call_next(request)
         headers = response.headers
+        # Caches do not recognize custom payment/API headers as Authorization.
+        # Account data and one-time payment/key responses must never be reused
+        # for a different caller, even if an upstream cache ignores those headers.
+        credentials = (
+            "authorization", "x-api-key", "x-payment-channel-secret",
+            "x-payment-secret", "x-aimarket-mandate-proof", "x-aimarket-job-grant",
+        )
+        private_path = request.url.path.startswith((
+            "/ai-market/v2/account", "/ai-market/v2/topups/",
+            "/ai-market/v2/card-topups/", "/ai-market/v2/mandates/",
+        ))
+        if (request.method not in ("GET", "HEAD") or response.status_code == 402
+                or private_path or any(request.headers.get(name) for name in credentials)):
+            headers["Cache-Control"] = "no-store"
         headers.setdefault("X-Content-Type-Options", "nosniff")
         headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         if not request.url.path.startswith("/widget/"):

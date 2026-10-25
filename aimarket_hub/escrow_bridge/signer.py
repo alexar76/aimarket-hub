@@ -37,6 +37,18 @@ from aimarket_hub.escrow_bridge.errors import SubmissionRefused
 logger = logging.getLogger(__name__)
 
 _HASH_LEN = 66  # "0x" + 32 bytes
+_MAX_SIGNER_REPLY_BYTES = 64 * 1024
+
+
+class _NoSignerRedirect(urllib.request.HTTPRedirectHandler):
+    """A signer redirect must never receive its bearer token or transaction."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _open_signer(request: urllib.request.Request, *, timeout: float):
+    return urllib.request.build_opener(_NoSignerRedirect()).open(request, timeout=timeout)
 
 
 @dataclass(frozen=True)
@@ -133,17 +145,22 @@ class ExternalSigner(Signer):
         if self._token:
             request.add_header("Authorization", f"Bearer {self._token}")
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as resp:
-                payload = json.loads(resp.read().decode() or "{}")
+            with _open_signer(request, timeout=self._timeout) as resp:
+                raw = resp.read(_MAX_SIGNER_REPLY_BYTES + 1)
+                if len(raw) > _MAX_SIGNER_REPLY_BYTES:
+                    raise SubmissionRefused("external signer response exceeds the size limit")
+                payload = json.loads(raw.decode() or "{}")
         except urllib.error.HTTPError as exc:
             # Never echo the response body: a signer's error can quote the request, and
             # the request is about to be retried rather than debugged from a log.
             raise SubmissionRefused(f"external signer returned HTTP {exc.code}") from exc
+        except SubmissionRefused:
+            raise
         except Exception as exc:
             raise SubmissionRefused(
                 f"external signer unreachable ({type(exc).__name__})"
             ) from exc
-        tx_hash = (payload or {}).get("tx_hash") or (payload or {}).get("transactionHash")
+        tx_hash = (payload.get("tx_hash") or payload.get("transactionHash")) if isinstance(payload, dict) else None
         if not _looks_like_tx_hash(tx_hash):
             raise SubmissionRefused(
                 "external signer did not return a transaction hash — treating the "

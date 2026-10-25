@@ -21,6 +21,13 @@ meters money itself. A mandate or an allowance never rides along with a channel,
 payment or a sandbox visitor id: the hub refuses that combination (`400 mandate_rail_unsupported`,
 or `403 job_invalid` for a grant) rather than enforcing a limit it cannot see.
 
+## Money limits and the expiry boundary
+
+- `perCall` limits the amount reserved for one call, including a routing fee when applicable. `perDay` uses a **UTC calendar day**, not a rolling 24-hour window; `total` is the optional lifetime budget. These are monetary limits, not request counts, and there is no built-in per-hour monetary limit.
+- A mandate is usable only while `validFrom <= now < validUntil`, throughout its ancestor chain. At **exactly `validUntil` it is already expired**. This ends authorization for new work; it is not a deadline promising cancellation or an on-chain refund of work already started.
+- Set `require_mandate=True` when linking the funding account's owner. Registering a mandate alone does not stop someone holding the raw API key from spending outside it. IP/session request-rate limiting is not a per-key spending budget.
+- The underlying prepaid balance and API key have no automatic TTL. Reservation recovery and internal credit returns follow the [credit lifecycle](credits-topup.md#credit-lifecycle); they are not cash payouts or escrow-contract guarantees.
+
 ## Owner: fund an agent without handing it your key
 
 ```python
@@ -61,7 +68,7 @@ the field rules of the spec (§3.2) and the proof, and then refuses:
 | `402 mandate_unfunded` | The chain's root issuer is not linked to an account on this hub (step 1). |
 | `403 mandate_invalid` "register the parent mandate first" | A re-delegation whose parent is not registered here. |
 | `403 mandate_invalid` "… already registered a different mandate with id …" | The issuer already registered another document with the same `id`. One credential id names one mandate per issuer; issue the new one with a fresh `id` (`issue_mandate` makes a `urn:uuid:` unless you pass `mandate_id=`). |
-| `403 mandate_invalid` "the mandate has already expired" | `validUntil` is in the past. A mandate whose `validFrom` is still ahead registers, and reads as `pending`. |
+| `403 mandate_invalid` "the mandate has already expired" | `now >= validUntil` (the end is exclusive). A mandate whose `validFrom` is still ahead registers, and reads as `pending`. |
 | `403 mandate_invalid` "numbers in a mandate must be integers" | A float anywhere, or an integer outside ±(2^53 − 1). Amounts are integer µUSD. |
 | `400 mandate_malformed` | The body is not a JSON object, has no canonical form, or its canonical form exceeds 16 KiB. |
 | `413 mandate_malformed` | The raw body exceeds 20 KiB. |

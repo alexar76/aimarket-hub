@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import math
 import re
 from typing import Any
 
@@ -65,8 +66,9 @@ def validate_manifest(data: dict[str, Any]) -> Capability:
             "(or set AIMARKET_ALLOW_LOCAL_PUBLISH=1 for localhost dev)"
         )
 
-    price = float(data.get("price_per_call_usd", 0.01))
-    if price < 0 or price > 1000:
+    raw_price = data.get("price_per_call_usd", 0.01)
+    price = float(raw_price)
+    if isinstance(raw_price, bool) or not math.isfinite(price) or price < 0 or price > 1000:
         raise ValueError("price_per_call_usd must be between 0 and 1000")
 
     input_schema = data.get("input_schema") or {"type": "object", "properties": {}}

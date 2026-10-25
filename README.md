@@ -71,7 +71,7 @@ Cursor: `.cursor/mcp.json`. Claude Desktop: `claude_desktop_config.json`. Same s
 
 **Federation hub for AI capability discovery, micropayment routing, and plugin-extensible invoke.**
 
-Reference implementation of [AIMarket Protocol v2](https://github.com/alexar76/aimarket-protocol/blob/main/spec.md). One HTTP surface to **search** a federated catalog, **open payment channels**, **invoke** capabilities with safety and compliance hooks, and **settle** on-chain — without custodial wallets.
+Reference implementation of [AIMarket Protocol v2](https://github.com/alexar76/aimarket-protocol/blob/main/spec.md). One HTTP surface to **search** a federated catalog, **open payment channels**, **invoke** capabilities with safety and compliance hooks, and **settle** on-chain — with custody depending on the selected payment rail.
 
 | | |
 |---|---|
@@ -349,7 +349,7 @@ docker run -p 9083:9083 \
 | `POST` | `/ai-market/v2/invoke` | Invoke capability (plugin hooks, safety gate) |
 | `POST` | `/ai-market/v2/receipts/verify` | Verify a receipt against this Hub's pinned live Ed25519 + ML-DSA-65 identities |
 | `POST` | `/ai-market/v2/channel/open` | Open pre-funded payment channel |
-| `POST` | `/ai-market/v2/channel/close` | Close channel — settle + refund remainder |
+| `POST` | `/ai-market/v2/channel/close` | Close channel — record settlement and refund owed |
 | `POST` | `/ai-market/v2/federation/announce` | Peer hub announcement |
 | `GET` | `/ai-market/v2/federation/peers` | Known peers + trust scores + pin status (`key_mismatch`) |
 | `GET` | `/ai-market/v2/federation/assay` | Last sandbox scorecard (`pass` auto-admits by default) |
@@ -409,7 +409,7 @@ sequenceDiagram
   end
 
   Client->>Hub: channel/close(channel_id)
-  Hub-->>Client: settlement + unused balance
+  Hub-->>Client: settlement + refund_owed_usd (no payout)
 ```
 
 A call that arrives without the fields the capability needs is **incomplete input**, not a
@@ -650,7 +650,8 @@ sequenceDiagram
   end
 
   User->>Hub: channel/close
-  Hub->>Chain: settle spent + refund remainder
+  Hub->>Hub: record settlement + refund_owed_usd
+  Note over User,Hub: refund_executed_usd = 0; payout is separate
 ```
 
 | Field | Default | Notes |
@@ -659,7 +660,16 @@ sequenceDiagram
 | Token | USDC | `AIMARKET_PAYMENT_TOKEN` — the ledger's default; the advertised catalog is `AIMARKET_PAYMENT_TOKENS` (`USDT,USDC,ETH`) |
 | Recipient | env required | `AIMARKET_PAYMENT_RECIPIENT` |
 
-Protocol principle: **no custody** — channels are on-chain constructs; hub holds ledger state only.
+**Custody depends on the rail.** Seller-direct payments go to the seller on-chain;
+prepaid credits and default transfer-funded channels are liabilities of the operator
+who received the money. Escrow-contract guarantees apply only to the explicit
+escrow-backed path. Closing/expiring a ledger channel records a refund owed, with
+`refund_executed_usd=0`; it does not pay USDC. Its default 24-hour TTL is enforced
+by a sweep; an `open` row can still accept debit/hold after expiry until that sweep,
+and a pending hold delays closure. Credit holds, key expiry, mandate limits and
+actual cash refunds follow their own rules:
+[credit lifecycle](docs/credits-topup.md#credit-lifecycle) ·
+[mandates](docs/mandates.md) · [money rails](docs/money-rails.md).
 
 **Deposit authorization.** In production (`AIFACTORY_PROD=1`, verify stub off) a channel is credited
 only by a deposit that is verified on-chain, bound to the wallet that actually paid, single-use

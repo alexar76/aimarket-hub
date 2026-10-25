@@ -65,7 +65,7 @@ Cursor: `.cursor/mcp.json`. Claude Desktop: `claude_desktop_config.json`. Skill 
 
 **Hub de federación para descubrimiento de capabilities de IA, enrutado de micropagos e invocación extensible por plugins.**
 
-Implementación de referencia de [AIMarket Protocol v2](https://github.com/alexar76/aimarket-protocol/blob/main/spec.md). Una superficie HTTP para **buscar** un catálogo federado, **abrir canales de pago**, **invocar (invoke)** capabilities con ganchos de safety y compliance, y **liquidar (settle)** on-chain — sin carteras custodiales.
+Implementación de referencia de [AIMarket Protocol v2](https://github.com/alexar76/aimarket-protocol/blob/main/spec.md). Una superficie HTTP para **buscar** un catálogo federado, **abrir canales de pago**, **invocar (invoke)** capabilities con ganchos de safety y compliance, y **liquidar (settle)** on-chain — con custodia según la vía de pago elegida.
 
 | | |
 |---|---|
@@ -331,7 +331,7 @@ docker run -p 9083:9083 \
 | `POST` | `/ai-market/v2/supply/register` | Publicar capability de comunidad + `invoke_url` |
 | `POST` | `/ai-market/v2/invoke` | Invocar capability (hooks de plugins, safety gate) |
 | `POST` | `/ai-market/v2/channel/open` | Abrir canal de pago prefinanciado |
-| `POST` | `/ai-market/v2/channel/close` | Cerrar canal — liquidación + reembolso del resto |
+| `POST` | `/ai-market/v2/channel/close` | Cerrar canal — registrar liquidación y reembolso adeudado |
 | `POST` | `/ai-market/v2/federation/announce` | Anuncio de hub peer |
 | `GET` | `/ai-market/v2/federation/peers` | Peers conocidos + puntuaciones de confianza + estado del pin (`key_mismatch`) |
 | `GET` | `/ai-market/v2/federation/assay` | Último scorecard sandbox (`pass` admite por defecto) |
@@ -385,7 +385,7 @@ sequenceDiagram
   end
 
   Client->>Hub: channel/close(channel_id)
-  Hub-->>Client: settlement + unused balance
+  Hub-->>Client: settlement + refund_owed_usd (no payout)
 ```
 
 ---
@@ -491,7 +491,8 @@ sequenceDiagram
   end
 
   User->>Hub: channel/close
-  Hub->>Chain: settle spent + refund remainder
+  Hub->>Hub: record settlement + refund_owed_usd
+  Note over User,Hub: refund_executed_usd = 0; payout is separate
 ```
 
 | Campo | Default | Notas |
@@ -500,7 +501,17 @@ sequenceDiagram
 | Token | USDC | `AIMARKET_PAYMENT_TOKEN` — the ledger's default; the advertised catalog is `AIMARKET_PAYMENT_TOKENS` (`USDT,USDC,ETH`) |
 | Recipient | env obligatorio | `AIMARKET_PAYMENT_RECIPIENT` |
 
-Principio del protocolo: **sin custodia** — los canales son constructos on-chain; el hub solo guarda el estado del ledger.
+**La custodia depende de la vía.** Los pagos directos al vendedor van a su cartera
+on-chain; los créditos prepagados y los canales habituales por transferencia son
+obligaciones del operador que recibió el dinero. Las garantías del contrato escrow
+solo corresponden a la ruta explícitamente respaldada por escrow. Cerrar/vencer un
+canal ledger registra el reembolso adeudado, con `refund_executed_usd=0`, sin pagar
+USDC. Un barrido aplica su TTL predeterminado de 24 horas: hasta entonces una fila
+`open` sigue aceptando debit/hold tras vencer, y un hold pendiente aplaza el cierre.
+Las reservas de crédito, caducidad de claves, límites de mandatos y devoluciones
+reales tienen sus propias reglas:
+[ciclo del crédito](credits-topup.es.md#credit-lifecycle) ·
+[mandatos](mandates.es.md) · [vías de pago](money-rails.md).
 
 **Autorización del depósito.** En producción (`AIFACTORY_PROD=1`, verify stub off) un canal solo se acredita
 con un depósito verificado on-chain, ligado a la cartera que pagó de verdad, de un solo uso

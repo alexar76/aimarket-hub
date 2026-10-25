@@ -30,6 +30,7 @@ recorrido del dinero. Cada hub anuncia en su well-known si la puerta está abier
 - [Quién tiene qué](#quién-tiene-qué)
 - [De principio a fin](#de-principio-a-fin)
 - [Adónde va el dinero](#adónde-va-el-dinero)
+- [Gastar crédito: reservas, vencimiento y reembolsos](#credit-lifecycle)
 - [La oferta de recarga](#la-oferta-de-recarga)
 - [Pagar la oferta](#pagar-la-oferta)
 - [Canjear un pago](#canjear-un-pago)
@@ -114,6 +115,19 @@ flowchart LR
   operador: una reserva y, al entregar, el cobro
   ([subcontracting.es.md](subcontracting.es.md#cómo-se-mueve-el-dinero) muestra el libro contable
   completo de un trabajo).
+
+<a id="credit-lifecycle"></a>
+
+## Gastar crédito: reservas, vencimiento y reembolsos
+
+- **Las llamadas de precio fijo reservan primero.** Antes de ejecutar al proveedor, un hold mueve el precio del saldo disponible a `held`; el éxito captura ese mismo importe. Las rutas de error del proveedor contempladas liberan la reserva. Un saldo insuficiente se rechaza antes de llamar al proveedor. Esta ruta no factura por volumen de salida ni admite sobrecostes posteriores; el campo `charged_usd` del proveedor no aumenta la captura.
+- **Liberar no deshace el trabajo externo.** Un timeout puede devolver la reserva aunque el proveedor ya haya realizado una acción. Una solicitud nueva o un reintento normal puede repetirla. El mecanismo REST [`Idempotency-Key`](../README.md#retrying-a-paid-call) puede devolver el resultado guardado de una solicitud compatible; el ledger de créditos no garantiza una ejecución exactamente una vez en el proveedor, ni los reintentos MCP adquieren esa garantía automáticamente.
+- **Las reservas abandonadas se recuperan tras un umbral, no en una fecha exacta.** Un hold ordinario abandonado solo puede liberarse con una edad **mayor de 3600 segundos**. El planificador actúa al arrancar y, por defecto, cada **120 segundos** (`AIMARKET_SUBCONTRACT_SWEEP_S`); un valor ≤0 lo desactiva. Los límites del barrido y el estado del propietario pueden retrasarlo. Las reservas de verificación, las fianzas de apelación y las asignaciones de subcontratación tienen ciclos separados.
+- **Las claves y los saldos no caducan automáticamente.** Desactivar la cuenta bloquea su clave; la rotación sustituye la anterior y conserva el saldo. Una clave sin mandato no tiene límite monetario por hora. El rate limit cuenta por IP/sesión, no por gasto de la clave. Para `perCall`, `perDay` por día natural UTC, `total` y el límite exclusivo `validUntil`, use [mandatos](mandates.es.md); active `require_mandate=True` para impedir que la API key los eluda.
+- **Reembolsar crédito no paga USDC.** Liberar restaura crédito de servicio. `CreditsLedger.refund` es un ajuste del operador de confianza, no un reembolso de cliente ligado a un receipt: repetirlo puede abonar dos veces. Ninguna operación envía USDC y no hay retirada de autoservicio. El saldo sin gastar sigue siendo una obligación del operador (`outstanding_credit_usd`); devolver dinero requiere un pago separado y conciliación.
+- **Los canales son otra vía.** Un canal financiado por transferencia tiene un TTL predeterminado de 24 horas, aplicado por un barrido: una fila `open` aún acepta debit/hold después de `expires_at` hasta ese barrido; una reserva pendiente aplaza el cierre/vencimiento. El cierre/vencimiento registra `refund_owed_usd`, con `refund_executed_usd=0`, sin enviar dinero. Las garantías del contrato escrow no se aplican a este ledger ni a los créditos prepagados. Véase [vías de pago](money-rails.md).
+
+Estos casos usan código real de aplicación/SQLite y fondos ficticios en pruebas de [ledger](../tests/test_micky_credit_lifecycle.py), [MCP/invoke](../tests/test_micky_mcp_payment_flow.py) y [vencimiento](../tests/test_micky_expiry_recovery.py); no verifican pagos en una cadena real ni un hub de producción en funcionamiento.
 
 ## La oferta de recarga
 

@@ -1040,6 +1040,17 @@ class TestMeasuredLatencyIsNotUnknown:
 
         return Crawler(config=config, db=db)
 
+    @pytest.mark.parametrize("price", ["NaN", "Infinity", "-Infinity", "free", True, []])
+    def test_hostile_price_is_skipped_without_dropping_innocent_tools(self, db, config, price):
+        crawler = self._crawler(db, config)
+        tool = {"capability_id": "hostile@v1", "product_id": "price-peer",
+                "price_per_call_usd": price}
+        healthy = {**tool, "capability_id": "healthy@v1", "price_per_call_usd": 0.01}
+        assert crawler._index_manifest_capabilities(
+            {"tools": [tool, healthy]}, "https://peer.example.com", "Price peer",
+        ) == 1
+        assert db.get_capability("price-peer", "hostile@v1", "https://peer.example.com") is None
+
     def _index(self, db, config, **tool_fields):
         crawler = self._crawler(db, config)
         tool = {

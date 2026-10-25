@@ -121,8 +121,8 @@ class JobContext:
     product_id: str = ""
     parent: str = ""
     funded_by: str = "own"          # "own" | "allowance"
-    grant_secret: str = ""          # forwarded to this node's provider only when funded
-    grant: dict[str, Any] | None = None
+    grant_secret: str = field(default="", repr=False)  # money credential for this node's provider
+    grant: dict[str, Any] | None = field(default=None, repr=False)
     is_root: bool = False
     allowance_receipt: str = ""
     allowance_micro: int = 0

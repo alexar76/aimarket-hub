@@ -30,7 +30,7 @@ These checks used Stripe-hosted Checkout, test cards, real Stripe API responses 
 
 **An ordering bug found and fixed.** In the first dispute run, Stripe delivered the dispute before the payment completion; the old handler acknowledged it as `ignored`. The handler now finds the Checkout Session by PaymentIntent, verifies its association with a local top-up and reconciles it under the row's original tax mode before recording the reversal. Lookup failures return a retryable error. A real refund was then deliberately delivered before its payment event: it was recorded correctly, and Stripe's later redelivery of the payment event preserved `refunded`. The early-dispute order is also covered by a regression test; replay recovered the first dispute, and a new payment/dispute run passed. Session and amount checks still apply.
 
-**Balance policy confirmed:** refunds and disputes record the status and log the account; they do not automatically remove credit or freeze the account. Each tested account still held $5 after reversal. The operator must decide and apply any balance correction.
+**Historical balance policy (before 2026-10-25):** these sandbox runs recorded reversals without freezing the account. Current code preserves the balance but freezes new spending until operator review, as described below. The new freeze and upgrade behavior is covered by local SQLite and PostgreSQL regression tests; it has not been rerun against Stripe's official sandbox.
 
 **Not verified in the official sandbox:** partial refunds, asynchronous failed refunds, winning/losing a dispute, disputes under Managed Payments, or paid/refunded `stripe_tax` and `inclusive` checkouts. Sandbox success does not establish production eligibility for Managed Payments. The production mode remains the operator's decision.
 
@@ -180,11 +180,20 @@ checkout was bound to. A paid top-up is therefore never stranded by a lost deliv
 ## Refunds and disputes
 
 - **`charge.refunded`** — a refund made in Stripe (by the operator, or by Stripe itself under
-  Managed Payments) marks the top-up `refunded` and logs an error naming the account and amount.
-  The credit is **not** taken back automatically: it may already be spent, and taking a balance
-  negative is a decision, not a reflex. The operator corrects it by hand.
-- **`charge.dispute.created`** — a chargeback marks the top-up `disputed` and logs an error. The
-  account is not frozen automatically.
+  Managed Payments) marks the top-up `refunded` and disables new credit spending on its account.
+- **`charge.dispute.created`** — a chargeback marks the top-up `disputed` and applies the same
+  spending freeze. Both changes and a zero-amount `review_freeze` ledger entry commit together.
+
+The freeze covers API-key invokes, mandates and new subcontract spending from existing
+allowances. Balances are preserved; calls already reserved may complete or release their
+holds. A trusted operator reconciles the refund/dispute, then may reactivate the account
+through the existing admin-only `POST /accounts/{id}/status` route. Duplicate events do not
+undo that review. The hub does not issue a refund or confiscate credit automatically.
+
+Migration 062 applies this review freeze once to accounts with historical `refunded` or
+`disputed` top-ups. It preserves their balances and reservations. Normal restarts after
+operator reactivation do not freeze the account again; rolling back the migration does not
+reactivate an account automatically.
 
 ## Limits
 
@@ -205,7 +214,6 @@ spent, and the hub cannot recall spent credit.
 ## What this door does not do
 
 - **Take credit back** after a refund or a dispute — recorded and logged, corrected by hand.
-- **Freeze an account** on a dispute.
 - **Issue invoices.** Stripe sends its own receipt to the payer's e-mail if the Stripe account is
   set to (under Managed Payments, always). A legal invoice in the operator's name, and how the
   sale is booked, are the operator's business and depend on its jurisdiction.

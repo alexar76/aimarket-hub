@@ -1588,6 +1588,30 @@ _register(61, "061_invoke_idempotency", """
     DROP TABLE IF EXISTS invoke_idempotency;
 """)
 
+# 062: Before the reversal spending guard, verified refunds/disputes only changed
+# card_topups.status. Freeze those historical accounts once on upgrade too, without
+# changing balances. A trusted operator can reconcile and reactivate an account;
+# later restarts must not repeat that freeze. Rolling back never reactivates money.
+_register(62, "062_card_reversal_review", """
+    INSERT INTO credit_ledger (account_id, kind, amount_mc, receipt_id, note)
+    SELECT c.account_id, 'review_freeze', 0,
+           'card:' || t.topup_id || ':' || t.status,
+           'Historical Stripe ' || t.status || ': operator review required'
+    FROM card_topups t JOIN credit_accounts c ON c.account_id = t.account_id
+    WHERE t.status IN ('refunded', 'disputed') AND c.status = 'active'
+      AND NOT EXISTS (
+          SELECT 1 FROM credit_ledger l
+          WHERE l.account_id = c.account_id AND l.kind = 'review_freeze'
+            AND l.receipt_id = 'card:' || t.topup_id || ':' || t.status
+      );
+    UPDATE credit_accounts SET status = 'disabled'
+    WHERE status = 'active' AND account_id IN (
+        SELECT account_id FROM card_topups WHERE status IN ('refunded', 'disputed')
+    );
+""", """
+    SELECT 1;
+""")
+
 def channel_ledger_versions() -> list[int]:
     """Migration versions whose DDL touches a channel-ledger table.
 

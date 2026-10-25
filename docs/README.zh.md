@@ -62,7 +62,7 @@ Cursor: `.cursor/mcp.json`。Claude Desktop: `claude_desktop_config.json`。技�
 
 **用于 AI capability 发现、微支付路由与可插件扩展调用的联邦枢纽（Hub）。**
 
-[AIMarket Protocol v2](https://github.com/alexar76/aimarket-protocol/blob/main/spec.md) 的参考实现。单一 HTTP 面即可**搜索**联邦目录、**打开支付通道**、带 safety/compliance 钩子地**调用（invoke）** capability，并**链上结算（settle）** — 无托管钱包。
+[AIMarket Protocol v2](https://github.com/alexar76/aimarket-protocol/blob/main/spec.md) 的参考实现。单一 HTTP 面即可**搜索**联邦目录、**打开支付通道**、带 safety/compliance 钩子地**调用（invoke）** capability，并**链上结算（settle）** — 资金托管方式取决于所选支付路径。
 
 | | |
 |---|---|
@@ -328,7 +328,7 @@ docker run -p 9083:9083 \
 | `POST` | `/ai-market/v2/supply/register` | 发布社区 capability + `invoke_url` |
 | `POST` | `/ai-market/v2/invoke` | 调用 capability（插件钩子、safety gate） |
 | `POST` | `/ai-market/v2/channel/open` | 打开预充值支付通道 |
-| `POST` | `/ai-market/v2/channel/close` | 关闭通道 — 结算 + 退还余额 |
+| `POST` | `/ai-market/v2/channel/close` | 关闭通道 — 记录结算与应退款项 |
 | `POST` | `/ai-market/v2/federation/announce` | 对等 Hub 公告 |
 | `GET` | `/ai-market/v2/federation/peers` | 已知 peers + 信任分 + pin 状态（`key_mismatch`） |
 | `GET` | `/ai-market/v2/federation/assay` | 最近一次沙箱记分卡（默认 `pass` 即准入） |
@@ -380,7 +380,7 @@ sequenceDiagram
   end
 
   Client->>Hub: channel/close(channel_id)
-  Hub-->>Client: settlement + unused balance
+  Hub-->>Client: settlement + refund_owed_usd (no payout)
 ```
 
 ---
@@ -478,7 +478,8 @@ sequenceDiagram
   end
 
   User->>Hub: channel/close
-  Hub->>Chain: settle spent + refund remainder
+  Hub->>Hub: record settlement + refund_owed_usd
+  Note over User,Hub: refund_executed_usd = 0; payout is separate
 ```
 
 | 字段 | 默认 | 说明 |
@@ -487,7 +488,8 @@ sequenceDiagram
 | Token | USDC | `AIMARKET_PAYMENT_TOKEN` — 账本默认；公布目录为 `AIMARKET_PAYMENT_TOKENS` (`USDT,USDC,ETH`) |
 | Recipient | 环境变量必填 | `AIMARKET_PAYMENT_RECIPIENT` |
 
-协议原则：**无托管** — 通道是链上构造；Hub 只保存账本状态。
+**资金托管取决于支付路径。** 直付卖家的付款在链上到达卖家；预付额度和默认转账注资通道则是收款运营者的负债。escrow 合约的保证只适用于明确选择的 escrow 注资路径。关闭/过期 ledger 通道只记录应退款项，`refund_executed_usd=0`，不会支付 USDC。默认 24 小时 TTL 由扫描执行：扫描之前，`open` 行即使已经过期仍接受 debit/hold；待处理 hold 会推迟关闭。额度预留、密钥有效期、授权书限额与实际退款各有规则：
+[额度生命周期](credits-topup.zh.md#credit-lifecycle) · [授权书](mandates.zh.md) · [支付路径](money-rails.md)。
 
 **存款授权。** 生产环境（`AIFACTORY_PROD=1`，verify stub 关闭）下，通道仅在以下条件成立时入账：存款已链上验证、绑定到实际付款钱包、一次性使用（`consumed_deposits`），并由付款钱包对 `payer_proof_challenge(...)` 的 EIP-191 签名证明 — 存款交易哈希是公开的，没有该证明时通道密钥会落到最先引用它的人手里。`AIMARKET_CHANNEL_ALLOW_UNPROVEN_PAYER=1` 可关闭证明（仅过渡期）并大声记日志。
 

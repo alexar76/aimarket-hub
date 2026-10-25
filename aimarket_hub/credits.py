@@ -602,6 +602,8 @@ class CreditsLedger:
                 self._conn,
                 "UPDATE credit_holds SET amount_mc = amount_mc - ? "
                 "WHERE receipt_id = ? AND status = 'held' AND amount_mc >= ? "
+                "AND EXISTS (SELECT 1 FROM credit_accounts a "
+                "WHERE a.account_id = credit_holds.account_id AND a.status = 'active') "
                 "RETURNING account_id, amount_mc",
                 (amount_mc, parent_receipt_id, amount_mc),
             )

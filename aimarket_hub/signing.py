@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import base64
 import binascii
-import contextlib
 import logging
 import os
 import sys
 from pathlib import Path
 from typing import Any
+
+from ._signing_key_storage import (
+    compromised_public_key, load_or_create_ed25519_keypair,
+    load_or_create_mldsa_keypair,
+)
 
 # Post-quantum verification is a core dependency since 3.15.18 (`dilithium-py`). It used to be
 # an extra, and a hub installed without it failed closed on every hybrid signature — which is
@@ -289,83 +293,18 @@ def unsigned_receipt_fields(receipt: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _ensure_keypair(path: Path) -> tuple[bytes, bytes]:
-    """Load or create an Ed25519 keypair.
-
-    Raises:
-        ImportError: cryptography not installed.
-        RuntimeError: existing key file corrupted (fail-fast, no silent regen).
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Verify cryptography is available BEFORE touching any files
-    try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    except ImportError as exc:
-        raise ImportError(
-            "cryptography>=44 is required for Ed25519 signing. "
-            "Install it: pip install cryptography>=44"
-        ) from exc
-
-    if path.exists():
-        raw = path.read_bytes()
-        if len(raw) == 64:
-            return raw[:32], raw[32:]
-        # Corrupted key file — fail fast, don't silently regenerate
-        raise RuntimeError(
-            f"Ed25519 key file {path} exists but is corrupted "
-            f"(size={len(raw)}, expected 64 bytes). "
-            "Remove it manually if you want to regenerate, "
-            "or restore from backup."
+    existed = path.exists() or path.is_symlink()
+    pair = load_or_create_ed25519_keypair(path)
+    if not existed:
+        logger.warning(
+            "NEW Ed25519 signing key generated at %s. Back it up now. "
+            "An existing peer identity requires explicit trust reconciliation.", path,
         )
-
-    # No key file — generate a new one
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-    priv = Ed25519PrivateKey.generate()
-    pub = priv.public_key()
-    seed = priv.private_bytes_raw()
-    pub_bytes = pub.public_bytes_raw()
-    path.write_bytes(seed + pub_bytes)
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
-
-    # Always loud, not only in production: a stranger's hub is not AIFACTORY_PROD, and a hub that
-    # quietly makes a new identity is refused by every peer that pinned the old one — it drops
-    # out of the federation and nothing tells its operator why.
-    logger.warning(
-        "%sNEW Ed25519 signing key generated at %s. It signs every manifest and receipt of this "
-        "hub; back it up now. If this hub was already known to peers, they pinned the previous "
-        "key and will refuse this one: restore the old key file instead of running on a new one.",
-        "PRODUCTION: " if os.environ.get("AIFACTORY_PROD", "").strip() == "1" else "",
-        path,
-    )
-
-    return seed, pub_bytes
+    return pair
 
 
 def _load_or_make_pq(path: Path) -> tuple[bytes, bytes]:
-    """Load or create this hub's ML-DSA-65 keypair, beside the classical one.
-
-    The file is `{key_path}_mldsa`, so a hub whose signing key lives on a persistent volume keeps
-    its post-quantum identity across restarts — and one whose key path is NOT on a volume gets a
-    fresh PQ identity on every recreate, which peers that pinned the old one will see as a key
-    change. Check the volume before enabling `AIMARKET_PQC`.
-    """
-    if path.exists():
-        pk_hex, sk_hex = path.read_text().split("\n")[:2]
-        return bytes.fromhex(pk_hex), bytes.fromhex(sk_hex)
-    pk, sk = _MLDSA.keygen()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"{pk.hex()}\n{sk.hex()}\n")
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
-    logger.warning(
-        "NEW post-quantum (ML-DSA-65) signing key generated at %s. Back it up together with the "
-        "Ed25519 key beside it. Peers pin it, and the ratchet then refuses this hub if it ever "
-        "comes back without it: a hub that was already federating should restore the old file.",
-        path,
-    )
-    return pk, sk
+    return load_or_create_mldsa_keypair(path, _MLDSA)
 
 
 class Signer:
@@ -504,7 +443,7 @@ class Signer:
             if pk_bytes is None or sig_bytes is None:
                 return False
             # Strict verification: a small-order key or R makes a signature valid for any message.
-            if has_small_order(pk_bytes) or has_small_order(sig_bytes[:32]):
+            if compromised_public_key(pk_bytes) or has_small_order(pk_bytes) or has_small_order(sig_bytes[:32]):
                 return False
             Ed25519PublicKey.from_public_bytes(pk_bytes).verify(sig_bytes, canonical.encode())
             return True

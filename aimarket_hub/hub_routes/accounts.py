@@ -5,6 +5,7 @@ collateral.
 from __future__ import annotations
 
 import contextlib
+import re
 import time
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -28,11 +29,10 @@ from aimarket_hub.config import HubConfig
 from aimarket_hub.credits import CreditsLedger
 from aimarket_hub.database import HubDatabase
 from aimarket_hub.deposit_watch import DepositStore
+from aimarket_hub.paging import page_limit
 from aimarket_hub.settle import PaymentStore as SettlePaymentStore
 from aimarket_hub.signing import Signer
 from aimarket_hub.topup import TopupStore
-from aimarket_hub.paging import page_limit
-
 
 # Unclaimed deposits one admin request may read.
 DEPOSITS_PAGE_MAX = 500
@@ -56,8 +56,8 @@ def register(
     """Attach /health and the account, top-up and deposit routes to ``router``."""
     # api.py's module-level helpers; imported here because api.py imports this module.
     from aimarket_hub.api import (
-        OPERATOR_CREDIT_STACK,
         _HUB_STARTED_AT,
+        OPERATOR_CREDIT_STACK,
         _client_address,
     )
 
@@ -578,12 +578,25 @@ def register(
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="amount_usd must be a number") from None
         tx_hash = str(body.get("tx_hash") or "").strip().lower()
+        # Older AEGIS callers sent a chain transfer as an operator grant named
+        # usdc:<chain>:<tx>. Recognize that wire shape too: merely adding tx_hash
+        # in the new caller would let old/new retries credit two reference names.
+        supplied_reference = str(body.get("reference") or "").strip()
+        legacy_usdc = re.fullmatch(r"usdc:([a-z0-9_-]+):(0x[0-9a-fA-F]{64})", supplied_reference)
+        if legacy_usdc:
+            reference_chain, reference_tx = legacy_usdc.groups()
+            reference_tx = reference_tx.lower()
+            if tx_hash and tx_hash != reference_tx:
+                raise HTTPException(status_code=400, detail="USDC reference and transaction do not match")
+            if body.get("chain") and str(body["chain"]).strip().lower() != reference_chain:
+                raise HTTPException(status_code=400, detail="USDC reference and chain do not match")
+            tx_hash = reference_tx
         if tx_hash:
             # Money that arrived on chain but that no top-up quote can match (a plain transfer,
             # a nonce this hub never minted): credited as PAID credit, and the transaction is
             # claimed in the registry every door shares, so it cannot also fund a channel or be
             # credited again — here or by a top-up redemption.
-            from aimarket_hub.channels import claim_deposit_as, release_deposit_as
+            from aimarket_hub.channels import claim_deposit_as, deposit_registry_labels
 
             if not settle.is_tx_hash(tx_hash):
                 raise HTTPException(status_code=400, detail="tx_hash must be a 0x transaction hash")
@@ -591,24 +604,45 @@ def register(
                 # Before the claim: a claim taken for a mistyped account would hold the
                 # transaction against the right one.
                 raise HTTPException(status_code=404, detail=f"unknown account {account_id}")
-            chain_name = str(body.get("chain") or x402.chain()).strip().lower()
+            chain_name = legacy_usdc.group(1) if legacy_usdc else str(body.get("chain") or x402.chain()).strip().lower()
             chain_id = x402.chain_id() if chain_name == x402.chain() else None
+            labels = deposit_registry_labels(chain_name, chain_id)
+            canonical_reference = f"chain:{labels[0]}:{tx_hash}"
+            aliases = [f"{prefix}:{label}:{tx_hash}" for prefix in ("chain", "usdc") for label in labels]
+            previous = ledger._conn.execute(
+                "SELECT reference, account_id, amount_mc FROM credit_topups WHERE reference IN ("
+                + ",".join("?" for _ in aliases) + ")", tuple(aliases),
+            ).fetchall()
+            if len(previous) > 1:
+                raise HTTPException(status_code=409, detail="Transfer has conflicting legacy credits; operator reconciliation required")
+            old_credit = previous[0] if previous else None
+            if old_credit and (old_credit["account_id"] != account_id
+                               or int(old_credit["amount_mc"]) != credits.usd_to_mc(amount)):
+                raise HTTPException(status_code=409, detail="Transfer legacy credit belongs to another account or amount")
+            claim_id = f"credit:{account_id}"
             claim = claim_deposit_as(OPERATOR_CREDIT_STACK, chain=chain_name, tx_hash=tx_hash,
-                                     claim_id=account_id, amount_cents=int(round(amount * 100)),
+                                     claim_id=claim_id, amount_cents=int(round(amount * 100)),
                                      chain_id=chain_id or None)
             held = claim.get("claim") or {}
-            ours = held.get("stack") == OPERATOR_CREDIT_STACK and held.get("claim_id") == account_id
+            ours = held.get("stack") == OPERATOR_CREDIT_STACK and (
+                held.get("claim_id") == claim_id or (old_credit and held.get("claim_id") == account_id)
+            )
             if not claim.get("ok") and not (claim.get("error") == "already_claimed" and ours):
                 raise HTTPException(status_code=409 if claim.get("error") == "already_claimed" else 503,
                                     detail=f"transaction not credited: {claim.get('error')} "
                                            f"({held.get('stack') or 'unknown door'})")
+            # Reuse a committed legacy grant's exact unique reference: deposit()
+            # returns its original credit without increasing the balance again.
+            # New requests, including the old reference-only caller, all choose
+            # the canonical reference, so racing wire versions cannot diverge.
             result = ledger.deposit(account_id, credits.usd_to_mc(amount),
-                                    reference=f"chain:{chain_name}:{tx_hash}",
+                                    reference=old_credit["reference"] if old_credit else canonical_reference,
                                     note=str(body.get("note") or "operator-credited on-chain payment")[:200])
             if result.get("error"):
-                if claim.get("ok"):
-                    release_deposit_as(OPERATOR_CREDIT_STACK, chain=chain_name, tx_hash=tx_hash,
-                                       claim_id=account_id, chain_id=chain_id or None)
+                # A same-account retry can finish between our claim and this
+                # ledger write. Never release a shared claim on a local error:
+                # it may already protect that successful concurrent credit.
+                # An interrupted credit stays reserved for retry/reconciliation.
                 raise HTTPException(status_code=400, detail=result["error"])
             return {"success": True, **result, "tx_hash": tx_hash, "protocol_version": "v2"}
         result = ledger.grant(

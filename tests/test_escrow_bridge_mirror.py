@@ -367,7 +367,7 @@ class TestSignerStrategies:
             def __exit__(self, *a):
                 return False
 
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Ctx(b'{"ok": true}'))
+        monkeypatch.setattr(signer_mod, "_open_signer", lambda *a, **k: _Ctx(b'{"ok": true}'))
         with pytest.raises(SubmissionRefused, match="did not return a transaction hash"):
             signer_mod.ExternalSigner(url="https://signer.invalid").submit(
                 signer_mod.UnsignedTx(to=_ESCROW, data="0x", chain_id=1, gas=1)

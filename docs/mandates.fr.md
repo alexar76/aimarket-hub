@@ -23,6 +23,13 @@ avec un canal de paiement, un paiement x402 ou un identifiant de visiteur du san
 refuse cette combinaison (`400 mandate_rail_unsupported`, ou `403 job_invalid` pour un grant)
 plutôt que d'appliquer une limite qu'il ne voit pas.
 
+## Limites monétaires et borne d’expiration
+
+- `perCall` limite la somme réservée pour un appel, frais de routage compris lorsqu'ils s'appliquent. `perDay` utilise un **jour civil UTC**, pas une fenêtre glissante de 24 heures ; `total` est le budget global facultatif. Ce sont des plafonds monétaires, pas des compteurs de requêtes ; aucun plafond monétaire horaire n'est intégré.
+- Un mandat et tous ses ancêtres ne sont utilisables que si `validFrom <= now < validUntil`. **À l'instant exact `validUntil`, il est déjà expiré.** Cela termine l'autorisation d'un nouveau travail, sans promettre l'annulation d'un travail commencé ni un remboursement on-chain.
+- Activez `require_mandate=True` lors du rattachement du propriétaire du compte payeur. Enregistrer un mandat ne suffit pas à empêcher le détenteur de la clé API brute de dépenser en dehors du mandat. Le rate limit par IP/session n'est pas un budget monétaire par clé.
+- Le solde prépayé et la clé API sous-jacents n'ont pas de TTL automatique. La récupération des réserves et les retours internes de crédit suivent le [cycle du crédit](credits-topup.fr.md#credit-lifecycle) ; ils ne sont ni des versements d'argent ni des garanties du contrat escrow.
+
 ## Propriétaire : financer un agent sans lui confier sa clé
 
 ```python
@@ -64,7 +71,7 @@ vérifie les règles de champs de la spécification (§3.2) et la preuve, puis r
 | `402 mandate_unfunded` | L'émetteur racine de la chaîne n'est lié à aucun compte sur ce hub (étape 1). |
 | `403 mandate_invalid` "register the parent mandate first" | Une re-délégation dont le parent n'est pas enregistré ici. |
 | `403 mandate_invalid` "… already registered a different mandate with id …" | L'émetteur a déjà enregistré un autre document avec le même `id`. Un identifiant de credential désigne un seul mandat par émetteur ; émettez le nouveau avec un `id` neuf (`issue_mandate` crée un `urn:uuid:` sauf si vous passez `mandate_id=`). |
-| `403 mandate_invalid` "the mandate has already expired" | `validUntil` est dans le passé. Un mandat dont le `validFrom` est encore à venir s'enregistre et se lit comme `pending`. |
+| `403 mandate_invalid` "the mandate has already expired" | `now >= validUntil` (la borne de fin est exclusive). Un mandat dont le `validFrom` est encore à venir s'enregistre et se lit comme `pending`. |
 | `403 mandate_invalid` "numbers in a mandate must be integers" | Un nombre décimal quelque part, ou un entier hors de ±(2^53 − 1). Les montants sont des µUSD entiers. |
 | `400 mandate_malformed` | Le corps n'est pas un objet JSON, n'a pas de forme canonique, ou sa forme canonique dépasse 16 Kio. |
 | `413 mandate_malformed` | Le corps brut dépasse 20 Kio. |

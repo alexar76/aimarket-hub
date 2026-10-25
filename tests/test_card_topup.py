@@ -15,7 +15,9 @@ import time
 
 import pytest
 
-from tests._mandate_kit import balance, funded_account, hub  # noqa: E402
+from tests._mandate_kit import (  # noqa: E402
+    ADMIN_TOKEN, balance, funded_account, hub, list_static, mandated_invoke, setup_mandate,
+)
 from aimarket_hub import card_topup
 
 WHSEC = "whsec_test_secret"
@@ -311,6 +313,9 @@ class TestLimits:
             assert open_checkout(client, key, 100).status_code == 429
             refund = {"id": "ch_1", "payment_intent": paid["payment_intent"], "amount_refunded": 10_000}
             assert deliver(client, event("charge.refunded", refund)).json()["outcome"] == "refunded"
+            assert open_checkout(client, key, 100).status_code == 401  # frozen for operator review
+            assert client.post(f"/ai-market/v2/accounts/{_account}/status", json={"status": "active"},
+                               headers={"Authorization": f"Bearer {ADMIN_TOKEN}"}).status_code == 200
             assert open_checkout(client, key, 100).status_code == 429
 
     def test_a_key_is_required(self, monkeypatch, tmp_path, stripe):
@@ -534,6 +539,89 @@ def test_a_refund_in_stripe_is_recorded_and_ends_the_topup(monkeypatch, tmp_path
         assert r.json()["outcome"] == "refunded"
         unknown = deliver(client, event("charge.refunded", {"id": "ch_2", "payment_intent": "pi_other"}))
         assert unknown.json()["outcome"] == "ignored"
+
+
+@pytest.mark.parametrize("kind", ["charge.refunded", "charge.dispute.created"])
+def test_verified_card_reversal_freezes_every_new_credit_spend_until_admin_review(monkeypatch, tmp_path, stripe, kind):
+    from aimarket_hub.credits import CreditsLedger
+
+    with hub(monkeypatch, tmp_path, **ENV) as (client, db):
+        m = setup_mandate(client, db, usd=0.0)
+        account, key = m["account"], m["api_key"]
+        other, other_key = funded_account(client, db, 2.0)
+        list_static(db)
+        open_checkout(client, key, 10)
+        paid = stripe.pay(next(iter(stripe.sessions)))
+        assert deliver(client, event("checkout.session.completed", paid)).status_code == 200
+        ledger = CreditsLedger(db._conn)
+        assert not ledger.hold(account, 1.0, "preexisting-allowance").get("error")
+        before = balance(db, account)
+        reversal = event(kind, {"id": "reversal-test", "payment_intent": paid["payment_intent"],
+                                "amount_refunded": 1000, "reason": "fraudulent"})
+        assert deliver(client, reversal).status_code == 200
+        assert ledger.account(account)["status"] == "disabled"
+        assert balance(db, account) == before  # preserve money for reconciliation
+        assert ledger.account(other)["status"] == "active"
+
+        payload = {"product_id": "demo-echo", "capability_id": "demo.echo@v1", "input": {}}
+        assert client.post("/ai-market/v2/invoke", json=payload, headers={"X-API-Key": key}).status_code >= 400
+        assert mandated_invoke(client, m, payload).status_code >= 400
+        assert ledger.debit(account, 0.01, "new-direct").get("error")
+        assert ledger.hold(account, 0.01, "new-hold").get("error")
+        assert ledger.transfer_hold("preexisting-allowance", "new-granted-child", 0.01).get("error")
+        assert not ledger.release_hold("preexisting-allowance").get("error")
+        assert client.post("/ai-market/v2/invoke", json=payload, headers={"X-API-Key": other_key}).status_code == 200
+
+        # A duplicate cannot create another freeze/audit row or undo a trusted resolution.
+        deliver(client, reversal)
+        rows = db._conn.execute("SELECT COUNT(*) AS n FROM credit_ledger WHERE account_id=? AND kind='review_freeze'",
+                                (account,)).fetchone()["n"]
+        assert rows == 1
+        path = f"/ai-market/v2/accounts/{account}/status"
+        assert client.post(path, json={"status": "active"}, headers={"X-API-Key": key}).status_code in (401, 403)
+        assert client.post(path, json={"status": "active"},
+                           headers={"Authorization": f"Bearer {ADMIN_TOKEN}"}).status_code == 200
+        deliver(client, reversal)
+        assert ledger.account(account)["status"] == "active"
+        assert client.post("/ai-market/v2/invoke", json=payload, headers={"X-API-Key": key}).status_code == 200
+
+
+@pytest.mark.parametrize("historical_status", ["refunded", "disputed"])
+def test_upgrade_freezes_historical_reversals_once_without_changing_balances(monkeypatch, tmp_path, stripe, historical_status):
+    from aimarket_hub.credits import CreditsLedger
+    from aimarket_hub.migrations import Migrations
+
+    with hub(monkeypatch, tmp_path, **ENV) as (client, db):
+        account, key = funded_account(client, db, 2.0)
+        other, _ = funded_account(client, db, 3.0)
+        opened = open_checkout(client, key, 5).json()
+        paid = stripe.pay(next(iter(stripe.sessions)))
+        assert deliver(client, event("checkout.session.completed", paid)).status_code == 200
+        ledger = CreditsLedger(db._conn)
+        assert not ledger.hold(account, 1.0, "historical-reservation").get("error")
+        before = ledger.account(account)
+        # Reproduce a pre-upgrade database: the verified reversal was recorded,
+        # but its remaining balance was still spendable and had no review marker.
+        db._conn.execute("UPDATE card_topups SET status=? WHERE topup_id=?",
+                         (historical_status, opened["topup_id"]))
+        db._conn.execute("DELETE FROM _migrations WHERE version=62")
+        db._conn.commit()
+        migrations = Migrations(db._backend)
+        assert migrations.apply(target_version=62) == 1
+        after = ledger.account(account)
+        assert after["status"] == "disabled"
+        for field in ("balance_usd", "held_usd", "spent_usd", "granted_usd", "collateral_usd", "topped_up_usd"):
+            assert after[field] == before[field]
+        assert ledger.account(other)["status"] == "active"
+        assert ledger.debit(account, 0.01, "post-upgrade-spend").get("error")
+        assert ledger.transfer_hold("historical-reservation", "post-upgrade-child", 0.01).get("error")
+        assert db._conn.execute("SELECT COUNT(*) AS n FROM credit_ledger WHERE account_id=? AND kind='review_freeze'",
+                                (account,)).fetchone()["n"] == 1
+        assert migrations.apply(target_version=62) == 0
+        assert client.post(f"/ai-market/v2/accounts/{account}/status", json={"status": "active"},
+                           headers={"Authorization": f"Bearer {ADMIN_TOKEN}"}).status_code == 200
+        assert migrations.apply(target_version=62) == 0
+        assert ledger.account(account)["status"] == "active"
 
 
 @pytest.mark.parametrize("kind,expected", [("charge.dispute.created", "disputed"), ("charge.refunded", "refunded")])

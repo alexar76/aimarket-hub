@@ -89,6 +89,12 @@ MANIFEST = {
 
 
 class TestPublishManifest:
+    @pytest.mark.parametrize("price", ["NaN", "Infinity", "-Infinity", True])
+    def test_nonfinite_or_boolean_price_never_enters_the_catalogue(self, monkeypatch, price):
+        monkeypatch.setenv("AIMARKET_ALLOW_LOCAL_PUBLISH", "1")
+        with pytest.raises(ValueError, match="price_per_call_usd"):
+            validate_manifest({**MANIFEST, "price_per_call_usd": price})
+
     def test_validate_manifest(self, monkeypatch):
         monkeypatch.setenv("AIMARKET_ALLOW_LOCAL_PUBLISH", "1")
         cap = validate_manifest(MANIFEST)

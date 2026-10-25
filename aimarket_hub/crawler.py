@@ -1190,8 +1190,14 @@ class Crawler:
             raw_price = tool.get("price_per_call_usd")
             if raw_price is None:
                 raw_price = tool.get("price_usd")
-            price = float(0.35 if raw_price is None else raw_price)
-            if price < MIN_PRICE_USD or price > MAX_PRICE_USD:
+            try:
+                if isinstance(raw_price, bool):
+                    raise ValueError("boolean price")
+                price = float(0.35 if raw_price is None else raw_price)
+            except (TypeError, ValueError, OverflowError):
+                logger.warning("Skipping tool %s: invalid price", tool.get("capability_id", "?"))
+                continue
+            if not math.isfinite(price) or price < MIN_PRICE_USD or price > MAX_PRICE_USD:
                 logger.warning(
                     "Skipping tool %s: price %.2f out of range [%.2f, %.2f]",
                     tool.get("capability_id", "?"), price, MIN_PRICE_USD, MAX_PRICE_USD,

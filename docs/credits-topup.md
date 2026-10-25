@@ -28,6 +28,7 @@ whether it is open in its well-known — see [Operator](#operator).
 - [Who holds what](#who-holds-what)
 - [End to end](#end-to-end)
 - [Where the money goes](#where-the-money-goes)
+- [Spending credit: holds, expiry and refunds](#credit-lifecycle)
 - [The quote](#the-quote)
 - [Paying the quote](#paying-the-quote)
 - [Redeeming a payment](#redeeming-a-payment)
@@ -110,6 +111,19 @@ flowchart LR
 - Once on the account, credit is spent exactly like operator-issued credit: a hold, then a
   capture on delivery ([subcontracting.md](subcontracting.md#how-the-money-moves) shows the
   whole ledger of a job).
+
+<a id="credit-lifecycle"></a>
+
+## Spending credit: holds, expiry and refunds
+
+- **Fixed-price calls reserve first.** A hold moves the price from available balance to `held` before the provider runs; success captures that same amount. Supported provider-error paths release it. An insufficient balance is refused before the provider. There is no output-metered charge or post-delivery overage in this path; a provider's `charged_usd` field cannot increase the capture.
+- **Release cannot undo external work.** A timeout may return the hold while the provider has already performed an action. A new request or an ordinary retry can repeat that action. The REST [`Idempotency-Key` mechanism](../README.md#retrying-a-paid-call) can replay a supported request's stored outcome; the credit ledger itself does not provide exactly-once provider execution, and MCP retries do not automatically acquire that guarantee.
+- **Abandoned holds are recovered after a threshold, not at a deadline.** Ordinary abandoned credit holds are eligible only when their age is **greater than 3600 seconds**. The scheduler runs at startup and, by default, every **120 seconds** (`AIMARKET_SUBCONTRACT_SWEEP_S`); a value ≤0 disables it. Sweep limits and owner state can defer recovery. Verification holds, appeal bonds and subcontract allowances have separate lifecycles.
+- **Keys and balances do not automatically expire.** Disabling an account blocks its key; rotation replaces the old key without losing the balance. A bare key has no per-hour dollar cap. The request-rate bucket is based on IP/session identity, not money spent by a key. For `perCall`, UTC-calendar-day `perDay`, `total` and exclusive `validUntil`, use [mandates](mandates.md); set `require_mandate=True` so the raw API key cannot bypass them.
+- **A credit refund is not a USDC payout.** Release restores service credit. `CreditsLedger.refund` is a trusted operator adjustment, not a receipt-bound customer refund: repeating it can add credit twice. Neither sends USDC, and there is no self-service withdrawal. Unused balance remains the operator's liability (`outstanding_credit_usd`); an actual cash return needs a separate operator payment and reconciliation.
+- **Channels are a different rail.** A transfer-funded channel's default 24-hour TTL is enforced by a sweep: an `open` row can still accept debit/hold after `expires_at` until that sweep, and a pending hold postpones closure/expiry. Close/expiry records `refund_owed_usd`, with `refund_executed_usd=0`; it does not send money. Do not apply escrow-contract guarantees to either this ledger or prepaid credits. See [money rails](money-rails.md).
+
+These lifecycle cases use real application/SQLite code and synthetic funds in [ledger](../tests/test_micky_credit_lifecycle.py), [MCP/invoke](../tests/test_micky_mcp_payment_flow.py) and [expiry](../tests/test_micky_expiry_recovery.py) tests; they do not verify live-chain payouts or a running production hub.
 
 ## The quote
 

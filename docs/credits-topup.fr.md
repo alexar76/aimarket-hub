@@ -31,6 +31,7 @@ chemin de l'argent. Un hub annonce dans son well-known si la porte est ouverte �
 - [Qui détient quoi](#qui-détient-quoi)
 - [De bout en bout](#de-bout-en-bout)
 - [Où va l'argent](#où-va-largent)
+- [Dépenser le crédit : réservations, expiration et remboursements](#credit-lifecycle)
 - [L'offre de recharge](#loffre-de-recharge)
 - [Payer l'offre](#payer-loffre)
 - [Présenter un paiement](#présenter-un-paiement)
@@ -114,6 +115,19 @@ flowchart LR
 - Une fois sur le compte, le crédit se dépense exactement comme le crédit émis par l'opérateur : une
   réserve, puis un débit à la livraison ([subcontracting.fr.md](subcontracting.fr.md#comment-circule-largent)
   montre le registre complet d'une tâche).
+
+<a id="credit-lifecycle"></a>
+
+## Dépenser le crédit : réservations, expiration et remboursements
+
+- **Les appels à prix fixe réservent d'abord.** Avant l'appel du fournisseur, un hold déplace le prix du solde disponible vers `held` ; le succès capture exactement ce montant. Les chemins d'erreur du fournisseur pris en charge libèrent la réserve. Un solde insuffisant est refusé avant l'appel. Ce chemin ne facture ni le volume de sortie ni un dépassement après livraison ; le champ `charged_usd` du fournisseur n'augmente pas la capture.
+- **Libérer n'annule pas le travail externe.** Un timeout peut rendre la réserve alors que le fournisseur a déjà exécuté une action. Une nouvelle requête ou une nouvelle tentative ordinaire peut la répéter. Le mécanisme REST [`Idempotency-Key`](../README.md#retrying-a-paid-call) peut rejouer le résultat enregistré d'une requête prise en charge ; le ledger de crédits ne garantit pas une exécution exactement une fois chez le fournisseur, et les tentatives MCP n'obtiennent pas automatiquement cette garantie.
+- **Les réservations abandonnées sont récupérées après un seuil, pas à une échéance exacte.** Un hold ordinaire abandonné n'est éligible que lorsqu'il a **plus de 3600 secondes**. Le planificateur agit au démarrage puis, par défaut, toutes les **120 secondes** (`AIMARKET_SUBCONTRACT_SWEEP_S`) ; une valeur ≤0 le désactive. Les limites du balayage et l'état du propriétaire peuvent retarder la récupération. Les réservations de vérification, cautions d'appel et allocations de sous-traitance ont des cycles distincts.
+- **Les clés et soldes n'expirent pas automatiquement.** Désactiver un compte bloque sa clé ; la rotation remplace l'ancienne sans perdre le solde. Une clé seule n'a pas de plafond monétaire horaire. Le rate limit compte par IP/session, pas par dépense d'une clé. Pour `perCall`, `perDay` par jour civil UTC, `total` et la borne exclusive `validUntil`, utilisez les [mandats](mandates.fr.md) ; activez `require_mandate=True` pour empêcher la clé API de les contourner.
+- **Rembourser du crédit n'est pas verser des USDC.** La libération restaure du crédit de service. `CreditsLedger.refund` est un ajustement d'opérateur de confiance, pas un remboursement client lié à un receipt : le répéter peut créditer deux fois. Aucune opération n'envoie d'USDC et il n'existe pas de retrait en libre-service. Le solde inutilisé reste une dette de l'opérateur (`outstanding_credit_usd`) ; rendre de l'argent exige un paiement séparé et un rapprochement comptable.
+- **Les canaux constituent un autre rail.** Le TTL par défaut d'un canal financé par virement est de 24 heures, mais un balayage l'applique : une ligne `open` accepte encore debit/hold après `expires_at` jusqu'au balayage ; un hold en attente reporte la fermeture/expiration. Celle-ci inscrit `refund_owed_usd`, avec `refund_executed_usd=0`, sans envoyer d'argent. Les garanties du contrat escrow ne s'appliquent ni à ce ledger ni aux crédits prépayés. Voir les [rails de paiement](money-rails.md).
+
+Ces cas utilisent le vrai code application/SQLite et des fonds fictifs dans les tests de [ledger](../tests/test_micky_credit_lifecycle.py), [MCP/invoke](../tests/test_micky_mcp_payment_flow.py) et [expiration](../tests/test_micky_expiry_recovery.py) ; ils ne vérifient ni les versements sur une chaîne réelle ni un hub de production en fonctionnement.
 
 ## L'offre de recharge
 
