@@ -59,9 +59,14 @@ def _group_wrap(text: str):
 
 
 def _usd_hour(rev: float) -> str:
-    if rev > 0 and rev < 0.01:
-        return f"${rev:.4f}"
-    return f"${rev:.2f}"
+    if rev == 0:
+        return "$0.00"
+    sign = "-" if rev < 0 else ""
+    if abs(rev) < 0.000001:
+        return f"{sign}<$0.000001"
+    # Match the browser's usd(): retain sub-cent digits even above one cent.
+    whole, fraction = f"{abs(rev):.6f}".rstrip("0").split(".")
+    return f"{sign}${whole}.{fraction.ljust(2, '0')}"
 
 
 def public_events(rows: list[dict[str, Any]], hub_url: str,

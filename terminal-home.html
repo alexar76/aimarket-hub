@@ -1535,10 +1535,10 @@
     if (n === 0) return '$0.00';
     const sign = n < 0 ? '-' : '';
     const abs = Math.abs(n);
-    if (abs >= 0.01) return sign + '$' + abs.toFixed(2);
     if (abs < USD_MIN_SHOWN) return sign + '<$0.000001';
-    const s = abs.toFixed(6).replace(/0+$/, '');
-    return sign + '$' + (s.endsWith('.') ? s + '0' : s);
+    // Totals can still contain fractions of a cent once they pass $0.01:
+    // two $0.006 calls must remain $0.012, with at least two decimal places.
+    return sign + '$' + abs.toFixed(6).replace(/(\.\d{2,}?)0+$/, '$1');
   }
   // What one call actually cost. A trial invoke costs nothing, and printing "$0.00"
   // next to "$0.06" reads as a rounding bug hiding a fraction of a cent — the
@@ -1564,14 +1564,15 @@
     return priceUsd(c && (c.routed_price_usd ?? c.price_per_call_usd));
   }
   function anim(el, from, to, opts = {}) {
-    const { dur = 650, pre = '', suf = '', dec = 0 } = opts;
+    const { dur = 650, pre = '', suf = '', dec = 0, format = null } = opts;
+    const render = format || (v => pre + v.toFixed(dec) + suf);
     const t0 = performance.now();
     function tick(now) {
       const k = Math.min(1, (now - t0) / dur);
       const v = from + (to - from) * (1 - Math.pow(1 - k, 3));
-      el.textContent = pre + v.toFixed(dec) + suf;
+      el.textContent = render(v);
       if (k < 1) requestAnimationFrame(tick);
-      else el.textContent = pre + to.toFixed(dec) + suf;
+      else el.textContent = render(to);
     }
     requestAnimationFrame(tick);
     if (from !== to) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 500); }
@@ -2880,7 +2881,7 @@
 
       const elRev = document.getElementById('s-rev');
       anim(elRev, parseFloat(elRev.textContent.replace(/[^\d.]/g,'')) || 0, rev,
-           { pre: '$', dec: rev > 0 && rev < 0.01 ? 4 : 2 });
+           { format: usd });
       document.getElementById('s-rev-sub').textContent = t('avg_samples', {
         avg: usd(s.avg_price_usd), n: events.length,
       });

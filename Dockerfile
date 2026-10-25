@@ -1,8 +1,9 @@
+# Node security baseline: 22.23.4 (2026-10-21 security release).
 # ── HEPHAESTUS studio bundle ──────────────────────────────────
 # Built here rather than committed: this repository does not track build output
 # (`dist/` is ignored everywhere), and the runtime image is Python-only, so the one
 # place a Node toolchain can run for it is a build stage.
-FROM node:20-alpine AS studio
+FROM node:22.23.4-alpine AS studio
 WORKDIR /build
 COPY hephaestus/package.json ./package.json
 COPY hephaestus/src/ ./src/
