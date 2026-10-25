@@ -325,15 +325,16 @@ class Groth16Prover:
         return Path("/opt/zk/scripts/poseidon2.mjs")
 
     def _poseidon2(self, a: int, b: int) -> int:
-        """Poseidon(2) compatible with circomlib — via circomlibjs in the hub image."""
+        """Poseidon(2) via the original circomlibjs WASM subset in the hub image."""
         script = self._poseidon_script()
         if not script.is_file():
             raise RuntimeError(
-                f"circomlibjs Poseidon helper missing at {script}. "
+                f"Poseidon WASM helper missing at {script}. "
                 "Rebuild the hub image with contracts/zk/scripts/poseidon2.mjs."
             )
         result = subprocess.run(
-            ["node", str(script), str(a), str(b)],
+            ["node", str(script), "--stdin"],
+            input=json.dumps([str(a), str(b)]),
             capture_output=True,
             text=True,
             timeout=15,

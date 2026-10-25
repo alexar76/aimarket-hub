@@ -98,6 +98,7 @@ RUN pip install --no-cache-dir /tmp/provenance && rm -rf /tmp/provenance
 # Build host must run contracts/zk/scripts/setup_plonk.sh first (deploy_hub.sh
 # does this automatically). wasm/zkey live under contracts/zk/build/ (gitignored).
 COPY contracts/zk/package.json contracts/zk/package-lock.json /opt/zk/
+COPY contracts/zk/vendor/ /opt/zk/vendor/
 COPY contracts/zk/scripts/poseidon2.mjs /opt/zk/scripts/poseidon2.mjs
 RUN cd /opt/zk && npm ci --omit=dev --silent \
     && ln -sf /opt/zk/node_modules/.bin/snarkjs /usr/local/bin/snarkjs
