@@ -15,7 +15,6 @@ Privacy:
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import logging
@@ -27,10 +26,24 @@ from pathlib import Path
 from typing import Any
 
 from aimarket_hub.database import HubDatabase
+from aimarket_hub._signing_key_storage import load_or_create_private_bytes
 
 logger = logging.getLogger(__name__)
 
 _SALT_FILE = Path(os.environ.get("AIMARKET_DATASET_SALT_PATH", "data/dataset_salt"))
+COMPROMISED_SALT_SHA256 = frozenset({
+    "8fe500034ccbf7c9cbc3ec2dc06fdd71f3ca7be59acfc3aad843c7b7d5c4ed1e",
+})
+
+
+def _validated_salt(salt: bytes) -> bytes:
+    if not salt:
+        raise RuntimeError("Dataset salt is empty; explicit privacy recovery is required")
+    if hashlib.sha256(salt).hexdigest() in COMPROMISED_SALT_SHA256:
+        raise RuntimeError(
+            "Dataset salt was publicly exposed; explicit privacy recovery is required. No salt was rotated."
+        )
+    return salt
 
 
 def _load_or_create_salt() -> bytes:
@@ -41,19 +54,15 @@ def _load_or_create_salt() -> bytes:
     """
     env_salt = os.environ.get("AIMARKET_DATASET_SALT", "").strip()
     if env_salt:
-        return env_salt.encode()
-    if _SALT_FILE.exists():
-        return _SALT_FILE.read_bytes()
-    _SALT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    salt = secrets.token_bytes(32)
-    _SALT_FILE.write_bytes(salt)
-    with contextlib.suppress(OSError):
-        os.chmod(_SALT_FILE, 0o600)
-    logger.warning(
-        "Generated new dataset salt at %s — back this up if you want "
-        "anonymized IDs to stay stable across deploys.",
-        _SALT_FILE,
-    )
+        return _validated_salt(env_salt.encode())
+    existed = _SALT_FILE.exists()
+    salt = load_or_create_private_bytes(_SALT_FILE, lambda: secrets.token_bytes(32), _validated_salt)
+    if not existed:
+        logger.warning(
+            "Generated new dataset salt at %s — back this up if you want "
+            "anonymized IDs to stay stable across deploys.",
+            _SALT_FILE,
+        )
     return salt
 
 

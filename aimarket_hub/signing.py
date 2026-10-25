@@ -304,7 +304,15 @@ def _ensure_keypair(path: Path) -> tuple[bytes, bytes]:
 
 
 def _load_or_make_pq(path: Path) -> tuple[bytes, bytes]:
-    return load_or_create_mldsa_keypair(path, _MLDSA)
+    existed = path.exists() or path.is_symlink()
+    pair = load_or_create_mldsa_keypair(path, _MLDSA)
+    if not existed:
+        logger.warning(
+            "NEW post-quantum (ML-DSA-65) signing key generated at %s. Back it up together "
+            "with the Ed25519 key beside it. Peers pin it; an existing identity requires "
+            "explicit trust reconciliation.", path,
+        )
+    return pair
 
 
 class Signer:
