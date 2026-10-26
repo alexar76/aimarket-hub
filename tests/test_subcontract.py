@@ -509,6 +509,7 @@ def federated_world(monkeypatch, tmp_path, *, peer_ok: bool = True, **env):
     """A hub that routes GAIA's two reads to a peer and sells a local composite ($0.010)."""
     with hub(monkeypatch, tmp_path, **env) as (client, db):
         import aimarket_hub.api as api_mod
+        import aimarket_hub.peer_routing as peer_routing
         import aimarket_hub.outbound_http as outbound
 
         providers = Providers(client.app_ref)
@@ -520,7 +521,7 @@ def federated_world(monkeypatch, tmp_path, *, peer_ok: bool = True, **env):
 
         monkeypatch.setattr(outbound, "safe_get", well_known)
         # Transport decisions are cached per peer URL for the life of the process.
-        monkeypatch.setattr(api_mod, "_peer_endpoint_cache", {})
+        monkeypatch.setattr(peer_routing, "_peer_endpoint_cache", {})
         db.upsert_peer(Peer(url=PEER, name="gaia", capabilities_count=2,
                             well_known_url=f"{PEER}/.well-known/ai-market.json", trusted=True))
         for cap in (FED_WEATHER, FED_AIR):

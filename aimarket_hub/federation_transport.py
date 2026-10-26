@@ -1,6 +1,6 @@
 """Where an AI-Market invoke envelope is POSTed for a given peer — one rule.
 
-Two callers need this answer: routed invokes (``api._peer_invoke_endpoint``) and the
+Two callers need this answer: routed invokes (``peer_routing._peer_invoke_endpoint``) and the
 post-quarantine admission assay (``federation_assay``). They answered it differently
 until 2026-08-31, and the assay's answer was the wrong one.
 

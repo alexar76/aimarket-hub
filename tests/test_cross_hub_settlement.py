@@ -124,6 +124,7 @@ def two_hubs(tmp_path, monkeypatch):
 
     # The router's outbound calls go to the upstream's app instead of the network.
     import aimarket_hub.api as api_mod
+    import aimarket_hub.peer_routing as peer_routing
     import aimarket_hub.outbound_http as outbound
 
     async def _safe_post(url, **kwargs):
@@ -138,7 +139,7 @@ def two_hubs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(outbound, "safe_post", _safe_post)
     monkeypatch.setattr(outbound, "safe_get", _safe_get, raising=False)
-    monkeypatch.setattr(api_mod, "_peer_endpoint_cache", {}, raising=False)
+    monkeypatch.setattr(peer_routing, "_peer_endpoint_cache", {}, raising=False)
 
     try:
         yield router_client, up_client, router_key_at_upstream, signup["account_id"]

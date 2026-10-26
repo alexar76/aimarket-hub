@@ -95,6 +95,7 @@ def routed_world(monkeypatch, tmp_path, transport: str, **env):
     with federated_world(monkeypatch, tmp_path, **env) as (client, db, providers):
         if transport == "legacy":
             import aimarket_hub.api as api_mod
+            import aimarket_hub.peer_routing as peer_routing
             import aimarket_hub.outbound_http as outbound
 
             async def well_known(url, *, timeout=10.0):
@@ -102,7 +103,7 @@ def routed_world(monkeypatch, tmp_path, transport: str, **env):
                 return _Resp(200, {"name": "gaia"})
 
             monkeypatch.setattr(outbound, "safe_get", well_known)
-            monkeypatch.setattr(api_mod, "_peer_endpoint_cache", {})
+            monkeypatch.setattr(peer_routing, "_peer_endpoint_cache", {})
         yield client, db, providers
 
 

@@ -25,8 +25,18 @@ from __future__ import annotations
 
 import importlib
 import os
+from pathlib import Path
 
 import pytest
+
+_ROUTES = Path(__file__).resolve().parents[1] / "aimarket_hub" / "hub_routes"
+
+
+def _invoke_source() -> str:
+    """The invoke path's source in call order: the route, then each branch's phases."""
+    parts = ("local_admission", "local_delivery", "federated_admission", "federated_delivery")
+    files = [_ROUTES / "invoke.py"] + [_ROUTES / "invoke_parts" / f"{p}.py" for p in parts]
+    return "\n".join(f.read_text(encoding="utf-8") for f in files)
 
 
 @pytest.fixture()
@@ -178,10 +188,7 @@ def test_api_takes_the_trial_after_validation_not_before():
     the ``finally`` exists. Asserting on source order is blunt, but it is the property that
     actually broke, and it breaks again the moment someone moves the block back up.
     """
-    from pathlib import Path
-
-    src = Path(__file__).resolve().parents[1] / "aimarket_hub" / "hub_routes" / "invoke.py"
-    text = src.read_text(encoding="utf-8")
+    text = _invoke_source()
 
     consume_at = text.index("trial = consume_sandbox_trial(x_sandbox_visitor or \"\", client_ip=client_ip)")
     federated_refusal_at = text.index("is federated, not local — retry with ")
@@ -205,15 +212,13 @@ def test_the_published_status_matches_what_the_hub_actually_answers(ledger):
     An agent that trusted it would read a temporary refusal as "must pay", abandon a free
     tier it still had, and not come back.
     """
-    from pathlib import Path
-
     policy = ledger.trial_policy()
     assert policy["exhausted_error"] == "trial_quota_exhausted"
     assert policy["exhausted_status"] == 429, "hourly window renews, so 429 is the honest code"
     assert "429" in policy["how"]
     assert "402" not in policy["how"]
 
-    api = (Path(__file__).resolve().parents[1] / "aimarket_hub" / "hub_routes" / "invoke.py").read_text(encoding="utf-8")
+    api = _invoke_source()
     assert 'code = 429 if trial["error"] in ("trial_quota_exhausted"' in api, (
         "the invoke path no longer answers 429 for an exhausted trial; the published policy "
         "text and exhausted_status must move with it"
@@ -288,9 +293,7 @@ def test_the_exclusion_is_published_so_nobody_learns_it_by_being_refused(ledger)
 
 def test_the_refusal_happens_before_the_trial_is_spent():
     """Structural: discovering that a capability is not free must not cost an allowance."""
-    from pathlib import Path
-
-    api = (Path(__file__).resolve().parents[1] / "aimarket_hub" / "hub_routes" / "invoke.py").read_text(encoding="utf-8")
+    api = _invoke_source()
     assert api.count("free_tier_covers(") == 2, "both invoke branches must check"
     for _ in range(2):
         guard_at = api.index("free_tier_covers(")

@@ -121,6 +121,7 @@ def witness_world(monkeypatch, tmp_path, *, offline: tuple[str, ...] = (), **env
     }
     with hub(monkeypatch, tmp_path, **env) as (client, db):
         import aimarket_hub.api as api_mod
+        import aimarket_hub.peer_routing as peer_routing
         import aimarket_hub.outbound_http as outbound
 
         world = World(client, db, None)
@@ -156,7 +157,7 @@ def witness_world(monkeypatch, tmp_path, *, offline: tuple[str, ...] = (), **env
 
         monkeypatch.setattr(outbound, "safe_post", safe_post)
         monkeypatch.setattr(outbound, "safe_get", safe_get)
-        monkeypatch.setattr(api_mod, "_peer_endpoint_cache", {})
+        monkeypatch.setattr(peer_routing, "_peer_endpoint_cache", {})
         db.upsert_peer(Peer(url=PEER, name="gaia", capabilities_count=2,
                             well_known_url=f"{PEER}/.well-known/ai-market.json", trusted=True))
         for cap in ("gaia.weather.read@v1", "gaia.air.read@v1"):

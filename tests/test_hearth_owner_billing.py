@@ -59,6 +59,7 @@ def router(tmp_path, monkeypatch):
     state = {"bill": None}
 
     import aimarket_hub.api as api_mod
+    import aimarket_hub.peer_routing as peer_routing
     import aimarket_hub.outbound_http as outbound
 
     async def _safe_post(url, **kwargs):
@@ -69,7 +70,7 @@ def router(tmp_path, monkeypatch):
         return httpx.Response(200, json=body, request=httpx.Request("POST", str(url)))
 
     monkeypatch.setattr(outbound, "safe_post", _safe_post)
-    monkeypatch.setattr(api_mod, "_peer_endpoint_cache", {}, raising=False)
+    monkeypatch.setattr(peer_routing, "_peer_endpoint_cache", {}, raising=False)
     try:
         yield client, hearth_key, state, sent, tmp_path
     finally:

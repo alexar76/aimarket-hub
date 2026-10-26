@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-from aimarket_hub import api as hub_api
+from aimarket_hub import peer_routing
 
 
 @dataclass
@@ -45,9 +45,9 @@ class FakeResponse:
 
 @pytest.fixture(autouse=True)
 def _clear_endpoint_cache():
-    hub_api._peer_endpoint_cache.clear()
+    peer_routing._peer_endpoint_cache.clear()
     yield
-    hub_api._peer_endpoint_cache.clear()
+    peer_routing._peer_endpoint_cache.clear()
 
 
 def _stub_safe_get(monkeypatch, handler):
@@ -75,7 +75,7 @@ def test_iot_peer_gets_its_advertised_endpoint(monkeypatch):
         lambda _u: FakeResponse({"mcp_endpoint": "https://iot.modelmarket.dev/ai-market/v2/invoke"}),
     )
 
-    endpoint = asyncio.run(hub_api._peer_invoke_endpoint(peer))
+    endpoint = asyncio.run(peer_routing._peer_invoke_endpoint(peer))
 
     assert endpoint == "https://iot.modelmarket.dev/ai-market/v2/invoke"
 
@@ -84,15 +84,15 @@ def test_peer_advertising_nothing_falls_back_to_the_legacy_path(monkeypatch):
     peer = FakePeer(url="https://legacy.example", well_known_url="https://legacy.example/.well-known/ai-market.json")
     _stub_safe_get(monkeypatch, lambda _u: FakeResponse({"name": "legacy hub"}))
 
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer)) is None
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer)) is None
 
 
 def test_a_negative_answer_is_cached_so_every_invoke_does_not_refetch(monkeypatch):
     peer = FakePeer(url="https://legacy.example", well_known_url="https://legacy.example/.well-known/ai-market.json")
     calls = _stub_safe_get(monkeypatch, lambda _u: FakeResponse({"name": "legacy hub"}))
 
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer)) is None
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer)) is None
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer)) is None
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer)) is None
 
     # One well-known fetch, not one per invoke.
     assert len(calls) == 1
@@ -102,8 +102,8 @@ def test_positive_answer_is_cached(monkeypatch):
     peer = FakePeer(url="https://iot.example", well_known_url="https://iot.example/.well-known/ai-market.json")
     calls = _stub_safe_get(monkeypatch, lambda _u: FakeResponse({"mcp_endpoint": "https://iot.example/inv"}))
 
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer)) == "https://iot.example/inv"
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer)) == "https://iot.example/inv"
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer)) == "https://iot.example/inv"
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer)) == "https://iot.example/inv"
     assert len(calls) == 1
 
 
@@ -125,25 +125,25 @@ def test_unreachable_well_known_is_not_cached(monkeypatch):
 
     _stub_safe_get(monkeypatch, handler)
 
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer)) is None
-    assert "https://flaky.example" not in hub_api._peer_endpoint_cache
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer)) is None
+    assert "https://flaky.example" not in peer_routing._peer_endpoint_cache
 
     state["fail"] = False
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer)) == "https://flaky.example/inv"
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer)) == "https://flaky.example/inv"
 
 
 def test_non_200_well_known_yields_no_endpoint(monkeypatch):
     peer = FakePeer(url="https://gone.example", well_known_url="https://gone.example/.well-known/ai-market.json")
     _stub_safe_get(monkeypatch, lambda _u: FakeResponse({}, status_code=404))
 
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer)) is None
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer)) is None
 
 
 def test_peer_without_a_well_known_url_needs_no_fetch(monkeypatch):
     peer = FakePeer(url="https://bare.example")
     calls = _stub_safe_get(monkeypatch, lambda _u: FakeResponse({"mcp_endpoint": "nope"}))
 
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer)) is None
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer)) is None
     assert calls == []
 
 
@@ -151,16 +151,16 @@ def test_blank_advertised_endpoint_is_treated_as_absent(monkeypatch):
     peer = FakePeer(url="https://blank.example", well_known_url="https://blank.example/.well-known/ai-market.json")
     _stub_safe_get(monkeypatch, lambda _u: FakeResponse({"mcp_endpoint": "   "}))
 
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer)) is None
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer)) is None
 
 
 def test_cache_expires(monkeypatch):
     peer = FakePeer(url="https://ttl.example", well_known_url="https://ttl.example/.well-known/ai-market.json")
     calls = _stub_safe_get(monkeypatch, lambda _u: FakeResponse({"mcp_endpoint": "https://ttl.example/inv"}))
 
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer, now=1000.0)) == "https://ttl.example/inv"
-    assert asyncio.run(hub_api._peer_invoke_endpoint(peer, now=1000.0 + hub_api._PEER_ENDPOINT_TTL_S - 1)) is not None
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer, now=1000.0)) == "https://ttl.example/inv"
+    assert asyncio.run(peer_routing._peer_invoke_endpoint(peer, now=1000.0 + peer_routing._PEER_ENDPOINT_TTL_S - 1)) is not None
     assert len(calls) == 1
 
-    asyncio.run(hub_api._peer_invoke_endpoint(peer, now=1000.0 + hub_api._PEER_ENDPOINT_TTL_S + 1))
+    asyncio.run(peer_routing._peer_invoke_endpoint(peer, now=1000.0 + peer_routing._PEER_ENDPOINT_TTL_S + 1))
     assert len(calls) == 2

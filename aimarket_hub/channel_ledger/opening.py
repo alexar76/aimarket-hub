@@ -680,15 +680,35 @@ class LedgerOpeningMixin:
             if not authorized:
                 return {"error": "unauthorized: wallet does not match channel owner"}
 
+            # Settle only if still open, in one statement: another hub process may have
+            # closed it, or debited it, since the row above was read. The settlement and
+            # the obligation are then computed from the row as it is under this write,
+            # not from the earlier read — a close racing a debit used to book the whole
+            # deposit as owed after part of it was spent.
+            now = channels._now_iso()
+            if not _move(
+                conn,
+                "UPDATE channels SET status = 'settled', settle_tx_hash = ?, "
+                "closed_at = ? WHERE channel_id = ? AND status = 'open'",
+                (settle_tx_hash, now, channel_id),
+            ):
+                current = conn.execute(
+                    "SELECT status FROM channels WHERE channel_id = ?", (channel_id,),
+                ).fetchone()
+                return {"error": f"channel is {current['status'] if current else 'gone'}"}
+
             # Outstanding Pay-on-Verified holds must resolve (capture or release)
             # before close — the reserved cents are in neither balance nor used yet,
-            # so settling now would strand them.
+            # so settling now would strand them. Counted after the status change, so a
+            # hold placed by another process just before it is seen here and one placed
+            # just after it finds the channel no longer open.
             pending_holds = conn.execute(
                 "SELECT COUNT(*) FROM channel_holds "
                 "WHERE channel_id = ? AND status = 'held'",
                 (channel_id,),
             ).fetchone()[0]
             if pending_holds:
+                conn.rollback()
                 return {
                     "error": (
                         f"channel has {pending_holds} pending verified settlement(s) — "
@@ -696,12 +716,9 @@ class LedgerOpeningMixin:
                     )
                 }
 
-            now = channels._now_iso()
-            conn.execute(
-                "UPDATE channels SET status = 'settled', settle_tx_hash = ?, "
-                "closed_at = ? WHERE channel_id = ?",
-                (settle_tx_hash, now, channel_id),
-            )
+            row = conn.execute(
+                "SELECT * FROM channels WHERE channel_id = ?", (channel_id,)
+            ).fetchone()
             # The remainder is a DEBT, not a transfer: the deposit was paid to the
             # platform's settlement wallet and this process never sends value.
             obligation = self._record_payout_obligation(
@@ -734,3 +751,4 @@ class LedgerOpeningMixin:
 # Imported after the class on purpose: methods read aimarket_hub.channels at call time
 # (where its settings and test patches live), and either module may load first.
 from aimarket_hub import channels  # noqa: E402
+from aimarket_hub.channel_ledger.spending import _move  # noqa: E402

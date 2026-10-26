@@ -73,10 +73,10 @@ COPY --from=studio /build/studio/dist/ /app/hephaestus/studio/dist/
 # ── Widget static files (served by hub at /widget/) ───────────
 COPY aimarket-widget/ /app/aimarket-widget/
 
-# ── 14 plugin shims that re-export from hub-core (plugins/ also holds the
-#    aimarket-provenance monorepo-entry, whose build fails here — its package-dir
-#    points outside the build context — and is harmless: provenance is installed
-#    canonically in the next step). ─────
+# ── The plugin packages under plugins/ (shims that re-export from hub-core).
+#    Provenance is not among them: it is installed from aimarket-hub/plugins/ in
+#    the next step (the old plugins/aimarket-provenance re-export, which always
+#    failed to build here, was removed on 2026-10-15). ─────
 COPY plugins/ /tmp/plugins/
 RUN for d in /tmp/plugins/*/; do pip install --no-cache-dir "$d" 2>/dev/null || true; done \
     && rm -rf /tmp/plugins

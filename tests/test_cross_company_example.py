@@ -110,6 +110,7 @@ def _independent(monkeypatch, tmp_path, attested, attested_db, indep_acct_at_att
     }
     with hub(monkeypatch, tmp_path, **env) as (client, db):
         import aimarket_hub.api as api_mod
+        import aimarket_hub.peer_routing as peer_routing
         import aimarket_hub.outbound_http as outbound
 
         def transport(method, url, headers, body, timeout):
@@ -140,7 +141,7 @@ def _independent(monkeypatch, tmp_path, attested, attested_db, indep_acct_at_att
 
         monkeypatch.setattr(outbound, "safe_post", safe_post)
         monkeypatch.setattr(outbound, "safe_get", safe_get)
-        monkeypatch.setattr(api_mod, "_peer_endpoint_cache", {})
+        monkeypatch.setattr(peer_routing, "_peer_endpoint_cache", {})
         db.upsert_peer(Peer(url=ATTESTED, name="Attested Memory", capabilities_count=2, trust_score=0.9,
                             well_known_url=f"{ATTESTED}/.well-known/ai-market.json", trusted=True))
         for product, cap, price in (("claim-check", "claim.check@v1", CHECK_PRICE),

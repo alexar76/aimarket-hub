@@ -9,6 +9,62 @@ import math
 from typing import Any
 
 
+def _move(conn: Any, sql: str, params: tuple) -> bool:
+    """Run one conditional UPDATE; True when it matched exactly one row.
+
+    Every money move on a channel is a single statement whose WHERE re-checks what the
+    caller read (still open, enough balance, hold still held), so the database decides
+    against the row as it is at write time. The ledger's lock serializes one process only:
+    with two ledgers on one database (two hub workers, or a CLI beside the server) the
+    old read-then-write lost half of 240 concurrent debits, and a close racing a debit
+    booked the whole deposit as owed after 30 cents of it were spent (tested in
+    tests/test_channel_ledger_races.py). On a miss the transaction is rolled back here.
+    Each call runs on the connection's own `get_connection()`, so rowcount is this
+    statement's alone.
+    """
+    cur = conn.execute(sql, params)
+    if getattr(cur, "rowcount", 0) == 1:
+        return True
+    conn.rollback()
+    return False
+
+
+def _insert_once(conn: Any, sql: str, params: tuple) -> bool:
+    """INSERT a row keyed by a receipt id; False (rolled back) when another writer has it."""
+    try:
+        conn.execute(sql, params)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if not any(k in msg for k in ("unique", "constraint", "duplicate")):
+            raise
+        conn.rollback()
+        return False
+    return True
+
+
+def _balance_cents(conn: Any, channel_id: str) -> int:
+    row = conn.execute(
+        "SELECT balance_cents FROM channels WHERE channel_id = ?", (channel_id,),
+    ).fetchone()
+    return int(row["balance_cents"]) if row else 0
+
+
+def _lost_race(conn: Any, channel_id: str, amount_usd: float) -> dict[str, Any]:
+    """Why a debit or hold matched no row: the channel changed after it was read."""
+    row = conn.execute(
+        "SELECT status, balance_cents FROM channels WHERE channel_id = ?", (channel_id,),
+    ).fetchone()
+    if not row:
+        return {"error": "channel not found"}
+    if row["status"] != "open":
+        return {"error": "channel not open"}
+    return {
+        "error": "insufficient balance",
+        "needed": amount_usd,
+        "balance": channels._cents_to_dollars(row["balance_cents"]),
+    }
+
+
 class LedgerSpendingMixin:
     """Debits, holds, refunds, balances and statistics."""
 
@@ -74,19 +130,23 @@ class LedgerSpendingMixin:
                 ).fetchone()
                 if existing:
                     return {"error": "receipt already processed (replay rejected)"}
-                conn.execute(
+                if not _insert_once(
+                    conn,
                     "INSERT INTO debited_receipts (receipt_id, channel_id, amount_cents, timestamp) "
                     "VALUES (?, ?, ?, ?)",
                     (receipt_id, channel_id, amount_cents, channels._now_iso()),
-                )
+                ):
+                    return {"error": "receipt already processed (replay rejected)"}
 
-            new_balance = balance_cents - amount_cents
-            new_used = row["used_cents"] + amount_cents
-            conn.execute(
-                "UPDATE channels SET balance_cents = ?, used_cents = ? "
-                "WHERE channel_id = ?",
-                (new_balance, new_used, channel_id),
-            )
+            # One conditional statement moves the money (see _move).
+            if not _move(
+                conn,
+                "UPDATE channels SET balance_cents = balance_cents - ?, used_cents = used_cents + ? "
+                "WHERE channel_id = ? AND status = 'open' AND balance_cents >= ?",
+                (amount_cents, amount_cents, channel_id, amount_cents),
+            ):
+                return _lost_race(conn, channel_id, amount_usd)
+            new_balance = _balance_cents(conn, channel_id)
             conn.commit()
 
             remaining = channels._cents_to_dollars(new_balance)
@@ -146,16 +206,21 @@ class LedgerSpendingMixin:
                 if existing:
                     return {"error": "receipt already processed (replay rejected)"}
 
-            conn.execute(
+            if not _insert_once(
+                conn,
                 "INSERT INTO channel_holds (receipt_id, channel_id, amount_cents, status, created_at) "
                 "VALUES (?, ?, ?, 'held', ?)",
                 (receipt_id, channel_id, amount_cents, channels._now_iso()),
-            )
-            new_balance = balance_cents - amount_cents
-            conn.execute(
-                "UPDATE channels SET balance_cents = ? WHERE channel_id = ?",
-                (new_balance, channel_id),
-            )
+            ):
+                return {"error": "receipt already processed (replay rejected)"}
+            if not _move(
+                conn,
+                "UPDATE channels SET balance_cents = balance_cents - ? "
+                "WHERE channel_id = ? AND status = 'open' AND balance_cents >= ?",
+                (amount_cents, channel_id, amount_cents),
+            ):
+                return _lost_race(conn, channel_id, amount_usd)
+            new_balance = _balance_cents(conn, channel_id)
             conn.commit()
             remaining = channels._cents_to_dollars(new_balance)
 
@@ -180,6 +245,16 @@ class LedgerSpendingMixin:
             if not hold:
                 return {"error": "hold not found or already resolved"}
 
+            # The hold changes state first and only if it is still held: a capture and a
+            # release racing from two processes both read 'held', and without the condition
+            # each moved the cents (into used AND back into balance), minting them.
+            if not _move(
+                conn,
+                "UPDATE channel_holds SET status = 'captured', resolved_at = ? "
+                "WHERE receipt_id = ? AND status = 'held'",
+                (channels._now_iso(), receipt_id),
+            ):
+                return {"error": "hold not found or already resolved"}
             conn.execute(
                 "INSERT INTO debited_receipts (receipt_id, channel_id, amount_cents, timestamp) "
                 "VALUES (?, ?, ?, ?)",
@@ -188,11 +263,6 @@ class LedgerSpendingMixin:
             conn.execute(
                 "UPDATE channels SET used_cents = used_cents + ? WHERE channel_id = ?",
                 (hold["amount_cents"], hold["channel_id"]),
-            )
-            conn.execute(
-                "UPDATE channel_holds SET status = 'captured', resolved_at = ? "
-                "WHERE receipt_id = ?",
-                (channels._now_iso(), receipt_id),
             )
             conn.commit()
 
@@ -212,14 +282,16 @@ class LedgerSpendingMixin:
             if not hold:
                 return {"error": "hold not found or already resolved"}
 
+            if not _move(
+                conn,
+                "UPDATE channel_holds SET status = 'released', resolved_at = ? "
+                "WHERE receipt_id = ? AND status = 'held'",
+                (channels._now_iso(), receipt_id),
+            ):
+                return {"error": "hold not found or already resolved"}
             conn.execute(
                 "UPDATE channels SET balance_cents = balance_cents + ? WHERE channel_id = ?",
                 (hold["amount_cents"], hold["channel_id"]),
-            )
-            conn.execute(
-                "UPDATE channel_holds SET status = 'released', resolved_at = ? "
-                "WHERE receipt_id = ?",
-                (channels._now_iso(), receipt_id),
             )
             row = conn.execute(
                 "SELECT balance_cents FROM channels WHERE channel_id = ?",
@@ -317,13 +389,19 @@ class LedgerSpendingMixin:
             if amount_cents <= 0:
                 return {"error": "refund amount would exceed recorded spend"}
 
-            new_balance = row["balance_cents"] + amount_cents
-            new_used = max(0, row["used_cents"] - amount_cents)
-            conn.execute(
-                "UPDATE channels SET balance_cents = ?, used_cents = ? "
-                "WHERE channel_id = ?",
-                (new_balance, new_used, channel_id),
-            )
+            if not _move(
+                conn,
+                "UPDATE channels SET balance_cents = balance_cents + ?, used_cents = used_cents - ? "
+                "WHERE channel_id = ? AND status = 'open' AND used_cents >= ?",
+                (amount_cents, amount_cents, channel_id, amount_cents),
+            ):
+                current = conn.execute(
+                    "SELECT status FROM channels WHERE channel_id = ?", (channel_id,),
+                ).fetchone()
+                if current and current["status"] != "open":
+                    return {"error": f"channel is {current['status']} — refund only allowed on open channels"}
+                return {"error": "refund amount would exceed recorded spend"}
+            new_balance = _balance_cents(conn, channel_id)
             conn.commit()
 
             remaining = channels._cents_to_dollars(new_balance)

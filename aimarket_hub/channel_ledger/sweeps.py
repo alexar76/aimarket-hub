@@ -65,12 +65,31 @@ class LedgerSweepsMixin:
             ).fetchall()
 
             count = 0
-            for row in rows:
-                conn.execute(
+            for candidate in rows:
+                channel_id = candidate["channel_id"]
+                # Expire only if still open, and owe what the channel holds NOW: another
+                # hub process may have debited or closed it since the scan. A hold placed
+                # in between is seen here and the channel waits for a later pass.
+                cur = conn.execute(
                     "UPDATE channels SET status = 'expired', closed_at = ? "
-                    "WHERE channel_id = ?",
-                    (now, row["channel_id"]),
+                    "WHERE channel_id = ? AND status = 'open'",
+                    (now, channel_id),
                 )
+                if getattr(cur, "rowcount", 0) != 1:
+                    continue
+                held = conn.execute(
+                    "SELECT COUNT(*) FROM channel_holds WHERE channel_id = ? AND status = 'held'",
+                    (channel_id,),
+                ).fetchone()[0]
+                if held:
+                    conn.execute(
+                        "UPDATE channels SET status = 'open', closed_at = '' WHERE channel_id = ?",
+                        (channel_id,),
+                    )
+                    continue
+                row = conn.execute(
+                    "SELECT * FROM channels WHERE channel_id = ?", (channel_id,)
+                ).fetchone()
                 obligation = self._record_payout_obligation(
                     conn, row, kind="expiry_remainder", now=now,
                 )
@@ -85,8 +104,8 @@ class LedgerSweepsMixin:
                     ),
                 )
 
+            conn.commit()
             if count:
-                conn.commit()
                 logger.info("Swept %d expired channels", count)
             return count
 
