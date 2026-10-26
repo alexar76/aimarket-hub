@@ -327,8 +327,10 @@ def register(
         refused, which MCP client families call it and how long invokes take: an
         operator's dashboard, not a public page. Prometheus scrapes it from inside (the
         container network, the host), while everything that reaches the hub through the
-        public proxy carries a header nginx adds. So by default only a direct caller from
-        a loopback or private address reads it. ``AIMARKET_METRICS_TOKEN`` admits a
+        public proxy carries a header nginx adds — if the proxy adds one: nginx's default
+        proxy_pass does not, and behind such a front this page is public (see
+        docs/observability-prometheus.md). So by default only a direct caller from a
+        loopback or private address reads it. ``AIMARKET_METRICS_TOKEN`` admits a
         scraper that has to come from outside (``Authorization: Bearer …``), and
         ``AIMARKET_METRICS_PUBLIC=1`` makes the page world-readable again.
         """

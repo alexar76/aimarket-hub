@@ -11,9 +11,8 @@
     "noUnusedLocals": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["node"],
+    "types": ["node", "vite/client"],
     "allowImportingTsExtensions": false,
-    "baseUrl": ".",
     "paths": { "@core/*": ["../src/*"] }
   },
   "include": ["src", "vite.config.ts"]
