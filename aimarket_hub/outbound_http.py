@@ -228,10 +228,21 @@ async def safe_post(
     headers: dict[str, str] | None = None,
     timeout: float = 30.0,
     invoke: bool = False,
+    oracle_paid: bool = False,
 ) -> httpx.Response:
+    from aimarket_hub import oracle_paid_tier
+
+    # Only the admitted-call flag can select a configured grant. Strip even a
+    # caller-supplied spelling of the header; it is never payment evidence.
+    transport_url = resolve_invoke_url(url) if invoke else url
+    grant = oracle_paid_tier.headers_for(url, transport_url=transport_url, admitted=oracle_paid)
     target, pin_headers, ext = await prepare_safe_request_async(url, invoke=invoke)
-    out_headers = {**(headers or {}), **pin_headers}
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+    out_headers = {k: v for k, v in (headers or {}).items() if k.lower() != oracle_paid_tier.HEADER.lower()}
+    out_headers.update(grant)
+    out_headers.update(pin_headers)
+    # A configured bearer grant must not be exposed to an ambient HTTP proxy.
+    transport_options = {"trust_env": False} if grant else {}
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, **transport_options) as client:
         return await client.post(target, json=json, headers=out_headers, extensions=ext or None)
 
 

@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 import httpx
 
-from aimarket_hub import invoke_funding, provider_request_auth, subcontract
+from aimarket_hub import invoke_funding, oracle_paid_tier, provider_request_auth, subcontract
 from aimarket_hub.acex_storage import LedgerNotConfigured
 from aimarket_hub.models import InvocationStat
 from aimarket_hub.sandbox_trials import release_sandbox_trial, sandbox_demo_result, sandbox_stub_invoke_enabled
@@ -187,6 +187,10 @@ async def _local_call_provider(d: SimpleNamespace, call: _Call, local: _Local):
             },
             headers=provider_headers,
             invoke=True,
+            oracle_paid=oracle_paid_tier.funded(
+                price=local.price, sandbox=sandbox_mode, reserved=local.reserved,
+                hold_rail=local.hold_rail, x402_accepted=local.x402_accepted,
+            ),
         )
         if ir.status_code == 200:
             try:

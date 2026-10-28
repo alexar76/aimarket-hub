@@ -91,6 +91,7 @@ class _Outbound:
         # does, and the reseller rail lives entirely in them.
         self.post_headers: list[dict[str, str]] = []
         self.gets: list[str] = []
+        self.post_oracle_paid: list[bool] = []
 
     async def safe_get(self, url, *, timeout=10.0):
         self.gets.append(url)
@@ -98,8 +99,9 @@ class _Outbound:
             return _Resp(404, {})
         return _Resp(200, self.well_known)
 
-    async def safe_post(self, url, *, json=None, headers=None, timeout=30.0, invoke=False):
+    async def safe_post(self, url, *, json=None, headers=None, timeout=30.0, invoke=False, oracle_paid=False):
         self.posts.append((url, json))
+        self.post_oracle_paid.append(oracle_paid)
         self.post_headers.append(dict(headers or {}))
         if self.post_error is not None:
             raise self.post_error

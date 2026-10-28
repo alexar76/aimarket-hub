@@ -185,7 +185,7 @@ def world(monkeypatch, tmp_path):
         auditor = audit_server.Auditor(cfg, transport=transport)
         auditor.wallet.sleep = lambda s: None
 
-        async def safe_post(url, *, json=None, headers=None, timeout=30.0, invoke=False):
+        async def safe_post(url, *, json=None, headers=None, timeout=30.0, invoke=False, oracle_paid=False):
             assert url == AUDIT_URL, f"the hub may only call the provider here, not {url}"
             raw = __import__("json").dumps(json or {}).encode()
             status, out_headers, out = await asyncio.to_thread(

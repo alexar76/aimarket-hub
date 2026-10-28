@@ -138,7 +138,7 @@ def witness_world(monkeypatch, tmp_path, *, offline: tuple[str, ...] = (), **env
                                     child_source_hub=PEER)
         world.witness = witness_server.Witness(cfg, transport=transport)
 
-        async def safe_post(url, *, json=None, headers=None, timeout=30.0, invoke=False):
+        async def safe_post(url, *, json=None, headers=None, timeout=30.0, invoke=False, oracle_paid=False):
             sent = {k: v for k, v in (headers or {}).items() if v}
             if url == WITNESS_URL:
                 world.hub_to_provider.append(sent)
@@ -695,7 +695,7 @@ def test_a_token_issued_to_another_product_with_the_same_capability_id_is_refuse
         replay: dict = {}
         inner_post = outbound.safe_post
 
-        async def safe_post(url, *, json=None, headers=None, timeout=30.0, invoke=False):
+        async def safe_post(url, *, json=None, headers=None, timeout=30.0, invoke=False, oracle_paid=False):
             if url == attacker_url:
                 token = {k: v for k, v in (headers or {}).items() if v}[subcontract.JOB_HEADER]
                 status, _, body = await asyncio.to_thread(

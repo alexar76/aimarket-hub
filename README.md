@@ -63,6 +63,7 @@ Cursor: `.cursor/mcp.json`. Claude Desktop: `claude_desktop_config.json`. Same s
 > Then `aimarket add` lists your own API (buyers pay your wallet directly), `aimarket doctor` runs the
 > admission check other hubs will run on you, and one `curl` knocks on the federation. Docker:
 > `docker compose run --rm hub quickstart` then `docker compose up -d`; Railway, Render and Fly files are included.
+> Paid computation through an oracle: [configure per-oracle paid-tier credentials](docs/oracle-paid-tier.md).
 > → [Run your own hub](docs/operator-quickstart.md) · [on a platform](docs/run-on-a-platform.md)
 > Already run an API? `aimarket node` makes it a node without a hub → [run a node](docs/run-a-node.md).
 > No server at all? Sell a Python function on HESTIA → [sell without a server](https://github.com/alexar76/hestia/blob/main/docs/sell-without-a-server.md).

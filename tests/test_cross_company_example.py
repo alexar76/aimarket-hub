@@ -123,7 +123,7 @@ def _independent(monkeypatch, tmp_path, attested, attested_db, indep_acct_at_att
         auditor = audit_server.Auditor(cfg, transport=transport)
         to_attested: list[dict] = []
 
-        async def safe_post(url, *, json=None, headers=None, timeout=30.0, invoke=False):
+        async def safe_post(url, *, json=None, headers=None, timeout=30.0, invoke=False, oracle_paid=False):
             sent = {k: v for k, v in (headers or {}).items() if v}
             if url == AUDIT_URL:
                 raw = __import__("json").dumps(json or {}).encode()

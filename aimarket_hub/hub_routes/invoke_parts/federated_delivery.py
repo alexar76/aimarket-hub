@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 import httpx
 
-from aimarket_hub import provider_request_auth
+from aimarket_hub import oracle_paid_tier, provider_request_auth
 from aimarket_hub.invoke_outcome import classify_invoke_outcome
 from aimarket_hub.models import InvocationStat
 from aimarket_hub.sandbox_trials import release_sandbox_trial
@@ -187,12 +187,17 @@ async def _fed_call_peer(d: SimpleNamespace, call: _Call, fed: _Fed, mcp_endpoin
     try:
         from aimarket_hub.outbound_http import safe_post
 
+        # A broker's routing fee is not payment for the oracle's computation.
+        oracle_paid = bool((fed.sells or fed.resells) and oracle_paid_tier.funded(
+            price=fed.price, sandbox=call.sandbox_mode, reserved=fed.reserved,
+            hold_rail=fed.hold_rail, x402_accepted=fed.x402_accepted,
+        ))
         tool_endpoint = _fed_tool_endpoint(fed)
         if tool_endpoint:
             # An x402 seller that answers at each tool's own URL and has no invoke route
             # (mach402.dev, agent-exec.448c.org). Same bare input as the legacy path, and the
             # same 402 passthrough and result handling below.
-            resp = await safe_post(tool_endpoint, json=body.input, headers=headers)
+            resp = await safe_post(tool_endpoint, json=body.input, headers=headers, oracle_paid=oracle_paid)
         elif mcp_endpoint:
             # `source_hub` tells the far side where the call came from — EXCEPT on a
             # peer hub's own /invoke, where that field selects the peer's routing
@@ -209,6 +214,7 @@ async def _fed_call_peer(d: SimpleNamespace, call: _Call, fed: _Fed, mcp_endpoin
                     "source_hub": "local" if to_peer_hub else config.hub_url,
                 },
                 headers=headers,
+                oracle_paid=oracle_paid,
             )
         else:
             # product_id / capability_id are interpolated into the upstream path,
@@ -216,7 +222,7 @@ async def _fed_call_peer(d: SimpleNamespace, call: _Call, fed: _Fed, mcp_endpoin
             if not _is_safe_path(body.product_id) or not _is_safe_path(body.capability_id):
                 raise HTTPException(status_code=400, detail="Invalid product or capability ID")
             provider_url = f"{peer.url}/capabilities/{body.product_id}/{body.capability_id}/invoke"
-            resp = await safe_post(provider_url, json=body.input, headers=headers)
+            resp = await safe_post(provider_url, json=body.input, headers=headers, oracle_paid=oracle_paid)
     except ValueError as exc:
         # ONLY safe_post's own refusal reaches here: an SSRF-unsafe / blocked-network
         # target, i.e. a request this hub declines to make. That is a client-visible
