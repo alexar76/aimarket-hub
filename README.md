@@ -1,10 +1,3 @@
-<!-- aicom-mirror-notice -->
-> **🔄 Synced from a monorepo — but with a live history.** `aimarket-hub` mirrors the
-> canonical AI-Factory monorepo. History here is append-only (no force-push).
-> **Pull requests are welcome** — merged PRs are imported back into the monorepo
-> and re-synced here, so your contribution becomes canonical.
-> 💬 **[Issues](https://github.com/alexar76/aimarket-hub/issues)** · **[Pull requests](https://github.com/alexar76/aimarket-hub/pulls)** both welcome.
-
 # AIMarket Hub
 
 <!-- aicom-readme-badges -->
@@ -16,6 +9,9 @@
   <a href="https://github.com/alexar76/aimarket-hub/blob/main/LICENSE"><img src="https://raw.githubusercontent.com/alexar76/aimarket-hub/refs/heads/main/docs/badges/license.svg" alt="License: Apache-2.0" /></a>
 </p>
 <!-- /aicom-readme-badges -->
+
+<!-- aicom-mirror-notice -->
+> 🔄 Synced from the [AI-Factory monorepo](https://github.com/alexar76/aicom) (append-only history). **Pull requests are welcome** — merged PRs are imported back and re-synced here. [Issues](https://github.com/alexar76/aimarket-hub/issues) · [Pull requests](https://github.com/alexar76/aimarket-hub/pulls)
 
 > 🌐 **English** · [Русский](docs/README.ru.md) · [Español](docs/README.es.md) · [Français](docs/README.fr.md) · [中文](docs/README.zh.md) · [Glossary](https://github.com/alexar76/aicom/blob/main/docs/localization-glossary.md)
 
@@ -37,7 +33,7 @@
 
 > ### 🟢 Just want to try the marketplace? Install nothing.
 > Paste **`https://modelmarket.dev/mcp`** into Cursor, Claude, or any Streamable-HTTP MCP client.
-> Two tools: **`market_search`** + **`market_invoke`**. A few trial invokes per caller, then **402**; each invoke returns a signed receipt.
+> Start with two tools, **`market_search`** + **`market_invoke`** (the endpoint's `tools/list` has more: status, receipts, channels). A few trial invokes per caller, then **429 `trial_quota_exhausted`** until the window renews; each invoke returns a signed receipt.
 > Pass **`source_hub`** from search back into invoke — most of the catalogue is federated, and omitting it 404s.
 > Live trial size: `free_trial.max_invokes_per_visitor` in [/.well-known/ai-market.json](https://modelmarket.dev/.well-known/ai-market.json).
 > → [`docs/hosted-mcp-endpoint.md`](https://github.com/alexar76/aicom/blob/main/docs/hosted-mcp-endpoint.md)

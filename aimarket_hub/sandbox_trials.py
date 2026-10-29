@@ -241,7 +241,12 @@ def trial_policy() -> dict[str, Any]:
                 else "402; open a payment channel to continue."
             )
         ),
-        "clients": {"mcp": "pip install aimarket-mcp — market_search / market_invoke"},
+        "clients": {
+            "mcp": "pip install aimarket-mcp — market_search / market_invoke",
+            "python": "pip install aimarket-agent — AIMarketAgent(..., sandbox_visitor=\"<id>\") "
+                      "or AIMARKET_SANDBOX_VISITOR; CLI: --sandbox-visitor (2.6.1+)",
+            "http": "POST /ai-market/v2/invoke with the visitor header and no payment channel",
+        },
     }
 
 

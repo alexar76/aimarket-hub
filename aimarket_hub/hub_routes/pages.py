@@ -154,6 +154,11 @@ def register(
                     flags=re.DOTALL,
                 )
         html = theme.drop_missing_links(html)
+        # The MCP endpoint card quotes the gateway's version. It was typed into the HTML
+        # (v1.0.1) and stayed there two releases after serverInfo said 1.2.0; render it
+        # from the constant the gateway itself reports.
+        from aimarket_hub.mcp_gateway import SERVER_VERSION as _mcp_version
+        html = re.sub(r"(Streamable HTTP · v)[0-9][0-9A-Za-z.\-]*", rf"\g<1>{_mcp_version}", html, count=1)
         try:
             summary, events = landing_snapshot(db, hub_url=config.hub_url, event_limit=12,
                                                policy=_ecosystem_policy())
@@ -165,7 +170,10 @@ def register(
     # The HTML handlers below are SYNC on purpose — they stat() and read() files from
     # disk, which must not happen on the event loop (it would stall concurrent
     # /invoke settlement). FastAPI dispatches sync handlers to its threadpool.
-    @app.get("/", response_class=HTMLResponse)
+    #
+    # GET and HEAD: link checkers, uptime probes and social-card fetchers send HEAD first,
+    # and a 405 there reads as "site down" (2026-10-29 stranger test: HEAD / was 405).
+    @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse, include_in_schema=False)
     def landing_page():
         return HTMLResponse(
             _load_terminal_home(),
@@ -587,7 +595,7 @@ def register(
     def operator_desk_slash():
         return _operator_page()
 
-    @app.get("/widget/demo", response_class=HTMLResponse)
+    @app.api_route("/widget/demo", methods=["GET", "HEAD"], response_class=HTMLResponse, include_in_schema=False)
     def widget_demo():
         demo_html = os.path.join(widget_dir, "demo.html") if widget_dir else None
         if demo_html and os.path.isfile(demo_html):
@@ -595,7 +603,7 @@ def register(
                 return HTMLResponse(f.read())
         return HTMLResponse("<h1>Widget demo not found</h1>", status_code=404)
 
-    @app.get("/live", response_class=HTMLResponse)
+    @app.api_route("/live", methods=["GET", "HEAD"], response_class=HTMLResponse, include_in_schema=False)
     def live_economy_stream():
         """Legacy URL — same immersive terminal as `/`."""
         return HTMLResponse(_load_terminal_home())
