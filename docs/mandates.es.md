@@ -140,7 +140,7 @@ redelegado a partir de él. Las reservas ya tomadas se liquidan con normalidad.
 ### Aprobación del propietario por encima de un umbral
 
 Añada `approvalAbove` (µUSD) a los `limits` de un mandato y cualquier llamada que cueste más
-espera por usted en lugar de gastar ([especificación §5.6](../../aimarket-protocol/mandates.md)).
+espera por usted en lugar de gastar ([especificación §5.6](https://github.com/alexar76/aimarket-protocol/blob/main/mandates.md)).
 Las llamadas pequeñas siguen sin usted; una grande necesita su firma sobre **esa** llamada.
 
 1. La llamada del agente por encima del umbral responde `402 approval_required` con un bloque

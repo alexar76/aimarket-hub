@@ -103,7 +103,7 @@ owner_unlink_payload(old_owner.did, hub_origin=HUB, account_id=ACCOUNT_ID, autho
 
 ### 超过阈值需所有者批准
 
-在授权书的 `limits` 中加入 `approvalAbove`（µUSD），任何超过该金额的单次调用都不会直接支出，而是等待您的答复（[规范 §5.6](../../aimarket-protocol/mandates.md)）。小额调用照常无人值守运行；大额调用需要您对**这一次**调用签名。
+在授权书的 `limits` 中加入 `approvalAbove`（µUSD），任何超过该金额的单次调用都不会直接支出，而是等待您的答复（[规范 §5.6](https://github.com/alexar76/aimarket-protocol/blob/main/mandates.md)）。小额调用照常无人值守运行；大额调用需要您对**这一次**调用签名。
 
 1. 智能体超过阈值的调用返回 `402 approval_required`，附带 `approval` 块：`approval_id`、`capability_id`、`amount_usd`、`max_usd`（您批准的上限；路由调用包含路由费）、`body_sha256`（确切的请求）、`expires_at`（24 小时）和 `url`。不会预留任何资金。若授权书的其他限额（`perCall`、`perDay`、`total`、某产品的每日限额）无论如何都会拒绝该调用，则立即返回 `402 mandate_limit`——不会请您签署无法执行的调用。
 2. 待处理的请求：用出资账户的 `X-API-Key` 调用 `GET /ai-market/v2/mandates/approvals?status=pending`。

@@ -140,7 +140,7 @@ qui en a été re-délégué. Les réserves déjà prises se règlent normalemen
 ### Approbation du propriétaire au-delà d'un seuil
 
 Ajoutez `approvalAbove` (µUSD) aux `limits` d'un mandat : tout appel qui coûterait davantage
-attend votre réponse au lieu de dépenser ([spécification §5.6](../../aimarket-protocol/mandates.md)).
+attend votre réponse au lieu de dépenser ([spécification §5.6](https://github.com/alexar76/aimarket-protocol/blob/main/mandates.md)).
 Les petits appels continuent sans vous ; un gros appel exige votre signature sur **cet** appel.
 
 1. L'appel de l'agent au-delà du seuil répond `402 approval_required` avec un bloc `approval` :

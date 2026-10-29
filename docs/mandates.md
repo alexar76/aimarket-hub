@@ -135,7 +135,7 @@ Holds already taken settle normally.
 ### Owner approval above a threshold
 
 Add `approvalAbove` (µUSD) to a mandate's `limits` and any single call that would cost more
-waits for you instead of spending ([spec §5.6](../../aimarket-protocol/mandates.md)). Small
+waits for you instead of spending ([spec §5.6](https://github.com/alexar76/aimarket-protocol/blob/main/mandates.md)). Small
 calls keep running unattended; a big one needs your signature on **that** call.
 
 ```python

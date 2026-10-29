@@ -102,7 +102,7 @@ answers `AUTH_REQUIRED`; nothing is charged. A limit reached is `REJECTED` with
 `status.message.metadata.aimarket = {"error": "mandate_limit", "limit": "perDay", …}`.
 
 **Over the owner's approval threshold.** A mandate whose limits carry `approvalAbove`
-([mandates.md §5.6](../../aimarket-protocol/mandates.md)) cannot spend more than that on one
+([mandates.md §5.6](https://github.com/alexar76/aimarket-protocol/blob/main/mandates.md)) cannot spend more than that on one
 call without its owner. Such a call answers `AUTH_REQUIRED` with the request the owner must
 answer in `status.message.metadata.aimarket.approval` (`approval_id`, `amount_usd`, `max_usd`,
 `expires_at`, `url`), and the task waits as long as the request does (24 h by default, not the
