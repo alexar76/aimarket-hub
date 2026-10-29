@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
 import json
 import time
 
@@ -171,6 +173,60 @@ def test_failure_keeps_paid_materials_and_does_not_purchase_later_steps(setup, m
     assert out["bill_of_materials"]["total_usd"] == 0.004
     assert out["bill_of_materials"]["remaining_budget_usd"] == 0.002
     assert out["bill_of_materials"]["steps"][1]["status"] == "queued"
+
+
+def test_each_paid_run_result_and_receipt_is_returned_with_a_signed_private_result_digest(setup):
+    service, db, _ = setup
+    listing(db, price=0)
+    listing(db, cid="demo.end@v1", price=0)
+    outputs = {"demo.read@v1": {"name": "Private Counterparty Ω", "found": True},
+               "demo.end@v1": {"registered": True}}
+    receipts = {}
+
+    async def invoke(payload, *_args):
+        cid = payload["capability_id"]
+        receipt = {"nonce": cid, "result_hash": hashlib.sha256(json.dumps(outputs[cid]).encode()).hexdigest()}
+        receipt["signature"] = service.signer.sign_object(receipt)
+        receipts[cid] = receipt
+        return 200, {"success": True, "result": outputs[cid], "receipt": receipt}
+
+    service.invoke = invoke
+    q = quote(service, [node(), node("end", "demo.end@v1")])
+    advance(service, q)
+    out = advance(service, q, step="end")
+    assert out["step_results"] == {"read": {"result": outputs["demo.read@v1"], "receipt": receipts["demo.read@v1"]},
+                                    "end": {"result": outputs["demo.end@v1"], "receipt": receipts["demo.end@v1"]}}
+    bill = out["bill_of_materials"]
+    expected = hashlib.sha256(json.dumps(outputs["demo.read@v1"], sort_keys=True,
+        separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode()).hexdigest()
+    assert bill["steps"][0]["result_sha256"] == expected
+    assert "Private Counterparty" not in json.dumps(bill)
+    assert "response_result" not in bill["steps"][0] and "result" not in bill["steps"][0]
+    assert Signer.verify_object_signature(bill, service.signer.public_key_b64)
+    tampered = copy.deepcopy(bill)
+    tampered["steps"][0]["result_sha256"] = "0" * 64
+    assert not Signer.verify_object_signature(tampered, service.signer.public_key_b64)
+    state, _ = service.load(q["run_id"], q["access_token"])
+    assert service.view(state)["step_results"] == out["step_results"]
+
+
+def test_paid_error_retains_returned_evidence_without_inventing_evidence_for_queued_steps(setup):
+    service, db, _ = setup
+    listing(db, price=0)
+    listing(db, cid="demo.end@v1", price=0)
+    evidence = {"source_status": "unavailable"}
+    receipt = {"nonce": "failed-check", "signature": {"value": "original-rejection"}}
+
+    async def fail(*_args):
+        return 503, {"success": False, "result": evidence, "receipt": receipt, "error": "registry unavailable"}
+
+    service.invoke = fail
+    q = quote(service, [node(), node("end", "demo.end@v1")])
+    out = advance(service, q)
+    assert out["status"] == "failed"
+    assert out["step_results"] == {"read": {"result": evidence, "receipt": receipt}}
+    assert out["bill_of_materials"]["steps"][1]["status"] == "queued"
+    assert "result_sha256" not in out["bill_of_materials"]["steps"][1]
 
 
 def test_references_are_resolved_and_validated_before_next_payment(setup, monkeypatch):

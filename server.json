@@ -7,7 +7,7 @@
     "url": "https://github.com/alexar76/aimarket-hub",
     "source": "github"
   },
-  "version": "3.16.1",
+  "version": "3.16.2",
   "remotes": [
     {
       "type": "streamable-http",

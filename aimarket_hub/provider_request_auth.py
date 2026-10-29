@@ -3,7 +3,7 @@
 A provider built on oracle-core can now refuse a priced capability to any caller that
 is not a hub it trusts (``oracles/core/oracle_core/price_gate.py``). Before that, the
 provider's own URL was a second door with no lock on it: on 2026-10-16 an unpaid
-``POST`` straight to GAIA or EMPORION got the full $0.002 answer that this hub sells
+``POST`` straight to GAIA or SYMMARTYS got the full $0.002 answer that this hub sells
 for $0.002.
 
 This module writes the five headers that gate reads. They say "this hub, at this

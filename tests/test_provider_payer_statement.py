@@ -204,7 +204,7 @@ def test_the_statement_is_for_the_admissions_own_call(tmp_path, monkeypatch):
     dict(payer=""),                                   # nobody checked
     dict(payer="buyer-1"),                            # not a wallet
     dict(rail="credits"),                             # not a rail GAIA knows
-    dict(capability_id="emporion.vat.check@v1"),      # does not need one
+    dict(capability_id="symmartys.vat.check@v1"),      # does not need one
 ])
 def test_no_statement_rather_than_a_wrong_one(tmp_path, kw):
     signer = Signer(tmp_path / "hub.key")

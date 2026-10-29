@@ -4,7 +4,7 @@ FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="AIMarket Hub"
 LABEL org.opencontainers.image.description="Federation hub — pip install aimarket-hub"
-LABEL org.opencontainers.image.version="3.16.1"
+LABEL org.opencontainers.image.version="3.16.2"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 WORKDIR /app

@@ -1,7 +1,7 @@
-"""AIMarket Hub v3.14.1 — Federation reference implementation.
+"""AIMarket Hub — Federation reference implementation.
 
 Apache-2.0 licensed. Crawls, indexes, searches, and routes AI capabilities
 across the AIMarket Protocol network.
 """
 
-__version__ = "3.16.1"
+__version__ = "3.16.2"

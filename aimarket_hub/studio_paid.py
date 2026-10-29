@@ -51,6 +51,15 @@ def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def result_sha256(result: Any) -> str:
+    """SHA-256 of UTF-8 sorted, compact, ASCII-escaped JSON (non-finite refused).
+
+    Same result commitment as the trial executor; unlike object signatures, this
+    digest includes every field of the result, including a nested signature.
+    """
+    return hashlib.sha256(_json(result).encode("utf-8")).hexdigest()
+
+
 def ordered_graph(nodes: list[dict]) -> list[dict]:
     nodes = [{**n, "id": n.get("id") or f"n{i}", "source_hub": n.get("source_hub") or "local"}
              for i, n in enumerate(nodes)]
@@ -257,7 +266,7 @@ class PaidStudio:
         out = {k: node[k] for k in ("id", "product_id", "capability_id", "source_hub")}
         out.update({"status": step["status"], "quoted_usd": float(Decimal(terms["amount_units"]) / 10 ** terms["decimals"]) if terms else 0,
                     "payment_rail": "seller_direct" if terms else "free", "terms": terms})
-        for key in ("success", "status_code", "error", "receipt", "job", "tx_hash", "payment", "started_at", "finished_at"):
+        for key in ("success", "status_code", "error", "receipt", "result_sha256", "job", "tx_hash", "payment", "started_at", "finished_at"):
             if key in step:
                 out[key] = ({k: v for k, v in step[key].items() if k != "grant_secret"}
                             if key == "job" and isinstance(step[key], dict) else step[key])
@@ -280,6 +289,16 @@ class PaidStudio:
 
     def view(self, state: dict, busy: bool = False) -> dict:
         steps = [self.public_step(s) for s in state["steps"]]
+        # The token-gated run response may return source data. Public signed bills
+        # carry only its digest; never copy these results into ``steps`` or ``bill``.
+        step_results = {}
+        for step in state["steps"]:
+            nid = step["node"]["id"]
+            if "response_result" in step or nid in state.get("results", {}):
+                evidence = {"result": step.get("response_result", state["results"].get(nid))}
+                if step.get("receipt") is not None:
+                    evidence["receipt"] = step["receipt"]
+                step_results[nid] = evidence
         paid = sum(int((s.get("payment") or {}).get("paid_units", 0)) +
                    int((s.get("payment") or {}).get("fee_units", 0)) for s in state["steps"])
         unresolved = [s["node"]["id"] for s in state["steps"] if s.get("tx_hash") and not s.get("payment")]
@@ -318,7 +337,8 @@ class PaidStudio:
         current = next((s for s in steps if s["status"] not in ("succeeded", "failed")), None)
         return {"trace_id": state["run_id"], "status": state["status"], "busy": busy,
                 "bill_of_materials": bill, "next_step": current if state["status"] not in ("completed", "failed") else None,
-                "final_result": state.get("final_result", {}), "detail": state.get("detail", "")}
+                "final_result": state.get("final_result", {}), "step_results": step_results,
+                "detail": state.get("detail", "")}
 
     async def advance(self, run_id: str, token: str, body: AdvanceRequest, caller: str,
                       *, managed: bool = False, job_headers: Callable | None = None,
@@ -477,10 +497,12 @@ class PaidStudio:
             success = 200 <= status < 300 and answer.get("success", answer.get("ok", False)) is True
             step.update(status="succeeded" if success else "failed", success=success,
                         status_code=status, finished_at=time.time(), receipt=answer.get("receipt"))
+            result = answer.get("result", answer.get("output", {}))
+            step["response_result"] = result
+            step["result_sha256"] = result_sha256(result)
             if isinstance(answer.get("job"), dict):
                 step["job"] = answer["job"]
             if success:
-                result = answer.get("result", answer.get("output", {}))
                 state["results"][node["id"]] = result
                 state["final_result"] = result
                 if all(s["status"] == "succeeded" for s in state["steps"]):

@@ -132,6 +132,17 @@ class TestBodyIsValidatedHere:
 
 
 class TestForwarding:
+    def test_independent_check_policy_and_private_evidence_survive_forwarding(self, tmp_path, monkeypatch):
+        evidence = {"company": {"result": {"found": True}, "receipt": {"signature": {"value": "signed"}}}}
+        seen = _capture(monkeypatch, _Resp({"trace_id": "tr_checks", "step_results": evidence}))
+        with _client(tmp_path, monkeypatch, executor=EXECUTOR) as client:
+            response = client.post("/studio/run", json={"nodes": [NODE], "continue_on_error": True})
+            invalid = client.post("/studio/run", json={"nodes": [NODE], "continue_on_error": "true"})
+        assert response.status_code == 200
+        assert seen["json"]["continue_on_error"] is True
+        assert response.json()["step_results"] == evidence
+        assert invalid.status_code == 422
+
     def test_it_posts_the_blueprint_to_the_configured_executor(self, tmp_path, monkeypatch):
         seen = _capture(monkeypatch, _Resp({"trace_id": "tr_abc", "bill_of_materials": {}}))
         with _client(tmp_path, monkeypatch, executor=EXECUTOR + "/") as client:

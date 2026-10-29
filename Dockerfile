@@ -19,7 +19,7 @@ FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="modelmarket Hub"
 LABEL org.opencontainers.image.description="Federation hub for AI capability discovery and routing"
-LABEL org.opencontainers.image.version="3.7.0"
+LABEL org.opencontainers.image.version="3.16.2"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 WORKDIR /app

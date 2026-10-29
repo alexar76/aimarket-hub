@@ -421,6 +421,8 @@ def register(
         payload: dict[str, Any] = {"nodes": [n.model_dump(exclude_none=True) for n in body.nodes]}
         if body.channel_id:
             payload["channel_id"] = body.channel_id
+        if body.continue_on_error:
+            payload["continue_on_error"] = True
 
         # `post_configured`, not `safe_post`: the destination is the hub's own configuration,
         # so the caller-SSRF refusal is a false positive here — and on the first deploy it

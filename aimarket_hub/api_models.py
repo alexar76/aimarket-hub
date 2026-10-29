@@ -136,6 +136,7 @@ class StudioRunRequest(BaseModel):
     """
     nodes: list[StudioNode] = Field(..., min_length=1, max_length=16)
     channel_id: str | None = Field(None, max_length=64)
+    continue_on_error: bool = Field(False, strict=True)
 
 
 class IpoRequest(BaseModel):
