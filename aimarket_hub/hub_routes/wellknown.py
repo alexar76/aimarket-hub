@@ -30,6 +30,11 @@ from aimarket_hub.channels import payment_readiness
 from aimarket_hub.config import HubConfig
 from aimarket_hub.database import HubDatabase
 from aimarket_hub.deposit_watch import DepositStore
+from aimarket_hub.discovery_names import (
+    DRAFT_WELL_KNOWN_PATH,
+    LEGACY_WELL_KNOWN_PATH,
+    draft_discovery_document,
+)
 from aimarket_hub.models import Peer
 from aimarket_hub.plugin import PluginRegistry
 from aimarket_hub.public_cache import PublicDocumentCache
@@ -219,14 +224,17 @@ def register(
     # is therefore up to a TTL old; it is inside the signature, so it stays honest.
     _well_known_cache = PublicDocumentCache("AIMARKET_WELL_KNOWN_CACHE_S", 60.0)
 
-    @wellknown_router.api_route(
-        "/.well-known/ai-market.json", methods=["GET", "HEAD"]
-    )
-    async def well_known(
-        x_aimarket_crawler: str = Header(default=""),
-        user_agent: str = Header(default=""),
-    ):
-        if x_aimarket_crawler:
+    def _note_crawler(x_aimarket_crawler: str, agent_marketplace_crawler: str, user_agent: str) -> None:
+        """Hand an inbound crawler's self-declared URL to the off-path recorder.
+
+        Two spellings of one header: ``X-AIMarket-Crawler`` (what every peer sends today)
+        and ``Agent-Marketplace-Crawler`` (the Internet-Draft's name, RFC 6648 — no
+        ``X-``). Our own crawler sends both; a draft-only implementation sends the second.
+        When both arrive, the legacy one wins, since that is the value peers have always
+        been identified by.
+        """
+        crawler_hub = x_aimarket_crawler or agent_marketplace_crawler
+        if crawler_hub:
             # Off the response path: a peer's discovery must not cost us latency.
             #
             # Deliberately NOT asyncio's default executor. The work below calls
@@ -238,13 +246,53 @@ def register(
                 pool = _inbound_pool()
                 if pool._work_queue.qsize() < 32:  # noqa: SLF001 - bounded backlog
                     pool.submit(
-                        _note_inbound_federation, x_aimarket_crawler, user_agent
+                        _note_inbound_federation, crawler_hub, user_agent
                     )
+
+    @wellknown_router.api_route(LEGACY_WELL_KNOWN_PATH, methods=["GET", "HEAD"])
+    async def well_known(
+        x_aimarket_crawler: str = Header(default=""),
+        agent_marketplace_crawler: str = Header(default=""),
+        user_agent: str = Header(default=""),
+    ):
+        _note_crawler(x_aimarket_crawler, agent_marketplace_crawler, user_agent)
         # HEAD must succeed (Allow: GET alone → 405). Same payload as GET;
         # Starlette/FastAPI omit the body for HEAD automatically.
         return await run_in_threadpool(
             _well_known_cache.get, "document", _build_well_known
         )
+
+    @wellknown_router.api_route(DRAFT_WELL_KNOWN_PATH, methods=["GET", "HEAD"])
+    async def well_known_draft(
+        x_aimarket_crawler: str = Header(default=""),
+        agent_marketplace_crawler: str = Header(default=""),
+        user_agent: str = Header(default=""),
+    ):
+        """The discovery document under the Internet-Draft's name and member names.
+
+        Same key, same catalogue, same counts as ``/.well-known/ai-market.json`` — it is
+        built from that document, so the two cannot disagree. ``peers`` is the list of
+        discovery-document URIs this hub actually reads for its admitted peers; the
+        legacy document keeps the richer per-peer objects. Served alongside the legacy
+        path, not instead of it: no peer reads this one yet.
+        """
+        _note_crawler(x_aimarket_crawler, agent_marketplace_crawler, user_agent)
+        return await run_in_threadpool(
+            _well_known_cache.get, "agent-marketplace", _build_well_known_draft
+        )
+
+    def _build_well_known_draft() -> dict[str, Any]:
+        # Built directly, NOT through the cache: this function already runs under the
+        # cache's lock (for the "agent-marketplace" key), and PublicDocumentCache's lock is
+        # not re-entrant. Asking the cache for "document" from in here deadlocked the first
+        # request to the draft path on a cold cache — and every well-known request after
+        # it, on both paths, until a restart (uni + attested, 2026-10-30 04:40Z).
+        legacy = _build_well_known()
+        discovery_urls = [
+            p.well_known_url or f"{p.url.rstrip('/')}{LEGACY_WELL_KNOWN_PATH}"
+            for p in db.list_peers()
+        ]
+        return draft_discovery_document({**legacy, "hub_url": config.hub_url}, discovery_urls)
 
     def _build_well_known() -> dict[str, Any]:
         peers = []

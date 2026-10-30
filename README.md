@@ -519,7 +519,7 @@ are stripped before any model sees evidence. An optional LLM judge is **veto-onl
 | `AIMARKET_FEDERATION_JUDGE_REQUIRED` | `0` | If `1`, a judge error blocks auto-admit (also implied when auto-admit + key) |
 | `AIMARKET_FEDERATION_ASSAY_REQUIRE` | `0` | If `1`, human Approve refuses unless last assay is `pass` |
 
-Join path: [`docs/join-the-federation.md`](https://github.com/alexar76/aicom/blob/main/docs/join-the-federation.md) · internals: [`docs/federation-admission.md`](docs/federation-admission.md) (EN·RU·ES·FR·ZH).
+Join path: [`docs/join-the-federation.md`](https://github.com/alexar76/aicom/blob/main/docs/join-the-federation.md) · internals: [`docs/federation-admission.md`](docs/federation-admission.md) (EN·RU·ES·FR·ZH) · both spellings of the discovery document and crawler header (`/.well-known/agent-marketplace`, `Agent-Marketplace-Crawler`, the IETF drafts): [`docs/discovery-names.md`](docs/discovery-names.md).
 
 Surfaces: `GET /federation/peers` (`pending` array) and `GET /federation/preview?url=…` are
 **public** — anyone can see who knocked and what they claim to offer; `GET /federation/inbound`

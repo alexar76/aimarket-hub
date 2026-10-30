@@ -759,3 +759,90 @@ def test_deleting_a_peer_removes_what_was_indexed_from_it(tmp_path):
     assert db.count_capabilities(source_hub=STRANGER) == 1
     assert db.delete_peer(STRANGER) is True
     assert db.count_capabilities(source_hub=STRANGER) == 0
+
+
+# ── Both spellings: /.well-known/agent-marketplace and Agent-Marketplace-Crawler ──
+
+
+def test_the_draft_discovery_document_is_served_beside_the_legacy_one(monkeypatch, tmp_path):
+    with _hub(monkeypatch, tmp_path) as client:
+        legacy = client.get("/.well-known/ai-market.json").json()
+        r = client.get("/.well-known/agent-marketplace")
+        assert r.status_code == 200
+        draft = r.json()
+        assert draft["catalogue_url"] == legacy["manifest_url"]
+        assert draft["signer_public_key"] == legacy["signer_public_key"]
+        assert draft["protocol_versions"] == legacy["protocol_versions"]
+        assert draft["capabilities_count"] == legacy["capabilities_count"]
+        assert draft["signature_profile"] == "ed25519-pipe-2"
+        assert draft["legacy_discovery_url"].endswith("/.well-known/ai-market.json")
+        assert isinstance(draft["peers"], list)
+        # HEAD must succeed on the draft path too (the draft says MUST answer GET and HEAD).
+        assert client.head("/.well-known/agent-marketplace").status_code == 200
+
+
+def test_the_draft_document_lists_admitted_peers_by_discovery_uri(monkeypatch, tmp_path):
+    with _hub(monkeypatch, tmp_path) as client:
+        db = client.hub_db  # type: ignore[attr-defined]
+        db.announce_peer(
+            Peer(url="https://draft.example", name="Draft peer",
+                 well_known_url="https://draft.example/.well-known/agent-marketplace",
+                 depth=1, discoverer="seed"),
+            max_pending=10,
+        )
+        db.announce_peer(
+            Peer(url="https://legacy.example", name="Legacy peer",
+                 well_known_url="https://legacy.example/.well-known/ai-market.json",
+                 depth=1, discoverer="seed"),
+            max_pending=10,
+        )
+        db.promote_pending_peer("https://draft.example")
+        db.set_peer_trusted("https://draft.example", True)
+        # legacy.example stays PENDING: it must not be listed (admission rule 5).
+        draft = client.get("/.well-known/agent-marketplace").json()
+        assert draft["peers"] == ["https://draft.example/.well-known/agent-marketplace"]
+
+
+def test_the_draft_crawler_header_is_read_like_the_legacy_one(monkeypatch, tmp_path, resolvable):
+    with _hub(monkeypatch, tmp_path, AIMARKET_FEDERATION_OPEN="1") as client:
+        db = client.hub_db  # type: ignore[attr-defined]
+        r = client.get(
+            "/.well-known/agent-marketplace",
+            headers={"Agent-Marketplace-Crawler": STRANGER, "User-Agent": "federator/0.1"},
+        )
+        assert r.status_code == 200
+        assert _wait_for(lambda: db.count_pending_peers() == 1), "draft header never admitted"
+        assert db.get_peer(STRANGER).discoverer == "inbound-crawl"
+
+
+def test_when_both_headers_arrive_the_legacy_value_wins(monkeypatch, tmp_path, resolvable):
+    with _hub(monkeypatch, tmp_path, AIMARKET_FEDERATION_OPEN="1") as client:
+        db = client.hub_db  # type: ignore[attr-defined]
+        client.get(
+            "/.well-known/ai-market.json",
+            headers={"X-AIMarket-Crawler": STRANGER, "Agent-Marketplace-Crawler": "https://other.example"},
+        )
+        assert _wait_for(lambda: db.count_pending_peers() == 1)
+        assert db.get_peer(STRANGER) is not None
+        assert db.get_peer("https://other.example") is None
+
+
+def test_the_draft_path_answers_first_on_a_cold_cache(monkeypatch, tmp_path):
+    """Regression: the draft builder used to ask the (non-re-entrant) cache for the legacy
+    document from inside the cache's own lock. The first draft request on a cold cache then
+    hung forever and took every later well-known request with it."""
+    import threading
+
+    with _hub(monkeypatch, tmp_path, AIMARKET_WELL_KNOWN_CACHE_S="60") as client:
+        out: dict[str, int] = {}
+
+        def _first_request():
+            out["status"] = client.get("/.well-known/agent-marketplace").status_code
+
+        t = threading.Thread(target=_first_request, daemon=True)
+        t.start()
+        t.join(timeout=20)
+        assert not t.is_alive(), "the first draft request on a cold cache hung (cache deadlock)"
+        assert out["status"] == 200
+        # And the legacy path still answers afterwards.
+        assert client.get("/.well-known/ai-market.json").status_code == 200

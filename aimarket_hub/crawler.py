@@ -27,6 +27,12 @@ from aimarket_hub import __version__ as _HUB_VERSION
 from aimarket_hub.models import Capability, Peer
 from aimarket_hub.signing import PQ_MISSING_ADVICE, Signer, pq_unverifiable, same_key
 from aimarket_hub.trust import TrustScorer
+from aimarket_hub.discovery_names import (
+    DRAFT_CRAWLER_HEADER,
+    DRAFT_WELL_KNOWN_PATH,
+    LEGACY_CRAWLER_HEADER,
+    normalize_discovery_document,
+)
 from aimarket_hub.validator import validate_manifest, validate_well_known
 
 logger = logging.getLogger(__name__)
@@ -312,6 +318,11 @@ def _provider_pubkey(raw: Any) -> str:
     except Exception:
         return ""
 
+#: Draft-path discovery URIs remembered per crawler instance; the map is advisory (a miss
+#: means the legacy path is dialled), so clearing it on overflow costs one extra 404 at most.
+_PEER_DISCOVERY_URLS_MAX = 4096
+
+
 class Crawler:
     """BFS federation crawler — SSRF-hardened, key-pinning, bounded."""
 
@@ -324,6 +335,8 @@ class Crawler:
         slash_registry: Any = None,
     ):
         self.config = config or HubConfig()
+        # base → draft-path discovery URI, learned from peers that advertise one.
+        self._peer_discovery_urls: dict[str, str] = {}
         self.db = db or HubDatabase(self.config.db_path)
         self.signer = signer or Signer(self.config.signing_key_path)
         self.trust_scorer = trust_scorer or TrustScorer(self.db)
@@ -348,9 +361,12 @@ class Crawler:
         from aimarket_hub.outbound_http import prepare_safe_request_async
 
         target, pin_headers, extensions = await prepare_safe_request_async(url)
+        # Both spellings of the reciprocal-identification header: the legacy one every
+        # peer reads today, and the draft's (aimarket-protocol/ietf). Same value.
         headers = {
             "User-Agent": USER_AGENT,
-            "X-AIMarket-Crawler": self.config.hub_url,
+            LEGACY_CRAWLER_HEADER: self.config.hub_url,
+            DRAFT_CRAWLER_HEADER: self.config.hub_url,
             **pin_headers,
         }
 
@@ -477,7 +493,11 @@ class Crawler:
 
                 for peer_url in result.get("new_peer_urls", []):
                     peer_base = str(peer_url).rstrip("/")
-                    peer_wk = f"{peer_base}/.well-known/ai-market.json"
+                    # A peer listed by its draft-path discovery URI is dialled there;
+                    # everyone else at the legacy path, which is all they serve.
+                    peer_wk = self._peer_discovery_urls.get(peer_base) or (
+                        f"{peer_base}/.well-known/ai-market.json"
+                    )
                     if (
                         not peer_base
                         or _norm_hub(peer_base) == _norm_hub(self.config.hub_url)
@@ -673,6 +693,9 @@ class Crawler:
         except json.JSONDecodeError:
             logger.warning("Invalid JSON at %s", well_known_url)
             return None
+        # A peer may serve the draft's member names (catalogue_url, peers as discovery
+        # URIs). Fill the legacy names from them so everything below reads one shape.
+        wk = normalize_discovery_document(wk)
 
         # 2. Validate well-known structure
         errors = validate_well_known(wk)
@@ -1345,6 +1368,13 @@ class Crawler:
         for p in peers:
             if isinstance(p, dict) and p.get("url"):
                 urls.append(p["url"])
+                wk_url = p.get("well_known_url")
+                if isinstance(wk_url, str) and wk_url.endswith(DRAFT_WELL_KNOWN_PATH):
+                    # Bounded: a trusted peer's document is still a document somebody else
+                    # wrote, and this map lives as long as the crawler does.
+                    if len(self._peer_discovery_urls) >= _PEER_DISCOVERY_URLS_MAX:
+                        self._peer_discovery_urls.clear()
+                    self._peer_discovery_urls[str(p["url"]).rstrip("/")] = wk_url
         if include_observed:
             observations = well_known.get("observed_hubs") or []
             limit = self.config.federation_gossip_max_observed

@@ -1292,11 +1292,14 @@
   'use strict';
   const HUB = location.origin;
   const POLL = 3000;
+  const LIVE_TIMEOUT_MS = 10000;
+  const LIVE_STALE_MS = 15000;
   const LANGS = ['en', 'ru', 'es', 'fr', 'zh'];
   let events = [], filter = 'all', lastInv = Number(String((document.getElementById('s-inv') || {}).textContent || '').replace(/\D/g, '') || 0);
   let feedQuery = '', selectedTrace = null, traceReturnFocus = null, traceHideTimer = null;
   let feedHasRendered = false, seenEventKeys = new Set(), lastSummary = {};
   let sparkInv = [], sparkRev = [];
+  let pollInFlight = false, lastLiveAt = 0;
   let UI = null;
   let capI18n = null;
   // English as served. The server inlines ui.en into #hub-ui-en, and the markup's own text is
@@ -1355,8 +1358,8 @@
     });
     // Conn label is owned by setConn / poll — never wipe Live back to Connecting.
     document.getElementById('conn-text').textContent = connOk
-      ? t('conn_live', { time: new Date().toLocaleTimeString() })
-      : t('conn_connecting');
+      ? t('conn_live', { time: new Date(lastLiveAt).toLocaleTimeString() })
+      : t(lastLiveAt ? 'conn_reconnecting' : 'conn_connecting');
     document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
       const key = el.getAttribute('data-i18n-placeholder');
       if (key) el.setAttribute('placeholder', t(key, null, served(el).placeholder));
@@ -2359,22 +2362,26 @@
   let capsHasMore = false;
   let capsLoadingMore = false;
   let peersCache = null;
+  let peersRequest = null;
   let peersForFed = null;
   let pendingCache = [];
 
   async function ensurePeers() {
     if (peersCache) return peersCache;
-    const r = await fetch(`${HUB}/ai-market/v2/federation/peers`, { cache: 'no-store' });
-    if (!r.ok) throw new Error(r.status);
-    const body = await r.json();
-    peersCache = body.peers || [];
-    // Kept apart from peersCache on purpose: the federation diagram and every peer
-    // count must keep meaning "hubs we approved". A stranger appears in its own
-    // section, never mixed into the list that implies trust.
-    pendingCache = body.pending || [];
-    peersForFed = peersCache;
-    renderKnockRail();
-    return peersCache;
+    if (peersRequest) return peersRequest;
+    peersRequest = (async () => {
+      // One bounded request, including its body, shared by the drawer and the diagram.
+      const body = await fetchJson(`${HUB}/ai-market/v2/federation/peers`, LIVE_TIMEOUT_MS);
+      if (!body || !Array.isArray(body.peers)) throw new Error('invalid peers');
+      peersCache = body.peers;
+      // A stranger appears in its own section, never mixed into approved peers.
+      pendingCache = Array.isArray(body.pending) ? body.pending : [];
+      peersForFed = peersCache;
+      renderKnockRail();
+      return peersCache;
+    })();
+    try { return await peersRequest; }
+    finally { peersRequest = null; }
   }
 
   async function fetchPreview(url) {
@@ -2841,14 +2848,24 @@
   });
 
   /* Poll live stats */
+  function checkLiveFreshness() {
+    if (lastLiveAt && Date.now() - lastLiveAt > LIVE_STALE_MS) {
+      setConn(false, t('conn_reconnecting'));
+    }
+  }
   async function poll() {
+    checkLiveFreshness();
+    // A suspended tab or slow body must not accumulate overlapping requests whose
+    // late replies can replace newer events. The timeout releases this slot on failure.
+    if (pollInFlight) return;
+    pollInFlight = true;
     try {
-      const r = await fetch(`${HUB}/ai-market/v2/stats/live?limit=80`, { cache: 'no-store' });
-      if (!r.ok) throw new Error(r.status);
-      const d = await r.json();
-      events = d.events || [];
-      const s = d.summary || {};
-      setConn(true, t('conn_live', { time: new Date().toLocaleTimeString() }));
+      const d = await fetchJson(`${HUB}/ai-market/v2/stats/live?limit=80`, LIVE_TIMEOUT_MS);
+      if (!d || !Array.isArray(d.events) || !d.summary || typeof d.summary !== 'object') {
+        throw new Error('invalid live stats');
+      }
+      events = d.events;
+      const s = d.summary;
 
       const inv = s.total_invocations || 0;
       const rev = s.revenue_per_hour_usd || 0;
@@ -2902,13 +2919,30 @@
       spark('spark-inv', sparkInv, '#38e0ff');
       spark('spark-rev', sparkRev, '#38ffa6');
 
-      try { await ensurePeers(); } catch (_) { /* fed viz falls back to events */ }
       renderFeed(); renderTicker(); renderTop(); renderPulse(s); renderFed(s);
-      document.getElementById('last-up').textContent = t('updated', { time: new Date().toLocaleTimeString() });
+      lastLiveAt = Date.now();
+      const time = new Date(lastLiveAt).toLocaleTimeString();
+      setConn(true, t('conn_live', { time }));
+      document.getElementById('last-up').textContent = t('updated', { time });
+      // Peers enrich the diagram; they must never hold fresh feed rows or a Live
+      // badge hostage. Previously a stalled peers request froze the visible feed.
+      ensurePeers().then(() => renderFed(lastSummary)).catch(() => {});
     } catch (e) {
       setConn(false, t('conn_reconnecting'));
+    } finally {
+      pollInFlight = false;
     }
   }
+
+  function resumeLive() {
+    if (document.visibilityState === 'hidden') return;
+    checkLiveFreshness();
+    poll();
+  }
+  addEventListener('online', resumeLive);
+  addEventListener('pageshow', resumeLive);
+  addEventListener('offline', () => setConn(false, t('conn_reconnecting')));
+  document.addEventListener('visibilitychange', resumeLive);
 
   // Live stats must not wait on i18n JSON — a hung/cached fetch left the UI on
   // "Connecting…" forever while the hub itself was healthy.

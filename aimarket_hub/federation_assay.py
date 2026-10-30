@@ -40,6 +40,7 @@ from aimarket_hub.federation_transport import (
     peer_tool_endpoint,
 )
 from aimarket_hub.signing import Signer, same_key, signature_shape_problem
+from aimarket_hub.discovery_names import normalize_discovery_document
 from aimarket_hub.validator import validate_manifest, validate_well_known
 
 logger = logging.getLogger(__name__)
@@ -882,7 +883,7 @@ async def run_assay(
         if url_ok:
             wk_url = f"{base}/.well-known/ai-market.json"
             try:
-                well_known = await _get(wk_url)
+                well_known = normalize_discovery_document(await _get(wk_url))
                 wk_errors = validate_well_known(well_known)
                 _add(
                     checks, "well_known_schema", not wk_errors,

@@ -1111,3 +1111,74 @@ class TestToolsSoldAtTheirOwnUrl:
         # Another host is never a door; a hub-protocol listing keeps its invoke route.
         assert rows["relay"].peer_endpoint == "" and rows["relay"].price_per_call_usd == pytest.approx(0.01)
         assert rows["hub.cap@v1"].peer_endpoint == "" and rows["hub.cap@v1"].product_id == "p1"
+
+
+DRAFT_WELL_KNOWN = {
+    "name": "Draft-named peer",
+    "protocol_versions": ["v2"],
+    "catalogue_url": "https://seed-hub.example.com/ai-market/manifest",
+    "signer_public_key": "dGVzdF9wdWJsaWNfa2V5",
+    "signature_profile": "ed25519-pipe-2",
+    "peers": ["https://hub3.example.com/.well-known/agent-marketplace"],
+}
+
+
+class TestDraftNames:
+    """A peer that serves the Internet-Draft's member names is crawled like any other."""
+
+    @pytest.mark.asyncio
+    async def test_a_draft_shaped_document_is_accepted_and_its_peers_followed(self, db, signer, config):
+        crawler = Crawler(config=config, db=db, signer=signer)
+        wk_url = "https://seed-hub.example.com/.well-known/agent-marketplace"
+
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return dict(DRAFT_WELL_KNOWN)
+
+        crawler._safe_get = AsyncMock(return_value=_Resp())
+        try:
+            result = await crawler._crawl_one(wk_url, 0, "seed")
+        finally:
+            await crawler.close()
+
+        assert result is not None, "draft member names were rejected"
+        # First contact is untrusted, so its gossip is not followed — same as a legacy peer.
+        assert result == {"capabilities_count": 0, "new_peer_urls": []}
+        peer = db.get_peer("https://seed-hub.example.com")
+        assert peer is not None and peer.trusted is False
+
+        # Once trusted, its peers are followed, and the one that advertised a draft-path
+        # discovery URI is dialled there, not at a legacy path it may not serve.
+        from aimarket_hub.discovery_names import normalize_discovery_document
+        urls = crawler._extract_peer_urls(normalize_discovery_document(DRAFT_WELL_KNOWN))
+        assert urls == ["https://hub3.example.com"]
+        assert crawler._peer_discovery_urls == {
+            "https://hub3.example.com": "https://hub3.example.com/.well-known/agent-marketplace",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_crawler_sends_both_header_spellings(self, db, signer, config):
+        crawler = Crawler(config=config, db=db, signer=signer)
+        seen = {}
+
+        async def fake_send(request, **kwargs):
+            seen.update(request.headers)
+            raise RuntimeError("stop here")
+
+        crawler._http.send = fake_send
+        import aimarket_hub.outbound_http as oh
+
+        async def fake_prepare(url):
+            return url, {}, {}
+
+        original = oh.prepare_safe_request_async
+        oh.prepare_safe_request_async = fake_prepare
+        try:
+            with pytest.raises(RuntimeError):
+                await crawler._safe_get("https://seed-hub.example.com/.well-known/ai-market.json")
+        finally:
+            oh.prepare_safe_request_async = original
+            await crawler.close()
+        assert seen.get("x-aimarket-crawler") == config.hub_url
+        assert seen.get("agent-marketplace-crawler") == config.hub_url

@@ -452,7 +452,7 @@ Scoring доверия: [`trust.py`](https://github.com/alexar76/aimarket-hub/bl
 
 Допуск после карантина автоматический: песочница оценивает живой invoke, не текст well-known.
 `pass` ставит `trusted` (дефолт `AIMARKET_FEDERATION_AUTO_ADMIT=1`). Стол `/operator` — исключения.
-Подробности (EN·RU·ES·FR·ZH): [`federation-admission.ru.md`](./federation-admission.ru.md) · путь вступления: [`join-the-federation.ru.md`](https://github.com/alexar76/aicom/blob/main/docs/join-the-federation.ru.md)
+Подробности (EN·RU·ES·FR·ZH): [`federation-admission.ru.md`](./federation-admission.ru.md) · два написания discovery-документа и заголовка краулера (`/.well-known/agent-marketplace`, `Agent-Marketplace-Crawler`, драфты IETF): [`discovery-names.ru.md`](./discovery-names.ru.md) · путь вступления: [`join-the-federation.ru.md`](https://github.com/alexar76/aicom/blob/main/docs/join-the-federation.ru.md)
 
 Глубже: [`../docs/FEDERATION_HUB_REPORT.md`](https://github.com/alexar76/aicom/blob/main/docs/FEDERATION_HUB_REPORT.md)
 

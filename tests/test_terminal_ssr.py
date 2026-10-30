@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import re
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from aimarket_hub.api import create_app
@@ -19,7 +21,7 @@ from aimarket_hub.config import HubConfig
 from aimarket_hub.database import HubDatabase
 from aimarket_hub.models import InvocationStat, Peer
 from aimarket_hub.signing import Signer
-from aimarket_hub.terminal_ssr import seed_terminal_home, snapshot
+from aimarket_hub.terminal_ssr import _feed_html, seed_terminal_home, snapshot
 
 PAGE = Path(__file__).resolve().parents[1] / "terminal-home.html"
 
@@ -90,6 +92,50 @@ def test_empty_snapshot_stays_honest_zeros():
     }, [])
     assert 'id="s-inv">0</div>' in html
     assert "awaiting traffic" in html
+
+
+def test_game_actions_are_named_in_the_feed_before_javascript_runs():
+    events = [
+        {"capability_id": "gaia.weather.read@v1", "purpose": purpose, "success": True}
+        for purpose in ("feed", "home-weather")
+    ]
+    out = seed_terminal_home(PAGE.read_text(), {"total_invocations": 2}, events)
+    # Inspect the actual server-rendered rows, not the JSON snapshot or JS template.
+    feed = out.split('<div id="feed">', 1)[1].split('<div class="card market-pulse">', 1)[0]
+    assert '<span class="purpose">feed</span>' in feed
+    assert '<span class="purpose">home-weather</span>' in feed
+
+
+@pytest.mark.parametrize(("purpose", "expected"), [
+    ("  Feed ", "feed"),
+    ("home-weather", "home-weather"),
+    (None, None),
+    ('feed\"><script>alert(1)</script>', None),
+    ("feed the cat", None),
+])
+def test_server_feed_uses_the_public_purpose_slug(purpose, expected):
+    row = ET.fromstring(_feed_html([{"purpose": purpose, "success": True}]))
+    label = row.find('.//span[@class="purpose"]')
+    assert (label.text if label is not None else None) == expected
+    assert row.find(".//script") is None
+
+
+def test_server_feed_keeps_six_grid_cells_and_escapes_provider_text():
+    cap = '<script>alert("cap")</script>'
+    hub = '<img src=x onerror="alert(1)">'
+    row = ET.fromstring(_feed_html([{
+        "capability_id": cap, "source_hub": hub, "purpose": "feed",
+        "traffic_class": "external", "success": True, "price_usd": 0.001,
+        "latency_ms": 16,
+    }]))
+    cells = list(row)
+    assert len(cells) == 6  # icon, capability/route, class, price, latency, outcome
+    assert cells[0].text == "🤖"
+    assert cells[1].find('span[@class="cap-id"]').text == cap
+    assert cells[1].find('.//span[@class="host"]').text == hub
+    assert [cell.get("class") for cell in cells[2:]] == ["tc ext", "usd", "lat", "ok"]
+    assert row.find(".//script") is None
+    assert row.find(".//img") is None
 
 
 def test_get_slash_seeds_live_numbers(tmp_path, monkeypatch):

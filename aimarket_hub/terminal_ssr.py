@@ -16,6 +16,7 @@ from typing import Any
 
 from aimarket_hub import ecosystem
 from aimarket_hub.consumer_labels import public_consumer_label
+from aimarket_hub.models import normalize_purpose
 
 _STAT_VAL = re.compile(r'(id="(?P<id>s-inv|s-rev|s-hubs|s-caps)">)(?P<val>[^<]*)(</div>)')
 _JSON_MARK = '<script type="application/json" id="hub-ssr-live">{}</script>'
@@ -109,6 +110,8 @@ def _feed_html(events: list[dict[str, Any]]) -> str:
     for e in events[:8]:
         cap = html.escape(str(e.get("capability_id") or "?"))
         hub = html.escape(str(e.get("source_hub") or "local"))
+        purpose = normalize_purpose(e.get("purpose"))
+        purpose_html = f'<span class="purpose">{html.escape(purpose)}</span>' if purpose else ""
         outcome = str(e.get("outcome") or ("ok" if e.get("success") else "fail"))
         if outcome == "ok":
             cls, mark = "ok", "✓"
@@ -124,7 +127,9 @@ def _feed_html(events: list[dict[str, Any]]) -> str:
         tc = "ext" if e.get("traffic_class") == "external" else "self"
         rows.append(
             f'<div class="row-feed">'
+            f'<span>🤖</span>'
             f'<span class="cap-cell"><span class="cap-id">{cap}</span>'
+            f'{purpose_html}'
             f'<div class="hub-via"><span class="host">{hub}</span></div></span>'
             f'<span class="tc {tc}">{tc}</span>'
             f'<span class="usd">{html.escape(price)}</span>'

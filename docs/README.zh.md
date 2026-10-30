@@ -450,7 +450,7 @@ Peer 密钥 pin / mismatch / admin re-pin（EN·RU·ES·FR·ZH）：[`federation
 
 隔离之后的准入是自动的：沙箱给实时 invoke 打分，而不是 well-known 文案。`pass` 会设置
 `trusted`（默认 `AIMARKET_FEDERATION_AUTO_ADMIT=1`）。`/operator` 是例外路径。
-细节（EN·RU·ES·FR·ZH）：[`federation-admission.zh.md`](./federation-admission.zh.md) · 加入：[`join-the-federation.zh.md`](https://github.com/alexar76/aicom/blob/main/docs/join-the-federation.zh.md)
+discovery 文档与 crawler 请求头的两种写法（`/.well-known/agent-marketplace`、`Agent-Marketplace-Crawler`，IETF 草案）：[`discovery-names.zh.md`](./discovery-names.zh.md)。细节（EN·RU·ES·FR·ZH）：[`federation-admission.zh.md`](./federation-admission.zh.md) · 加入：[`join-the-federation.zh.md`](https://github.com/alexar76/aicom/blob/main/docs/join-the-federation.zh.md)
 
 深入阅读： [`../docs/FEDERATION_HUB_REPORT.md`](https://github.com/alexar76/aicom/blob/main/docs/FEDERATION_HUB_REPORT.md)
 

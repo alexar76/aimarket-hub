@@ -456,7 +456,7 @@ Pin de clé peer / mismatch / admin re-pin (EN·RU·ES·FR·ZH) : [`federation-p
 
 L’admission après quarantaine est automatique : le sandbox note l’invoke vivant, pas le texte
 well-known. Un `pass` met `trusted` (défaut `AIMARKET_FEDERATION_AUTO_ADMIT=1`). `/operator`
-est la voie d’exception. Détails (EN·RU·ES·FR·ZH) : [`federation-admission.fr.md`](./federation-admission.fr.md) · adhésion : [`join-the-federation.fr.md`](https://github.com/alexar76/aicom/blob/main/docs/join-the-federation.fr.md)
+est la voie d’exception. Deux graphies du document de discovery et de l’en-tête du crawler (`/.well-known/agent-marketplace`, `Agent-Marketplace-Crawler`, brouillons IETF) : [`discovery-names.fr.md`](./discovery-names.fr.md). Détails (EN·RU·ES·FR·ZH) : [`federation-admission.fr.md`](./federation-admission.fr.md) · adhésion : [`join-the-federation.fr.md`](https://github.com/alexar76/aicom/blob/main/docs/join-the-federation.fr.md)
 
 Profundizar: [`../docs/FEDERATION_HUB_REPORT.md`](https://github.com/alexar76/aicom/blob/main/docs/FEDERATION_HUB_REPORT.md)
 

@@ -255,6 +255,18 @@ _HARASSMENT_RES: list[re.Pattern[str]] = [
     re.compile(r"\b(hate\s+speech|racial\s+slur|discriminat)\b", re.I),
 ]
 
+# Opaque machine tokens — Ed25519 signatures and public keys (base64, 44/88 chars), SHA-256
+# digests and nonces (hex), UUID-free identifiers — are not prose and are never scanned. Every
+# signed receipt and every GAIA/oracle attestation carries several of them, and a word-bounded
+# pattern such as `cp\b` or `csam` matches a random run of letters sooner or later: on
+# 2026-10-30 a free-trial weather reading was refused as "illegal content" and the caller
+# saw a bare safety block. A token counts as opaque when it is 32+ base64/hex characters with
+# at least one digit or base64 symbol; dash- or underscore-joined slugs and ordinary words are
+# left in, so prose hidden in a long token is still read.
+_OPAQUE_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/])"
+)
+
 # ── Illegal content ───────────────────────────────────────────
 
 _ILLEGAL_RES: list[re.Pattern[str]] = [
@@ -408,12 +420,13 @@ class SafetyGate:
         Walks dict keys AND values (EXP-57: attacker hides jailbreaks in keys),
         converts bytes, ints, floats to strings, and applies NFKC Unicode
         normalization so fullwidth/Cyrillic homoglyphs don't bypass regex.
+        Opaque machine tokens (signatures, keys, digests) are blanked: see _OPAQUE_TOKEN.
         """
         if isinstance(payload, str):
-            return unicodedata.normalize("NFKC", payload)
+            return _OPAQUE_TOKEN.sub(" ", unicodedata.normalize("NFKC", payload))
         if isinstance(payload, (bytes, bytearray)):
             try:
-                return unicodedata.normalize("NFKC", payload.decode("utf-8", errors="replace"))
+                return _OPAQUE_TOKEN.sub(" ", unicodedata.normalize("NFKC", payload.decode("utf-8", errors="replace")))
             except Exception:
                 return ""
         if isinstance(payload, (int, float, bool)):
