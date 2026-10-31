@@ -1634,6 +1634,12 @@ _register(63, "063_observed_sellers", """
     DROP TABLE IF EXISTS observed_sellers;
 """)
 
+_register(64, "064_catalogue_evidence", """
+    ALTER TABLE capabilities ADD COLUMN catalogue_evidence TEXT NOT NULL DEFAULT '{}';
+""", """
+    ALTER TABLE capabilities DROP COLUMN catalogue_evidence;
+""")
+
 def channel_ledger_versions() -> list[int]:
     """Migration versions whose DDL touches a channel-ledger table.
 

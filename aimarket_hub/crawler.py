@@ -1047,7 +1047,14 @@ class Crawler:
                 return {"capabilities_count": 0, "new_peer_urls": self._extract_peer_urls(wk, include_observed=signed_gossip)}
 
             # Index capabilities
-            indexed = self._index_manifest_capabilities(manifest, base_url, hub_name)
+            indexed = self._index_manifest_capabilities(manifest, base_url, hub_name, evidence={
+                "kind": "signed_catalogue",
+                "scope": "catalogue",
+                "signer": base_url,
+                "signer_public_key": pinned_key,
+                "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "checked_by": self.config.hub_url,
+            })
             self._warn_on_index_shortfall(manifest, base_url, indexed)
             self._prune_unlisted(base_url)
 
@@ -1174,6 +1181,7 @@ class Crawler:
 
     def _index_manifest_capabilities(
         self, manifest: dict[str, Any], base_url: str, hub_name: str,
+        *, evidence: dict[str, Any] | None = None,
     ) -> int:
         """Index validated capabilities from a manifest into the database.
 
@@ -1288,6 +1296,7 @@ class Crawler:
                 # listing (deliveries.py). Not a routing input; a malformed one is dropped.
                 provider_pubkey=_provider_pubkey(tool.get("provider_pubkey")),
                 peer_endpoint=peer_endpoint,
+                catalogue_evidence=dict(evidence or {}),
             )
             self.db.upsert_capability(cap)
             self._indexed_now.add((cap.product_id, cap.capability_id))

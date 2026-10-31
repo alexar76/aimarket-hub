@@ -174,6 +174,25 @@ def test_an_offer_without_a_recipient_is_no_offer():
     assert obs.offer_from_402(body, {}) is None
 
 
+@pytest.mark.parametrize("amount", ["-1", "0", "+2", "1_000", "１２", "9" * 400,
+                                    str(2 ** 256), True, 1.5, None])
+def test_invalid_amount_cannot_be_listed_as_a_payable_offer(amount):
+    assert obs.offer_from_402(_v1_402(amount=amount)["json"], {}) is None
+
+
+@pytest.mark.parametrize("price", ["NaN", "Infinity", "-Infinity", -0.1, True])
+def test_discovery_price_is_finite_and_nonnegative(price):
+    routes = obs.parse_discovery({"endpoints": [{"url": SELLER + "/x", "priceUsd": price}]}, SELLER)
+    assert routes[0]["listed_price_usd"] is None
+
+
+@pytest.mark.parametrize("url", ["https://[broken/x", "https://seller.example:bad/x",
+                                "https://seller.example/\x00x"])
+def test_malformed_discovery_url_does_not_abort_the_seller(url):
+    routes = obs.parse_discovery({"resources": [url, SELLER + "/ok"]}, SELLER)
+    assert [r["url"] for r in routes] == [SELLER + "/ok"]
+
+
 @pytest.mark.parametrize("reply,result", [
     (_v1_402(), "quoted"),
     (_v2_402(), "quoted"),

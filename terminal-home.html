@@ -256,8 +256,8 @@
   }
   .search-drop {
     position: absolute; left: 0; right: 0; top: calc(100% + 8px);
-    background: var(--panel-solid); border: 1px solid var(--brd-hot);
-    border-radius: var(--radius); max-height: 360px; overflow-y: auto;
+    background: rgb(8, 14, 30); border: 1px solid var(--brd-hot);
+    border-radius: var(--radius); max-height: min(560px, 65vh); overflow-y: auto;
     display: none; z-index: 50;
     box-shadow: 0 20px 60px rgba(0,0,0,.55);
   }
@@ -283,6 +283,15 @@
   }
   .search-readout strong { color: var(--good); text-transform: uppercase; letter-spacing: 1px; }
   .search-readout .intent-token { color: var(--cyan); }
+  .search-group h3 { margin: 0; padding: 12px 16px 4px; font-size: 14px; color: var(--ink); }
+  .search-group-note { margin: 0; padding: 0 16px 10px; color: var(--muted); font-size: 12px; }
+  .search-evidence { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin-top: 8px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .search-evidence strong { color: var(--cyan); grid-column: 1 / -1; }
+  @media (max-width: 640px) { .search-evidence { grid-template-columns: 1fr; } }
+  .search-observed { padding: 12px 16px; border-top: 1px solid var(--brd); }
+  .search-observed .name { color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
+  .search-observed .meta { color: var(--muted); font-size: 12px; margin-top: 5px; }
+  .search-seller-link { display: inline-block; margin-top: 10px; color: var(--cyan); font-size: 13px; }
   .match-insight { display: flex; align-items: center; gap: 7px; margin-top: 7px; min-width: 0; }
   .match-pill {
     flex: 0 0 auto; border: 1px solid rgba(123,92,255,.42); border-radius: 4px;
@@ -1423,6 +1432,7 @@
     }
     applyStaticI18n();
     try { renderKnockRail(); } catch (_) { /* rail not in the DOM yet */ }
+    if (searchMatches.length || searchObserved.length) renderSearchResults(searchMatches, searchMetaState, searchObserved);
   }
 
   async function loadCapI18n() {
@@ -2094,13 +2104,65 @@
   const invokeBody = document.getElementById('invoke-body');
   const invokeForm = document.getElementById('invoke-form');
   let searchMatches = [];
+  let searchObserved = [], searchMetaState = {};
 
-  function renderSearchResults(matches, searchMeta) {
-    matches = matches.filter(c => accessMode(c) !== 'operator_gated');
+  function evidenceTime(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value)) return esc(t('evidence_unknown'));
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return esc(t('evidence_unknown'));
+    const utc = date.toISOString();
+    return `<time datetime="${esc(utc)}">${esc(utc.replace('T', ' ').replace('.000Z', ' UTC'))}</time>`;
+  }
+
+  function searchEvidence(c, observed = false) {
+    const e = c.evidence && typeof c.evidence === 'object' ? c.evidence : {};
+    const signed = !observed && e.kind === 'signed_catalogue' && e.scope === 'catalogue'
+      && typeof e.signer_public_key === 'string' && !!e.signer_public_key && !!e.signer && !!e.checked_at;
+    const kind = observed ? 'evidence_observed' : signed ? 'evidence_signed'
+      : c.source_hub === 'local' ? 'evidence_local' : 'evidence_unrecorded';
+    const signer = observed ? t('evidence_unsigned') : signed ? String(e.signer) : t('evidence_unknown');
+    const key = signed ? `<span title="${esc(e.signer_public_key)}">${esc(t('evidence_key'))}: ${esc(e.signer_public_key.slice(0, 16))}…</span>` : '';
+    const checker = observed ? c.observed_by : e.checked_by;
+    return `<div class="search-evidence"><strong>${esc(t(kind))}</strong>
+      <span>${esc(t('evidence_signer'))}: ${esc(signer)}</span>${key}
+      <span>${esc(t('evidence_checked'))}: ${evidenceTime(observed ? c.observed_at : e.checked_at)}</span>
+      ${checker ? `<span>${esc(t('evidence_checker'))}: ${esc(String(checker))}</span>` : ''}</div>`;
+  }
+
+  function observedSellerUrl(c) {
+    try {
+      const url = new URL(c.url), seller = new URL(c.seller);
+      return url.protocol === 'https:' && !url.username && !url.password
+        && url.origin === seller.origin ? url.href : '';
+    } catch { return ''; }
+  }
+
+  function renderObserved(c) {
+    const url = observedSellerUrl(c);
+    const price = typeof c.price_usd === 'number' && Number.isFinite(c.price_usd) && c.price_usd >= 0
+      ? usd(c.price_usd) : t('evidence_unknown');
+    return `<div class="search-observed"><div class="name">${esc(c.seller_name || c.seller || '')}</div>
+      <div class="meta">${esc(c.description || '')}</div>
+      <div class="meta">${esc(price)} · ${esc(c.network || '')} · ${esc(c.method || '')}</div>
+      <div class="meta">${esc(t('evidence_recipient'))}: ${esc(c.pay_to || t('evidence_unknown'))}</div>
+      ${searchEvidence(c, true)}
+      ${url ? `<a class="search-seller-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(t('observed_open_seller'))} ↗</a>` : ''}
+      <div class="meta">${esc(t('observed_payment_note'))}</div></div>`;
+  }
+
+  function renderSearchResults(matches, searchMeta = {}, observed = []) {
+    matches = (Array.isArray(matches) ? matches : []).filter(c => c && accessMode(c) !== 'operator_gated');
+    observed = (Array.isArray(observed) ? observed : []).filter(c => c && typeof c === 'object');
     searchMatches = matches;
+    searchObserved = observed;
+    searchMetaState = searchMeta;
+    if (!matches.length && !observed.length) {
+      drop.innerHTML = `<div class="search-item"><span class="meta">${esc(t('no_matches'))}</span></div>`;
+      return;
+    }
     const understood = [...new Set(matches.flatMap(c => Array.isArray(c.matched_terms) ? c.matched_terms : []))].slice(0, 5);
-    const readout = `<div class="search-readout"><strong>${esc(t('search_understood'))}</strong>${understood.length ? understood.map(v => `<span class="intent-token">${esc(v)}</span>`).join('<span>·</span>') : `<span>${esc(t('search_exact_fallback'))}</span>`}</div>`;
-    drop.innerHTML = readout + matches.map((c, i) => {
+    const readout = `<div class="search-readout"><strong>${esc(t('search_understood'))}</strong>${understood.length ? understood.map(v => `<span class="intent-token">${esc(v)}</span>`).join('<span>·</span>') : `<span>${esc(t(matches.length ? 'search_exact_fallback' : 'search_observed_signal'))}</span>`}</div>`;
+    const catalog = matches.map((c, i) => {
       const hubLabel = c.source_hub_name || hostOf(c.source_hub) || (c.source_hub === 'local' ? 'local' : c.source_hub);
       const matchType = ['exact','hybrid','semantic','fuzzy','lexical'].includes(c.match_type) ? c.match_type : 'lexical';
       const matchLabel = t('match_' + matchType);
@@ -2111,9 +2173,13 @@
       return `<div class="search-item${restricted ? ' is-restricted' : ''}" data-idx="${i}" role="button" tabindex="0">
       <div class="name">${esc(c.capability_id || c.name)}${hubLabel ? ` <span style="color:var(--cyan);font-size:10px;font-weight:400">${esc(t('via'))} ${esc(hubLabel)}</span>` : ''}</div>
       <div class="meta">${esc(descForSearch(c))} · <span class="price">${esc(capabilityPrice(c))}</span> · ${c.p50_latency_ms || '?'}ms · <span style="color:${restricted ? 'var(--amber)' : 'var(--cyan)'}">${esc(restricted ? t('restricted_cta') : t('try_free'))}</span></div>
+      ${searchEvidence(c)}
       <div class="match-insight"><span class="match-pill ${matchType}">${esc(matchLabel)} ${Math.round(matchScore * 100)}</span><span class="match-reason">${esc(reason)}</span><span class="match-meter" aria-hidden="true"><i style="width:${Math.max(4, Math.round(matchScore * 100))}%"></i></span></div>
     </div>`;
     }).join('');
+    drop.innerHTML = readout
+      + (matches.length ? `<section class="search-group" aria-label="${esc(t('search_catalogue'))}"><h3>${esc(t('search_catalogue'))}</h3><p class="search-group-note">${esc(t('catalogue_evidence_note'))}</p>${catalog}</section>` : '')
+      + (observed.length ? `<section class="search-group" aria-label="${esc(t('search_observed'))}"><h3>${esc(t('search_observed'))}</h3><p class="search-group-note">${esc(t('observed_evidence_note'))}</p>${observed.map(renderObserved).join('')}</section>` : '');
   }
 
   function showInvoke(state, title, body) {
@@ -2305,17 +2371,12 @@
     const q = input.value.trim();
     if (!q) return;
     drop.classList.add('open');
+    searchMatches = []; searchObserved = []; searchMetaState = {};
     drop.innerHTML = `<div class="search-item"><span class="meta">${esc(t('searching'))}</span></div>`;
     try {
       const r = await fetch(`${HUB}/ai-market/v2/search?intent=${encodeURIComponent(q)}&limit=8`);
       const d = await r.json();
-      const m = d.matches || [];
-      if (!m.length) {
-        searchMatches = [];
-        drop.innerHTML = `<div class="search-item"><span class="meta">${esc(t('no_matches'))}</span></div>`;
-        return;
-      }
-      renderSearchResults(m, d.search || {});
+      renderSearchResults(d.matches, d.search || {}, d.observed);
     } catch {
       searchMatches = [];
       drop.innerHTML = `<div class="search-item"><span class="meta">${esc(t('search_failed'))}</span></div>`;
@@ -2841,7 +2902,7 @@
       catTitle.textContent = t('caps_title');
       paintCaps();
     }
-    if (searchMatches.length) renderSearchResults(searchMatches);
+    if (searchMatches.length || searchObserved.length) renderSearchResults(searchMatches, searchMetaState, searchObserved);
     renderFeed(); renderTicker(); renderTop(); renderPulse(lastSummary);
     renderKnockRail();
     if (selectedTrace) renderTrace(selectedTrace);

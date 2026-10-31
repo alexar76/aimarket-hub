@@ -327,6 +327,16 @@ def register(
                 "source_hub": cap.source_hub,
                 "source_hub_name": cap.source_hub_name,
                 "name": cap.name,
+                # Historical evidence for this indexed row, not the peer's last attempted
+                # crawl. Missing records stay unknown until a successful signed refresh.
+                "evidence": cap.catalogue_evidence or {
+                    "kind": "local_catalogue" if (cap.source_hub or "local") == "local" else "catalogue_unrecorded",
+                    "scope": "catalogue",
+                    "signer": None,
+                    "signer_public_key": None,
+                    "checked_at": None,
+                    "checked_by": config.hub_url,
+                },
                 "display_name": catalogue_display_name(cap),
                 "description": cap.description,
                 "score": match.score if match else 0.0,

@@ -53,6 +53,9 @@ class Capability:
     # Federated rows only: the peer's own URL for this tool (manifest `tools[].endpoint`, same
     # origin as the peer). Routed calls POST the bare input there. Never set for local rows.
     peer_endpoint: str = ""
+    # Written by this hub only after checking the manifest signature and freshness.
+    # Never copied from a peer's tool metadata or inferred from a later crawl attempt.
+    catalogue_evidence: dict[str, Any] = field(default_factory=dict)
 
     def tool_name(self) -> str:
         return protocol_tool_name(self)

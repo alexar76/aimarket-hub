@@ -19,7 +19,7 @@ FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="modelmarket Hub"
 LABEL org.opencontainers.image.description="Federation hub for AI capability discovery and routing"
-LABEL org.opencontainers.image.version="3.16.2"
+LABEL org.opencontainers.image.version="3.17.0"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 WORKDIR /app
@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #   docker build -f aimarket-hub/Dockerfile -t modelmarket-hub .
 
 # ── Core hub ──────────────────────────────────────────────────
-COPY aimarket-hub/pyproject.toml ./pyproject.toml
+COPY aimarket-hub/pyproject.toml aimarket-hub/README.md aimarket-hub/LICENSE aimarket-hub/setup.py aimarket-hub/MANIFEST.in ./
 COPY aimarket-hub/aimarket_hub/ ./aimarket_hub/
 COPY aimarket-hub/plugins-demo.html /app/plugins-demo.html
 COPY aimarket-hub/terminal-home.html /app/terminal-home.html

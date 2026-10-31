@@ -17,7 +17,7 @@ name = "aimarket-hub"
 #        verifier, and the mandates/subcontracting audit fixes (migrations 036-038).
 # 3.8.0: credit accounts bought with USDC (topup.py, migration 041) and a failed A2A Task that
 #        keeps the bill of materials its subcontractors were paid for.
-version = "3.16.5"
+version = "3.17.0"
 description = "AI Market Federation Hub — crawl, index, search, and route AI capabilities across the network"
 license = "Apache-2.0"
 readme = "README.md"
@@ -115,6 +115,8 @@ aimarket_hub = [
     "static/start.html",
     "static/og-card.png",
     "static/well-known/mcp/server-card.json",
+    "static/ui/*.html",
+    "static/ui/*.json",
 ]
 
 [tool.pytest.ini_options]

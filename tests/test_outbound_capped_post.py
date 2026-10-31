@@ -9,6 +9,9 @@ what the hub reads, not a note about what it kept.
 from __future__ import annotations
 
 import socket
+import gzip
+import tracemalloc
+import zlib
 
 import httpx
 import pytest
@@ -59,7 +62,7 @@ def mocked(monkeypatch):
 async def test_small_reply_comes_back_whole(mocked) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["host"] == "peer.example"
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, stream=_WireStream(b'{"ok": true}'))
 
     mocked(handler)
     status, body = await safe_post_capped(
@@ -112,3 +115,86 @@ async def test_a_private_destination_is_still_refused(mocked) -> None:
             await safe_post_capped("http://169.254.169.254/latest", json={}, max_bytes=CAP)
     finally:
         crawler_module._url_is_safe = monkey_safe
+
+
+class _WireStream(httpx.AsyncByteStream):
+    def __init__(self, *chunks):
+        self.chunks = chunks
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_gzip_bomb_is_refused_before_expanding_in_memory(mocked):
+    # A small wire block must not allocate its entire 8 MiB decoded payload.
+    wire = gzip.compress(b"x" * (8 * 1024 * 1024))
+    stream = _WireStream(wire)
+
+    async def handler(request):
+        return httpx.Response(200, headers={"content-encoding": "gzip"}, stream=stream)
+
+    mocked(handler)
+    tracemalloc.start()
+    try:
+        with pytest.raises(ResponseTooLarge):
+            await safe_post_capped("https://peer.example/invoke", json={}, max_bytes=16384)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert stream.closed
+    assert peak < 2 * 1024 * 1024, f"allocated {peak} bytes for a 16384-byte budget"
+
+
+@pytest.mark.asyncio
+async def test_valid_gzip_at_decoded_limit_is_supported(mocked):
+    wire = gzip.compress(b"x" * CAP)
+    stream = _WireStream(wire[:8], wire[8:])
+
+    async def handler(request):
+        return httpx.Response(200, headers={"content-encoding": "gzip"}, stream=stream)
+
+    mocked(handler)
+    status, body = await safe_post_capped("https://peer.example/invoke", json={}, max_bytes=CAP)
+    assert status == 200 and body == b"x" * CAP
+    assert stream.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding,wire", [
+    ("gzip", gzip.compress(b"ok")[:-3]),
+    ("gzip", gzip.compress(b"ok") + gzip.compress(b"second")),
+    ("gzip", b"not-gzip"),
+    ("br", b"unadvertised"),
+    ("gzip, deflate", b"stacked"),
+])
+async def test_invalid_or_unsupported_compression_is_closed(mocked, encoding, wire):
+    stream = _WireStream(wire)
+
+    async def handler(request):
+        assert request.headers["accept-encoding"] == "gzip, deflate"
+        return httpx.Response(200, headers={"content-encoding": encoding}, stream=stream)
+
+    mocked(handler)
+    with pytest.raises(ValueError):
+        await safe_post_capped("https://peer.example/invoke", json={}, max_bytes=CAP,
+                               headers={"accept-encoding": "br"})
+    assert stream.closed
+
+
+@pytest.mark.asyncio
+async def test_deflate_response_is_decoded_within_budget(mocked):
+    stream = _WireStream(zlib.compress(b"x" * CAP))
+
+    async def handler(request):
+        return httpx.Response(200, headers={"content-encoding": "deflate"}, stream=stream)
+
+    mocked(handler)
+    status, body = await safe_post_capped("https://peer.example/invoke", json={}, max_bytes=CAP)
+    assert status == 200 and body == b"x" * CAP
+    assert stream.closed

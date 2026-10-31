@@ -68,10 +68,12 @@ def register(
     example_pages = {lang: landing.integration_examples_html(lang=lang) for lang in landing.COPY}
 
     hub_root = os.path.abspath(os.path.join(os.path.dirname(_API_FILE), ".."))
-    terminal_home_path = os.path.join(hub_root, "terminal-home.html")
-    cap_i18n_path = os.path.join(hub_root, "cap-descriptions-i18n.json")
-    hub_ui_i18n_path = os.path.join(hub_root, "hub-ui-i18n.json")
-    studio_ui_i18n_path = os.path.join(hub_root, "studio-ui-i18n.json")
+    from aimarket_hub.ui_assets import ui_asset_path
+
+    terminal_home_path = ui_asset_path("terminal-home.html", hub_root)
+    cap_i18n_path = ui_asset_path("cap-descriptions-i18n.json", hub_root)
+    hub_ui_i18n_path = ui_asset_path("hub-ui-i18n.json", hub_root)
+    studio_ui_i18n_path = ui_asset_path("studio-ui-i18n.json", hub_root)
 
     ui_en_cache: dict[str, Any] = {"mtime": None, "script": ""}
 
@@ -104,7 +106,7 @@ def register(
         stranger's hub whose page they were on.
         """
         if not os.path.isfile(terminal_home_path):
-            # An installed wheel ships no terminal-home.html: the developer page stands in.
+            # Damaged/incomplete installs still have a useful fallback.
             return docs_pages["en"]
         with open(terminal_home_path, encoding="utf-8") as f:
             html = f.read()
@@ -553,7 +555,7 @@ def register(
     @app.get("/plugins/demo", response_class=HTMLResponse)
     def plugins_demo():
         hub_root = os.path.abspath(os.path.join(os.path.dirname(_API_FILE), ".."))
-        demo_html = os.path.join(hub_root, "plugins-demo.html")
+        demo_html = ui_asset_path("plugins-demo.html", hub_root)
         if os.path.isfile(demo_html):
             with open(demo_html, encoding="utf-8") as f:
                 name = (config.hub_name or "").strip() or "AIMarket Hub"
@@ -568,7 +570,7 @@ def register(
                 )
         return HTMLResponse("<h1>Plugin demo not found</h1>", status_code=404)
 
-    operator_html_path = os.path.join(hub_root, "operator.html")
+    operator_html_path = ui_asset_path("operator.html", hub_root)
 
     def _operator_page() -> HTMLResponse:
         if not os.path.isfile(operator_html_path):
@@ -642,7 +644,7 @@ def register(
         href for href, present in (
             ("/studio/", bool(studio_dir)),
             ("/widget/demo", bool(widget_dir and os.path.isfile(os.path.join(widget_dir, "demo.html")))),
-            ("/plugins/demo", os.path.isfile(os.path.join(hub_root, "plugins-demo.html"))),
+            ("/plugins/demo", os.path.isfile(ui_asset_path("plugins-demo.html", hub_root))),
             ("/operator", os.path.isfile(operator_html_path)),
         ) if not present
     )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import zlib
 from ipaddress import ip_address
 from urllib.parse import urlparse, urlunparse
 
@@ -307,8 +308,13 @@ async def safe_request_capped(
     GET is what reading a stranger's discovery document needs (observed_sellers.py): the
     same pinned, size-capped transport as the assay's POST, never `safe_get`'s whole body.
     """
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
     target, pin_headers, ext = await prepare_safe_request_async(url, invoke=invoke)
-    out_headers = {**(headers or {}), **pin_headers}
+    # HTTPX's aiter_bytes decompresses each wire chunk without an output limit,
+    # before yielding it to our counter. Decode raw bytes ourselves with a budget.
+    out_headers = {k: v for k, v in (headers or {}).items() if k.lower() != "accept-encoding"}
+    out_headers.update({**pin_headers, "Accept-Encoding": "gzip, deflate"})
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         request = client.build_request(
             method, target, json=json, headers=out_headers, extensions=ext or None
@@ -323,11 +329,31 @@ async def safe_request_capped(
                     raise ValueError("Invalid Content-Length") from exc
                 if declared_len < 0 or declared_len > max_bytes:
                     raise ResponseTooLarge(max_bytes, declared_len)
+            encoding = resp.headers.get("content-encoding", "identity").strip().lower()
+            if encoding not in ("identity", "gzip", "deflate"):
+                raise ValueError("Unsupported Content-Encoding for bounded response")
+            decoder = None if encoding == "identity" else zlib.decompressobj(
+                16 + zlib.MAX_WBITS if encoding == "gzip" else zlib.MAX_WBITS
+            )
             body = bytearray()
-            async for chunk in resp.aiter_bytes(chunk_size=16384):
-                body.extend(chunk)
+            wire_bytes = 0
+            async for chunk in resp.aiter_raw(chunk_size=16384):
+                wire_bytes += len(chunk)
+                if wire_bytes > max_bytes:
+                    raise ResponseTooLarge(max_bytes)
+                try:
+                    decoded = decoder.decompress(chunk, max_bytes - len(body) + 1) if decoder else chunk
+                except zlib.error as exc:
+                    raise ValueError("Invalid compressed response") from exc
+                body.extend(decoded)
                 if len(body) > max_bytes:
                     raise ResponseTooLarge(max_bytes)
+                # Reject concatenated streams/trailing garbage rather than silently
+                # accepting a prefix. No unbounded decompress/flush fallback.
+                if decoder and (decoder.unused_data or decoder.unconsumed_tail):
+                    raise ValueError("Unexpected trailing compressed response data")
+            if decoder and not decoder.eof:
+                raise ValueError("Truncated compressed response")
             return resp.status_code, bytes(body), {k.lower(): v for k, v in resp.headers.items()}
         finally:
             await resp.aclose()

@@ -26,7 +26,9 @@ from __future__ import annotations
 import calendar
 import json
 import logging
+import math
 import os
+import re
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -92,9 +94,13 @@ def ttl_s() -> int:
 
 def normalize_origin(url: str) -> str:
     """``https://host[:port]`` for an https URL, else ``""``. Paths are not identities."""
-    if not isinstance(url, str) or any(c in url for c in "\r\n\t "):
+    if not isinstance(url, str) or any(ord(c) <= 32 or ord(c) == 127 for c in url):
         return ""
-    parsed = urlparse(url.strip())
+    try:
+        parsed = urlparse(url)
+        parsed.port  # Invalid ports and malformed bracketed hosts must fail closed.
+    except ValueError:
+        return ""
     if parsed.scheme != "https" or not parsed.hostname:
         return ""
     if parsed.username or parsed.password:
@@ -136,9 +142,12 @@ def _price_from_endpoint(entry: dict[str, Any]) -> float | None:
         value = entry.get(key)
         if value is None:
             continue
+        if isinstance(value, bool):
+            return None
         try:
-            return float(value) * scale
-        except (TypeError, ValueError):
+            price = float(value) * scale
+            return price if math.isfinite(price) and price >= 0 else None
+        except (TypeError, ValueError, OverflowError):
             return None
     return None
 
@@ -271,10 +280,17 @@ def offer_terms(accept: dict[str, Any]) -> dict[str, Any] | None:
     network = str(accept.get("network") or "").strip()
     asset = str(accept.get("asset") or "").strip()
     raw = accept.get("maxAmountRequired", accept.get("amount"))
-    try:
-        atomic = int(str(raw))
-    except (TypeError, ValueError):
-        atomic = None
+    # Exact USDC offers use positive uint256 atomic amounts. Python's int()
+    # also accepts signs, underscores and Unicode digits, and unbounded values
+    # can overflow the price conversion or bypass a buyer's positive budget.
+    if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+        return None
+    text = str(raw)
+    if re.fullmatch(r"[0-9]{1,78}", text) is None:
+        return None
+    atomic = int(text)
+    if not 0 < atomic < 2 ** 256:
+        return None
     decimals = _usdc_decimals(network, asset) if asset else None
     price = atomic / (10 ** decimals) if atomic is not None and decimals is not None else None
     return {
