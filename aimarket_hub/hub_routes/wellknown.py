@@ -331,6 +331,27 @@ def register(
                 "status": "observed",
             })
 
+        # x402 sellers this hub lists by observation, with their consent (spec §2.7). Under
+        # this hub's signature as THIS hub's observation — never a seller's — and with no
+        # routes: a crawler that wants them reads the listing, and re-lists nothing.
+        observed_sellers_wk = []
+        with contextlib.suppress(Exception):
+            from aimarket_hub import observed_sellers as _observed
+
+            if _observed.enabled():
+                for seller in db.list_observed_sellers():
+                    served = _observed.served_routes([seller], hub_url=config.hub_url)
+                    if not served:
+                        continue
+                    observed_sellers_wk.append({
+                        "origin": seller["origin"],
+                        "name": seller.get("name") or seller["origin"],
+                        "routes_served": len(served),
+                        "observed_at": seller.get("observed_at") or "",
+                        "observed_by": config.hub_url,
+                        "status": "observed",
+                    })
+
         erc8004 = None
         with contextlib.suppress(Exception):
             from aimarket_hub import x402 as _x402
@@ -513,6 +534,8 @@ def register(
                 "nodes": ecosystem_nodes,
             },
             "observed_hubs": observed_hubs,
+            "observed_sellers": observed_sellers_wk,
+            "observed_sellers_url": f"{config.hub_url}/ai-market/v2/federation/observed-sellers",
             "plugins_loaded": plugins.count(),
             # Loaded ≠ reachable: a plugin whose register_routes body is `pass` still counts
             # as loaded, and eight of the fifteen shipped ones are exactly that.

@@ -12,6 +12,19 @@
 
 > 🌐 [English](../README.md) · [Русский](README.ru.md) · [Español](README.es.md) · [Français](README.fr.md) · **中文** · [术语表](https://github.com/alexar76/aicom/blob/main/docs/localization-glossary.md)
 
+**通过 MCP 或 A2A 连接智能体，找到所需能力，为执行付款，并验证签名收据。**
+
+AIMarket Hub 将 MCP 工具调用和 A2A 智能体请求与联邦发现、支付控制和签名收据结合起来。预言机能力也通过同一交易市场提供。收据验证确认签名记录的真实性，并不证明回答内容的真实性或质量。
+
+| 入口 | 连接 | 首次调用 |
+|---|---|---|
+| MCP 客户端 | `https://modelmarket.dev/mcp` | `market_search` → `market_invoke`，保留 `source_hub`。 |
+| A2A 智能体 | `/.well-known/agent-card.json` → `/a2a` | 搜索 → 设置价格上限并调用 → 查看 Task → 验证收据。 |
+
+**[分步指南与可运行示例](agent-first-call.zh.md)**
+
+两个接口使用枢纽（Hub）的同一套调用与支付控制。可使用尚未耗尽的免费试用，也可通过额度、授权书或受支持的 x402 流程付款。
+
 <!-- pay-on-verified-notice -->
 > **智能体已经能够互相付款。我们让它们能够互相信任。**
 >
@@ -31,7 +44,7 @@
 
 > ### 🟢 只想试用市场？什么都不用装。
 > 把 **`https://modelmarket.dev/mcp`** 粘贴到 Cursor、Claude 或任何 Streamable-HTTP MCP 客户端。
-> 两个工具：**`market_search`** + **`market_invoke`**。每个调用方有少量试用，然后 **402**；每次返回签名收据。
+> 两个工具：**`market_search`** + **`market_invoke`**。每个调用方有少量免费试用次数；耗尽后返回 **429 `trial_quota_exhausted`**，直到计数窗口重置。成功调用会返回签名收据。
 > 把 search 返回的 **`source_hub`** 传回 invoke——目录大部分是联邦的，省略会 404。
 > → [`docs/hosted-mcp-endpoint.md`](https://github.com/alexar76/aicom/blob/main/docs/hosted-mcp-endpoint.md)
 
@@ -68,6 +81,7 @@ Cursor: `.cursor/mcp.json`。Claude Desktop: `claude_desktop_config.json`。技�
 |---|---|
 | **在线 Hub** | [modelmarket.dev](https://modelmarket.dev) |
 | **MCP** | [`https://modelmarket.dev/mcp`](https://modelmarket.dev/mcp) |
+| **A2A** | [Agent Card 与 A2A 指南](a2a.md) · [Agent Card](https://modelmarket.dev/.well-known/agent-card.json) |
 | **代理技能** | [安装指南](https://github.com/alexar76/aicom/blob/main/docs/agent-install/README.zh.md) |
 | **Well-known** | [/.well-known/ai-market.json](https://modelmarket.dev/.well-known/ai-market.json) |
 | **插件演示** | [/plugins/demo](https://modelmarket.dev/plugins/demo) |

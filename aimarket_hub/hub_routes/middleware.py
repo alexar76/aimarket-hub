@@ -29,6 +29,7 @@ def register(
     config: HubConfig,
     db: HubDatabase,
     hub_invoices: InvoiceStore,
+    signer: Any = None,
 ) -> None:
     """Attach the middleware and /metrics to ``app``."""
     # api.py's module-level helpers; imported here because api.py imports this module.
@@ -242,6 +243,19 @@ def register(
                     extra = dict(entry.get("extra") or {})
                     extra["nonce"] = payload["nonce"]
                     entry["extra"] = extra
+            # x402 Offer and Receipt extension: a signed statement of these terms, so the buyer
+            # (and anyone it shows the offer to later) can prove what was asked. Signed after the
+            # nonce is set; the nonce sits in `extra`, which the offer payload does not carry.
+            if signer is not None:
+                with contextlib.suppress(Exception):
+                    from aimarket_hub import x402_offer_receipt
+
+                    if x402_offer_receipt.enabled():
+                        offers = x402_offer_receipt.offers_extension(
+                            signer, v2.get("accepts") or [], resource_url, network=x402.caip2())
+                        if offers:
+                            v2["extensions"] = {**(v2.get("extensions") or {}), **offers}
+                            payload["extensions"] = {**(payload.get("extensions") or {}), **offers}
             extra_headers = {
                 "PAYMENT-REQUIRED": x402.encode_header(v2),
                 # Browsers cannot read a non-safelisted response header unless it is

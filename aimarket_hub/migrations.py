@@ -1612,6 +1612,28 @@ _register(62, "062_card_reversal_review", """
     SELECT 1;
 """)
 
+# 063: x402 sellers listed from their own discovery document, with consent (spec §2.7).
+# Its own table, never `capabilities`: an observed route must not be searchable as a
+# catalogue row, routable or re-exported, and keeping it out structurally (spec §2.6 (2))
+# means a query that forgets a filter cannot leak it.
+_register(63, "063_observed_sellers", """
+    CREATE TABLE IF NOT EXISTS observed_sellers (
+        origin TEXT PRIMARY KEY,
+        name TEXT DEFAULT '',
+        discovery_url TEXT DEFAULT '',
+        allowed_routes_json TEXT DEFAULT '[]',
+        pinned_pay_to TEXT DEFAULT '',
+        consent_json TEXT DEFAULT '{}',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        observed_at TEXT DEFAULT '',
+        last_error TEXT DEFAULT '',
+        routes_json TEXT DEFAULT '[]'
+    );
+""", """
+    DROP TABLE IF EXISTS observed_sellers;
+""")
+
 def channel_ledger_versions() -> list[int]:
     """Migration versions whose DDL touches a channel-ledger table.
 

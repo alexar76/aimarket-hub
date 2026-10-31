@@ -1193,6 +1193,7 @@ def attach_mcp_routes(
             limit = SEARCH_PAGE
 
         rows: list[dict[str, Any]] = []
+        observed: list[dict[str, Any]] = []
         if search is not None:
             kwargs: dict[str, Any] = {"intent": intent, "limit": limit}
             if category:
@@ -1201,6 +1202,7 @@ def attach_mcp_routes(
                 kwargs["budget"] = budget
             result = await search(**kwargs)
             rows = list(result.get("matches") or []) if isinstance(result, dict) else []
+            observed = list(result.get("observed") or []) if isinstance(result, dict) else []
         else:
             # Embedded without the app (tests, tools): rank the index directly.
             for cap in db.search_capabilities(intent, limit=limit * 3):
@@ -1227,6 +1229,25 @@ def attach_mcp_routes(
         note = _search_note(intent, matches)
         if note:
             out["note"] = note
+        if observed and not matches:
+            # "Tell the user nothing matches" would be wrong with observed sellers right below.
+            out["note"] = "Nothing in this catalogue matches; see observed for x402 sellers outside it."
+        if observed:
+            # Sellers listed by this hub's observation of their own 402 (spec §2.7). Not
+            # catalogue rows: market_invoke cannot call them, so the agent is told how to.
+            out["observed"] = [{
+                k: row.get(k) for k in (
+                    "url", "method", "seller_name", "price_usd", "amount_atomic", "network",
+                    "pay_to", "observed_at",
+                )
+            } | {"description": str(row.get("description") or "")[:300]}
+                for row in observed[:limit] if isinstance(row, dict)]
+            out["observed_note"] = (
+                "Observed x402 sellers, not in this catalogue and not callable with market_invoke: "
+                "call url directly and pay per the 402 it returns, refusing if that 402 names "
+                "another payTo than pay_to or asks for more than amount_atomic. Nothing here is "
+                "signed by the seller."
+            )
         return _dump(out)
 
     def _is_priced(product_id: str, capability_id: str, source_hub: str) -> bool:

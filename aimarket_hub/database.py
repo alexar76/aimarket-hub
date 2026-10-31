@@ -670,6 +670,78 @@ class HubDatabase:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    # ── Observed sellers (spec §2.7, observed_sellers.py) ─────────────────
+
+    def upsert_observed_seller(
+        self,
+        origin: str,
+        *,
+        consent: dict,
+        allowed_routes: list[str] | None = None,
+        pinned_pay_to: str = "",
+        name: str = "",
+    ) -> None:
+        """Record (or re-confirm) a seller's consent. Keeps its last observation, but a new
+        ``pinned_pay_to`` replaces the old pin: that is how the operator re-confirms one."""
+        now = _utc_now_iso()
+        self._conn.execute("""
+            INSERT INTO observed_sellers
+                (origin, name, allowed_routes_json, pinned_pay_to, consent_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(origin) DO UPDATE SET
+                name=excluded.name,
+                allowed_routes_json=excluded.allowed_routes_json,
+                pinned_pay_to=excluded.pinned_pay_to,
+                consent_json=excluded.consent_json,
+                updated_at=excluded.updated_at
+        """, (
+            origin, name[:120], json.dumps(list(allowed_routes or [])), pinned_pay_to[:128],
+            json.dumps(consent), now, now,
+        ))
+        self._conn.commit()
+
+    def save_observed_seller_observation(self, origin: str, observation: dict) -> None:
+        self._conn.execute("""
+            UPDATE observed_sellers SET
+                name=?, discovery_url=?, pinned_pay_to=?, observed_at=?, last_error=?, routes_json=?
+            WHERE origin=?
+        """, (
+            str(observation.get("name") or "")[:120],
+            str(observation.get("discovery_url") or "")[:500],
+            str(observation.get("pinned_pay_to") or "")[:128],
+            str(observation.get("observed_at") or ""),
+            str(observation.get("last_error") or "")[:500],
+            json.dumps(observation.get("routes") or []),
+            origin,
+        ))
+        self._conn.commit()
+
+    def list_observed_sellers(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM observed_sellers ORDER BY created_at, origin"
+        ).fetchall()
+        out = []
+        for row in rows:
+            d = dict(row)
+            for key, default in (("allowed_routes_json", []), ("consent_json", {}), ("routes_json", [])):
+                raw = d.pop(key, None)
+                try:
+                    value = json.loads(raw) if isinstance(raw, str) else raw
+                except json.JSONDecodeError:
+                    value = None
+                d[key[: -len("_json")]] = value if isinstance(value, type(default)) else default
+            out.append(d)
+        return out
+
+    def get_observed_seller(self, origin: str) -> dict | None:
+        return next((s for s in self.list_observed_sellers() if s["origin"] == origin), None)
+
+    def delete_observed_seller(self, origin: str) -> bool:
+        """Consent withdrawn: the record and its observations go, not just the listing."""
+        cur = self._conn.execute("DELETE FROM observed_sellers WHERE origin=?", (origin,))
+        self._conn.commit()
+        return bool(getattr(cur, "rowcount", 0))
+
     def save_peer_assay(self, dossier: dict) -> None:
         """Store the last assay scorecard. Does not itself toggle ``peers.trusted``."""
         url = str(dossier.get("url") or "").strip().rstrip("/")

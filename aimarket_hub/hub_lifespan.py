@@ -2,7 +2,8 @@
 
 The periodic federation crawl (on its own thread and database connection), escrow debit
 collection, the subcontracting-allowance and stale-hold sweeps, the A2A task sweep, the
-deposit watch, the OpenAPI merge, and the Pay-on-Verified reconcile at start; all cancelled,
+deposit watch, the OpenAPI merge, the observed-seller cycle, and the Pay-on-Verified
+reconcile at start; all cancelled,
 and the settlement worker and plugins shut down, when the app stops. Moved out of
 api.create_app, which builds it with `make_lifespan`.
 """
@@ -19,7 +20,9 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from aimarket_hub import credits, deposit_watch, invoke_funding, openapi_merge, peer_routing
+from aimarket_hub import (
+    credits, deposit_watch, invoke_funding, observed_sellers, openapi_merge, peer_routing,
+)
 from aimarket_hub.database import HubDatabase
 from aimarket_hub.trust import TrustScorer
 
@@ -36,6 +39,7 @@ def make_lifespan(
     hub_mandates: Any,
     hub_jobs: Any,
     late: SimpleNamespace,
+    db: Any = None,
 ):
     """The lifespan context manager for one app.
 
@@ -58,6 +62,7 @@ def make_lifespan(
         a2a_sweep_task: asyncio.Task | None = None
         openapi_task: asyncio.Task | None = None
         deposit_task: asyncio.Task | None = None
+        observe_task: asyncio.Task | None = None
 
         def _run_crawl_blocking() -> dict:
             from aimarket_hub.crawler import Crawler
@@ -230,6 +235,24 @@ def make_lifespan(
                     await asyncio.sleep(openapi_merge.REFRESH_S)
 
             openapi_task = asyncio.create_task(_periodic_openapi_merge())
+        # x402 sellers that consented to be listed from their own discovery document
+        # (observed_sellers.py, spec §2.7), re-read when due. With no consented seller a cycle
+        # is one query. Small writes on the app's own connection, like the deposit watch.
+        if db is not None and observed_sellers.enabled():
+            async def _periodic_observe() -> None:
+                await asyncio.sleep(max(0.0, float(config.crawl_initial_delay_s)) + 30.0)
+                while True:
+                    try:
+                        summary = await observed_sellers.observe_due(db, hub_url=config.hub_url)
+                        if summary.get("observed"):
+                            logger.info("observed sellers: %s", summary)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - a bad cycle must never kill the loop
+                        logger.warning("observed sellers: cycle failed: %s", exc)
+                    await asyncio.sleep(600.0 + random.uniform(0, 60.0))
+
+            observe_task = asyncio.create_task(_periodic_observe())
         # Pay-on-Verified: re-queue verifications left pending by a previous process
         # so a hub restart never strands an escrow hold.
         with contextlib.suppress(Exception):
@@ -237,7 +260,8 @@ def make_lifespan(
         try:
             yield
         finally:
-            for task in (crawl_task, collect_task, sweep_task, openapi_task, deposit_task, a2a_sweep_task):
+            for task in (crawl_task, collect_task, sweep_task, openapi_task, deposit_task,
+                         a2a_sweep_task, observe_task):
                 if task is None:
                     continue
                 task.cancel()

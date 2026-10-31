@@ -613,6 +613,117 @@ def register(
                 await crawler.close()
         return {"status": "repinned", "peer": result, "crawl": crawl_stats}
 
+    # ── Observed sellers (spec §2.7, observed_sellers.py) ────────
+
+    @router.get("/federation/observed-sellers")
+    async def observed_sellers_list():
+        """x402 sellers this hub lists from their own discovery document, with their consent.
+
+        Public. Every probed route says what its last unpaid 402 named and whether it is
+        served now. Nothing here is signed by a seller, and this hub is not in their payment
+        path: a buyer calls the seller and pays per the 402 it gets.
+        """
+        from aimarket_hub import observed_sellers as _observed
+
+        return {
+            "tier": _observed.TIER,
+            "enabled": _observed.enabled(),
+            "observed_by": config.hub_url,
+            "interval_s": _observed.interval_s(),
+            "ttl_s": _observed.ttl_s(),
+            "vouches_for": (
+                "only that, at observed_at, an unpaid request to url returned a 402 naming this "
+                "amount, asset, network and payTo"
+            ),
+            "how_to_buy": _observed.HOW_TO_BUY,
+            "sellers": [
+                _observed.public_seller(s, hub_url=config.hub_url)
+                for s in db.list_observed_sellers()
+            ],
+            "spec": "aimarket-protocol/spec.md §2.7",
+            "protocol_version": "v2",
+        }
+
+    @router.post("/federation/observed-sellers")
+    async def observed_sellers_add(body: dict, authorization: str = Header(default="")):
+        """Record a seller's consent, then observe it at once. Admin-only.
+
+        Body: ``origin``; ``consent`` ``{by, at, how?, note?}``; ``routes`` (URLs on the
+        origin; default every route the discovery document lists, up to the cap); ``pay_to``
+        (the recipient the seller confirmed; default: pinned on first sight); ``name``.
+        Re-posting with a new ``pay_to`` is how the operator re-confirms a changed recipient;
+        re-posting without one keeps the pin.
+        """
+        _require_admin(authorization)
+        from aimarket_hub import observed_sellers as _observed
+
+        if not _observed.enabled():
+            raise HTTPException(status_code=503, detail="observed sellers are disabled on this hub")
+        origin = _observed.normalize_origin(str(body.get("origin") or ""))
+        if not origin:
+            raise HTTPException(status_code=400, detail="origin must be an https URL")
+        _validate_hub_url(origin)
+        try:
+            consent = _observed.clean_consent(body.get("consent"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raw_routes = body.get("routes") or []
+        if not isinstance(raw_routes, list):
+            raise HTTPException(status_code=400, detail="routes must be a list of URLs")
+        routes = [str(u).strip() for u in raw_routes if str(u).strip()]
+        foreign = [u for u in routes if not _observed.same_origin(u, origin)]
+        if foreign:
+            raise HTTPException(status_code=400, detail=f"route is not on {origin}: {foreign[0][:120]}")
+        if len(routes) > _observed.max_routes():
+            raise HTTPException(
+                status_code=400, detail=f"at most {_observed.max_routes()} routes per seller",
+            )
+        pay_to = str(body.get("pay_to") or "").strip()
+        if pay_to and (len(pay_to) > 128 or any(c.isspace() for c in pay_to)):
+            raise HTTPException(status_code=400, detail="pay_to is not an address")
+        existing = db.get_observed_seller(origin) or {}
+        db.upsert_observed_seller(
+            origin,
+            consent=consent,
+            allowed_routes=routes,
+            pinned_pay_to=pay_to or existing.get("pinned_pay_to") or "",
+            name=str(body.get("name") or "").strip(),
+        )
+        summary = await _observed.observe_due(db, hub_url=config.hub_url, origin=origin)
+        seller = db.get_observed_seller(origin) or {"origin": origin}
+        return {
+            "status": "recorded",
+            "observation": summary,
+            "seller": _observed.public_seller(seller, hub_url=config.hub_url),
+            "consent": seller.get("consent") or consent,
+        }
+
+    @router.post("/federation/observed-sellers/observe")
+    async def observed_sellers_observe(body: dict | None = None, authorization: str = Header(default="")):
+        """Observe one seller (``origin``) or all of them now. Admin-only: outbound requests."""
+        _require_admin(authorization)
+        from aimarket_hub import observed_sellers as _observed
+
+        target = _observed.normalize_origin(str((body or {}).get("origin") or ""))
+        if (body or {}).get("origin") and not target:
+            raise HTTPException(status_code=400, detail="origin must be an https URL")
+        return await _observed.observe_due(
+            db, hub_url=config.hub_url, origin=target, force=not target,
+        )
+
+    @router.delete("/federation/observed-sellers")
+    async def observed_sellers_withdraw(origin: str = "", authorization: str = Header(default="")):
+        """Consent withdrawn: the seller and its observations are deleted. Admin-only."""
+        _require_admin(authorization)
+        from aimarket_hub import observed_sellers as _observed
+
+        target = _observed.normalize_origin(origin)
+        if not target:
+            raise HTTPException(status_code=400, detail="origin must be an https URL")
+        if not db.delete_observed_seller(target):
+            raise HTTPException(status_code=404, detail="not an observed seller")
+        return {"status": "withdrawn", "origin": target}
+
     return SimpleNamespace(
         _publishable_pending_peers=_publishable_pending_peers,
     )

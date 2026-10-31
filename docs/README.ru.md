@@ -12,6 +12,19 @@
 
 > 🌐 [English](../README.md) · **Русский** · [Español](README.es.md) · [Français](README.fr.md) · [中文](README.zh.md) · [Глоссарий](https://github.com/alexar76/aicom/blob/main/docs/localization-glossary.md)
 
+**Подключите агента через MCP или A2A, найдите нужную возможность, оплатите выполнение и верифицируйте подписанную квитанцию.**
+
+AIMarket Hub объединяет вызовы инструментов MCP и запросы агентов A2A с федеративным обнаружением, контролем платежей и подписанными квитанциями. Возможности оракулов доступны через тот же маркетплейс. Верификация квитанции подтверждает подлинность подписанной записи, но не достоверность или качество ответа.
+
+| Точка входа | Подключение | Первый вызов (invoke) |
+|---|---|---|
+| MCP-клиент | `https://modelmarket.dev/mcp` | `market_search` → `market_invoke` с сохранением `source_hub`. |
+| Агент A2A | `/.well-known/agent-card.json` → `/a2a` | Поиск → вызов с ограничением цены → статус Task → верификация квитанции. |
+
+**[Пошаговое руководство и исполняемый пример](agent-first-call.ru.md)**
+
+Оба интерфейса используют общие механизмы вызова и контроля платежей хаба. Начните с доступной бесплатной пробы или используйте кредиты, мандат либо поддерживаемый сценарий x402.
+
 <!-- pay-on-verified-notice -->
 > **Агенты уже умеют платить друг другу. Мы делаем так, чтобы они могли друг другу доверять.**
 >
@@ -23,7 +36,7 @@
 
 > ### 🟢 Хотите просто попробовать маркетплейс? Ничего не ставьте.
 > Вставьте **`https://modelmarket.dev/mcp`** в Cursor, Claude или любой Streamable-HTTP MCP-клиент.
-> Два инструмента: **`market_search`** + **`market_invoke`**. Несколько trial-вызовов на вызывающего, затем **402**; подписанная квитанция.
+> Два инструмента: **`market_search`** + **`market_invoke`**. Несколько вызовов в рамках бесплатной пробы на вызывающего; при исчерпании лимита — **429 `trial_quota_exhausted`** до обновления окна. Успешный вызов возвращает подписанную квитанцию.
 > Передавайте **`source_hub`** из search в invoke — большая часть каталога федеративна, без него хаб ответит 404.
 > → [`docs/hosted-mcp-endpoint.md`](https://github.com/alexar76/aicom/blob/main/docs/hosted-mcp-endpoint.md)
 
@@ -63,6 +76,7 @@ Cursor: `.cursor/mcp.json`. Claude Desktop: `claude_desktop_config.json`. Ски
 |---|---|
 | **Живой хаб** | [modelmarket.dev](https://modelmarket.dev) |
 | **MCP** | [`https://modelmarket.dev/mcp`](https://modelmarket.dev/mcp) |
+| **A2A** | [Agent Card и руководство A2A](a2a.md) · [Agent Card](https://modelmarket.dev/.well-known/agent-card.json) |
 | **Скилл агента** | [инструкция по установке](https://github.com/alexar76/aicom/blob/main/docs/agent-install/README.ru.md) |
 | **Well-known** | [/.well-known/ai-market.json](https://modelmarket.dev/.well-known/ai-market.json) |
 | **Демо плагинов** | [/plugins/demo](https://modelmarket.dev/plugins/demo) |

@@ -926,7 +926,10 @@ def _completed(body: dict[str, Any], *, task_id: str, context_id: str, invoke: _
                payment: _Payment | None) -> _Outcome:
     base = hub_url.rstrip("/")
     local = invoke.source_hub in ("", "local")
-    result = body.get("result")
+    # Oracle-core providers (including GAIA) return `output`; local capabilities
+    # return `result`. Preserve an explicitly null `result`, just as the provider
+    # response verifier does, rather than dropping a federated oracle's delivery.
+    result = body.get("result", body.get("output"))
     result_part = (
         {"text": result, "mediaType": "text/plain"} if isinstance(result, str)
         else {"data": result, "mediaType": "application/json"}

@@ -15,6 +15,19 @@
 
 > 🌐 **English** · [Русский](docs/README.ru.md) · [Español](docs/README.es.md) · [Français](docs/README.fr.md) · [中文](docs/README.zh.md) · [Glossary](https://github.com/alexar76/aicom/blob/main/docs/localization-glossary.md)
 
+**Connect an agent through MCP or A2A, find a capability, pay for execution, and verify its signed receipt.**
+
+AIMarket Hub integrates MCP tool calls and A2A agent requests with federated discovery, payment controls, and signed receipts. Oracle capabilities use the same marketplace. Receipt verification authenticates the signed record; it does not establish the truth or quality of the answer.
+
+| Start here | Connect | First call |
+|---|---|---|
+| MCP client | `https://modelmarket.dev/mcp` | `market_search` → `market_invoke`, preserving `source_hub`. |
+| A2A agent | `/.well-known/agent-card.json` → `/a2a` | Search → invoke with a price cap → inspect the Task → verify the receipt. |
+
+**[Step-by-step guide and runnable example](docs/agent-first-call.md)**
+
+Both routes use the hub’s invoke and payment controls. Use an available free trial, or pay through credits, a mandate, or the supported x402 flow.
+
 <!-- pay-on-verified-notice -->
 > **Agents can already pay each other. We make it possible for them to trust each other.**
 >
@@ -74,6 +87,7 @@ Reference implementation of [AIMarket Protocol v2](https://github.com/alexar76/a
 |---|---|
 | **Live hub** | [modelmarket.dev](https://modelmarket.dev) |
 | **MCP** | [`https://modelmarket.dev/mcp`](https://modelmarket.dev/mcp) |
+| **A2A** | [Agent Card and A2A guide](docs/a2a.md) · [Agent Card](https://modelmarket.dev/.well-known/agent-card.json) |
 | **Agent skill** | [docs/agent-install](https://github.com/alexar76/aicom/blob/main/docs/agent-install/README.md) |
 | **Well-known** | [/.well-known/ai-market.json](https://modelmarket.dev/.well-known/ai-market.json) |
 | **Plugin demo** | [/plugins/demo](https://modelmarket.dev/plugins/demo) |

@@ -41,6 +41,7 @@ async def _local_deliver(d: SimpleNamespace, call: _Call, local: _Local):
     _local_record(d, call, local, result)
     acex_revenue, acex_audit_rewards = _local_accrue_acex(d, call, local)
     await _local_await_verdict(d, call, local)
+    local.x402_settlement = _x402_settlement(d, call, local)
     provenance_receipt = _local_provenance(d, call, local, result)
     return _local_answer(d, call, local, result, provenance_receipt, acex_revenue, acex_audit_rewards)
 
@@ -594,7 +595,7 @@ def _local_provenance(d: SimpleNamespace, call: _Call, local: _Local, result: An
             "captured" if reserved and price > 0 else "free"
         )
 
-    receipt_artifacts = plugins.run_receipt_hooks(result, {
+    receipt_context = {
         "product_id": body.product_id,
         "capability_id": body.capability_id,
         "input": body.input,
@@ -610,7 +611,16 @@ def _local_provenance(d: SimpleNamespace, call: _Call, local: _Local, result: An
         # §6.4): the provenance receipt lists them in AWR/2 `parents`, so the job
         # tree is committed to by digest, not just reported.
         "parents": funding.receipt_parents(hub_jobs) if funding is not None else [],
-    })
+    }
+    if local.x402_settlement is not None:
+        # Paid over x402: the work receipt's settlement is the x402 receipt itself
+        # (awr/adoption/x402-receipt/PROFILE.md), not a ledger hold this call never had.
+        from aimarket_hub import x402_offer_receipt
+
+        binding = x402_offer_receipt.awr_settlement(local.x402_settlement)
+        if binding is not None:
+            receipt_context["settlement"] = binding
+    receipt_artifacts = plugins.run_receipt_hooks(result, receipt_context)
     provenance_receipt = (
         receipt_artifacts.get("provenance")
         # Compatibility for an older external provenance plugin that still
@@ -662,7 +672,41 @@ def _local_answer(d: SimpleNamespace, call: _Call, local: _Local, result: Any, p
     # delivered the result, and the free tier follows the money here rather than
     # inventing a second definition of "delivered".
     local.delivered = True
-    return JSONResponse(status_code=200, content=response_body)
+    headers = None
+    if local.x402_settlement is not None:
+        from aimarket_hub import x402
+
+        response_body["x402_settlement"] = local.x402_settlement
+        headers = {"PAYMENT-RESPONSE": x402.encode_header(local.x402_settlement),
+                   "Access-Control-Expose-Headers": "PAYMENT-RESPONSE"}
+    return JSONResponse(status_code=200, content=response_body, headers=headers)
+
+
+def _x402_settlement(d: SimpleNamespace, call: _Call, local: _Local) -> dict[str, Any] | None:
+    """For a call paid over x402 to the seller and delivered: the x402 SettlementResponse, with
+    the signed receipt of the Offer and Receipt extension. The answer carries it in the body
+    (``x402_settlement``) and as the PAYMENT-RESPONSE header x402 clients read; the work
+    receipt carries its receipt as `settlement`. Never raises: a fault leaves the settlement
+    out, never the buyer's result."""
+    accepted = local.x402_accepted
+    if not (isinstance(accepted, dict) and accepted.get("ok") and accepted.get("rail") == "seller_direct"):
+        return None
+    try:
+        from aimarket_hub import x402, x402_offer_receipt
+
+        if not x402_offer_receipt.enabled():
+            return None
+        base = (d.config.hub_url or "").rstrip("/")
+        url = call.request.url
+        resource_url = f"{base}{url.path}{('?' + url.query) if url.query else ''}" if base else str(url)
+        return x402_offer_receipt.settlement_response(
+            d.signer, network=x402.caip2(), resource_url=resource_url,
+            payer=str(accepted.get("payer") or call.payer_wallet or ""),
+            transaction=str(accepted.get("tx_hash") or ""),
+        )
+    except Exception:  # noqa: BLE001
+        d.logger.exception("x402 settlement response for %s left out", call.body.capability_id)
+        return None
 
 
 def _local_unwind(d: SimpleNamespace, call: _Call, local: _Local) -> None:

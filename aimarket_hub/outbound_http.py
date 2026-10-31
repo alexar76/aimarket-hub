@@ -283,11 +283,35 @@ async def safe_post_capped(
     Declared Content-Length is checked first and a stream that overruns the budget is cut
     off mid-body — an honest header is a cheap refusal, a dishonest one costs `max_bytes`.
     """
+    status, body, reply_headers = await safe_request_capped(
+        "POST", url, json=json, headers=headers, timeout=timeout, max_bytes=max_bytes,
+        invoke=invoke,
+    )
+    if with_headers:
+        return status, body, reply_headers
+    return status, body
+
+
+async def safe_request_capped(
+    method: str,
+    url: str,
+    *,
+    json: dict | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 30.0,
+    max_bytes: int,
+    invoke: bool = False,
+) -> tuple[int, bytes, dict[str, str]]:
+    """`safe_post_capped` for any method, always with the reply headers (lower-cased).
+
+    GET is what reading a stranger's discovery document needs (observed_sellers.py): the
+    same pinned, size-capped transport as the assay's POST, never `safe_get`'s whole body.
+    """
     target, pin_headers, ext = await prepare_safe_request_async(url, invoke=invoke)
     out_headers = {**(headers or {}), **pin_headers}
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         request = client.build_request(
-            "POST", target, json=json, headers=out_headers, extensions=ext or None
+            method, target, json=json, headers=out_headers, extensions=ext or None
         )
         resp = await client.send(request, stream=True, follow_redirects=False)
         try:
@@ -304,8 +328,6 @@ async def safe_post_capped(
                 body.extend(chunk)
                 if len(body) > max_bytes:
                     raise ResponseTooLarge(max_bytes)
-            if with_headers:
-                return resp.status_code, bytes(body), {k.lower(): v for k, v in resp.headers.items()}
-            return resp.status_code, bytes(body)
+            return resp.status_code, bytes(body), {k.lower(): v for k, v in resp.headers.items()}
         finally:
             await resp.aclose()

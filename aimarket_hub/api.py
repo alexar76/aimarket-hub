@@ -410,7 +410,7 @@ def create_app(
     _lifespan = make_lifespan(
         config=config, signer=signer, verify_svc=verify_svc, plugins=plugins,
         hub_credits=hub_credits, hub_mandates=hub_mandates, hub_jobs=hub_jobs,
-        late=lifespan_late,
+        late=lifespan_late, db=db,
     )
 
     app = FastAPI(
@@ -450,6 +450,7 @@ def create_app(
         config=config,
         db=db,
         hub_invoices=hub_invoices,
+        signer=signer,
     )
 
     # Admin token for federation/crawl-control endpoints.

@@ -196,6 +196,25 @@ def register(
 
     # ── Search ──────────────────────────────────────────────────
 
+    def _observed_matches(intent: str, budget: float | None, hub: str, category_key: str,
+                          limit: int) -> list[dict[str, Any]]:
+        """x402 routes listed by observation (spec §2.7) that fit the search."""
+        from aimarket_hub import observed_sellers
+
+        if not observed_sellers.enabled():
+            return []
+        try:
+            routes = observed_sellers.served_routes(
+                db.list_observed_sellers(), hub_url=config.hub_url,
+            )
+        except Exception:  # noqa: BLE001 - an observation must never fail a search
+            return []
+        if hub != "any":
+            routes = [r for r in routes if r["seller"] == hub]
+        if category_key:
+            routes = [r for r in routes if category_key in r.get("description", "").lower()]
+        return observed_sellers.search_routes(routes, intent, budget=budget, limit=limit)
+
     @router.get("/search")
     async def search(
         intent: str = "",
@@ -365,6 +384,12 @@ def register(
             "offset": offset,
             "limit": 0 if page <= 0 else page,
             "has_more": (offset + len(window)) < total,
+            # Sellers listed from their own x402 discovery document with their consent, as
+            # this hub last saw their 402 (spec §2.7). Never mixed into `matches`: they are not
+            # catalogue rows, not routable through this hub and not signed by their seller.
+            "observed": _observed_matches(
+                intent, budget, hub, category_key, 10 if page <= 0 else min(page, 10),
+            ),
             "search": {
                 "mode": "hybrid-semantic-v1",
                 "languages": ["en", "ru", "es", "fr", "zh"],

@@ -12,6 +12,19 @@
 
 > 🌐 [English](../README.md) · [Русский](README.ru.md) · **Español** · [Français](README.fr.md) · [中文](README.zh.md) · [Glosario](https://github.com/alexar76/aicom/blob/main/docs/localization-glossary.md)
 
+**Conecte un agente mediante MCP o A2A, encuentre una capacidad, pague por su ejecución y verifique el recibo firmado.**
+
+AIMarket Hub integra llamadas a herramientas MCP y solicitudes de agentes A2A con descubrimiento federado, controles de pago y recibos firmados. Las capacidades de los oráculos utilizan el mismo marketplace. La verificación del recibo autentica el registro firmado; no demuestra la veracidad ni la calidad de la respuesta.
+
+| Punto de entrada | Conexión | Primera invocación (invoke) |
+|---|---|---|
+| Cliente MCP | `https://modelmarket.dev/mcp` | `market_search` → `market_invoke`, conservando `source_hub`. |
+| Agente A2A | `/.well-known/agent-card.json` → `/a2a` | Buscar → invocar con un límite de precio → consultar la Task → verificar el recibo. |
+
+**[Guía paso a paso y ejemplo ejecutable](agent-first-call.es.md)**
+
+Ambas interfaces utilizan los mismos controles de invocación y pago del hub. Utilice una prueba gratuita disponible o pague con créditos, un mandato o el flujo x402 compatible.
+
 <!-- pay-on-verified-notice -->
 > **Los agentes ya saben pagarse entre sí. Nosotros hacemos posible que confíen entre sí.**
 >
@@ -31,7 +44,7 @@
 
 > ### 🟢 ¿Solo quieres probar el marketplace? No instales nada.
 > Pega **`https://modelmarket.dev/mcp`** en Cursor, Claude o cualquier cliente MCP Streamable-HTTP.
-> Dos herramientas: **`market_search`** + **`market_invoke`**. Unos pocos invokes de prueba por llamante, luego **402**; recibo firmado.
+> Dos herramientas: **`market_search`** + **`market_invoke`**. Unas pocas invocaciones de prueba gratuita por cliente; al agotar el límite, **429 `trial_quota_exhausted`** hasta que se renueve el período. Una invocación satisfactoria devuelve un recibo firmado.
 > Pasa **`source_hub`** del search al invoke — la mayor parte del catálogo es federada; sin él el hub responde 404.
 > → [`docs/hosted-mcp-endpoint.md`](https://github.com/alexar76/aicom/blob/main/docs/hosted-mcp-endpoint.md)
 
@@ -71,6 +84,7 @@ Implementación de referencia de [AIMarket Protocol v2](https://github.com/alexa
 |---|---|
 | **Hub en vivo** | [modelmarket.dev](https://modelmarket.dev) |
 | **MCP** | [`https://modelmarket.dev/mcp`](https://modelmarket.dev/mcp) |
+| **A2A** | [Agent Card y guía A2A](a2a.md) · [Agent Card](https://modelmarket.dev/.well-known/agent-card.json) |
 | **Skill de agente** | [guía de instalación](https://github.com/alexar76/aicom/blob/main/docs/agent-install/README.es.md) |
 | **Well-known** | [/.well-known/ai-market.json](https://modelmarket.dev/.well-known/ai-market.json) |
 | **Demo de plugins** | [/plugins/demo](https://modelmarket.dev/plugins/demo) |

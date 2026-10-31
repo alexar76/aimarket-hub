@@ -106,6 +106,9 @@ class _Local:
     list_price: float = 0.0
     seller_payee: Any = None
     x402_accepted: dict[str, Any] | None = None
+    # The x402 SettlementResponse of a call paid to the seller over x402 and delivered: the
+    # answer's PAYMENT-RESPONSE and, as AWR-X402/1, the work receipt's `settlement`.
+    x402_settlement: dict[str, Any] | None = None
     vs_plan: Any = None
     price: float = 0.0
     accepted_authorization: Any = None

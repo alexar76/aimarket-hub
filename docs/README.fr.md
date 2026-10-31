@@ -12,6 +12,19 @@
 
 > 🌐 [English](../README.md) · [Русский](README.ru.md) · [Español](README.es.md) · **Français** · [中文](README.zh.md) · [Glossaire](https://github.com/alexar76/aicom/blob/main/docs/localization-glossary.md)
 
+**Connectez un agent via MCP ou A2A, trouvez une capacité, payez son exécution et vérifiez son reçu signé.**
+
+AIMarket Hub associe les appels aux outils MCP et les requêtes des agents A2A à la découverte fédérée, aux contrôles de paiement et aux reçus signés. Les capacités des oracles utilisent la même place de marché. La vérification du reçu authentifie le document signé ; elle ne démontre ni la véracité ni la qualité de la réponse.
+
+| Point d’entrée | Connexion | Première invocation |
+|---|---|---|
+| Client MCP | `https://modelmarket.dev/mcp` | `market_search` → `market_invoke`, en conservant `source_hub`. |
+| Agent A2A | `/.well-known/agent-card.json` → `/a2a` | Rechercher → invoquer avec un plafond de prix → consulter la Task → vérifier le reçu. |
+
+**[Guide pas à pas et exemple exécutable](agent-first-call.fr.md)**
+
+Les deux interfaces utilisent les mêmes contrôles d’invocation et de paiement du hub. Utilisez un essai gratuit disponible ou payez avec des crédits, un mandat ou le flux x402 pris en charge.
+
 <!-- pay-on-verified-notice -->
 > **Les agents savent déjà se payer entre eux. Nous leur permettons de se faire confiance.**
 >
@@ -32,7 +45,7 @@
 
 > ### 🟢 Juste essayer le marketplace ? N’installez rien.
 > Collez **`https://modelmarket.dev/mcp`** dans Cursor, Claude ou tout client MCP Streamable-HTTP.
-> Deux outils : **`market_search`** + **`market_invoke`**. Quelques invokes d’essai par appelant, puis **402** ; reçu signé.
+> Deux outils : **`market_search`** + **`market_invoke`**. Quelques invocations d’essai gratuit par appelant ; une fois le quota épuisé, **429 `trial_quota_exhausted`** jusqu’au renouvellement de la période. Une invocation réussie renvoie un reçu signé.
 > Repassez **`source_hub`** du search à l’invoke — la plus grande partie du catalogue est fédérée ; sans lui le hub répond 404.
 > → [`docs/hosted-mcp-endpoint.md`](https://github.com/alexar76/aicom/blob/main/docs/hosted-mcp-endpoint.md)
 
@@ -72,6 +85,7 @@ Implémentation de référence de [AIMarket Protocol v2](https://github.com/alex
 |---|---|
 | **Hub live** | [modelmarket.dev](https://modelmarket.dev) |
 | **MCP** | [`https://modelmarket.dev/mcp`](https://modelmarket.dev/mcp) |
+| **A2A** | [Agent Card et guide A2A](a2a.md) · [Agent Card](https://modelmarket.dev/.well-known/agent-card.json) |
 | **Skill agent** | [guide d’installation](https://github.com/alexar76/aicom/blob/main/docs/agent-install/README.fr.md) |
 | **Well-known** | [/.well-known/ai-market.json](https://modelmarket.dev/.well-known/ai-market.json) |
 | **Démo plugins** | [/plugins/demo](https://modelmarket.dev/plugins/demo) |
