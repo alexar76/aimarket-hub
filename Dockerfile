@@ -15,7 +15,23 @@ RUN npm ci --silent
 COPY hephaestus/studio/src/ ./src/
 RUN npm run build
 
-FROM python:3.12-slim
+# Keep the ZK runtime on a maintained Node LTS; Debian's nodejs/npm packages
+# pull an older runtime and hundreds of separately versioned JS packages.
+FROM node:24.22.2-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS zk-node
+# Package managers are build tools; the runtime only needs Node and snarkjs.
+RUN npm install --global --ignore-scripts --no-audit --no-fund npm@12.2.1 \
+    && npm pack --ignore-scripts --pack-destination /tmp undici@6.29.1 \
+    && echo '29c4b8e0b2d86cb8795571c1959012ce057a14ecfd34858335f47c31e770a04f  /tmp/undici-6.29.1.tgz' | sha256sum -c - \
+    && rm -rf /usr/local/lib/node_modules/npm/node_modules/undici \
+    && mkdir /usr/local/lib/node_modules/npm/node_modules/undici \
+    && tar -xzf /tmp/undici-6.29.1.tgz --strip-components=1 -C /usr/local/lib/node_modules/npm/node_modules/undici \
+    && rm /tmp/undici-6.29.1.tgz
+WORKDIR /opt/zk
+COPY contracts/zk/package.json contracts/zk/package-lock.json ./
+COPY contracts/zk/vendor/ ./vendor/
+RUN npm ci --omit=dev --silent
+
+FROM python:3.12-slim-trixie
 
 LABEL org.opencontainers.image.title="modelmarket Hub"
 LABEL org.opencontainers.image.description="Federation hub for AI capability discovery and routing"
@@ -24,10 +40,11 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 WORKDIR /app
 
-# Install system deps (nodejs/npm for snarkjs PLONK prove/verify CLI)
+# Install system deps and the same supported Node runtime used for ZK checks.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates nodejs npm \
+    curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=zk-node /usr/local/bin/node /usr/local/bin/node
 
 # Build from repository root:
 #   docker build -f aimarket-hub/Dockerfile -t modelmarket-hub .
@@ -100,8 +117,8 @@ RUN pip install --no-cache-dir /tmp/provenance && rm -rf /tmp/provenance
 COPY contracts/zk/package.json contracts/zk/package-lock.json /opt/zk/
 COPY contracts/zk/vendor/ /opt/zk/vendor/
 COPY contracts/zk/scripts/poseidon2.mjs /opt/zk/scripts/poseidon2.mjs
-RUN cd /opt/zk && npm ci --omit=dev --silent \
-    && ln -sf /opt/zk/node_modules/.bin/snarkjs /usr/local/bin/snarkjs
+COPY --from=zk-node /opt/zk/node_modules /opt/zk/node_modules
+RUN ln -sf /opt/zk/node_modules/.bin/snarkjs /usr/local/bin/snarkjs
 COPY contracts/zk/verifier/ /app/contracts/zk/verifier/
 # The proving key and witness generator are OPTIONAL, and copied as a directory on
 # purpose. Naming the two files individually meant a clean clone could not build the image

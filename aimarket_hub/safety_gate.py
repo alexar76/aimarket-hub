@@ -255,17 +255,27 @@ _HARASSMENT_RES: list[re.Pattern[str]] = [
     re.compile(r"\b(hate\s+speech|racial\s+slur|discriminat)\b", re.I),
 ]
 
-# Opaque machine tokens — Ed25519 signatures and public keys (base64, 44/88 chars), SHA-256
-# digests and nonces (hex), UUID-free identifiers — are not prose and are never scanned. Every
-# signed receipt and every GAIA/oracle attestation carries several of them, and a word-bounded
-# pattern such as `cp\b` or `csam` matches a random run of letters sooner or later: on
-# 2026-10-30 a free-trial weather reading was refused as "illegal content" and the caller
-# saw a bare safety block. A token counts as opaque when it is 32+ base64/hex characters with
-# at least one digit or base64 symbol; dash- or underscore-joined slugs and ordinary words are
-# left in, so prose hidden in a long token is still read.
-_OPAQUE_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/])"
+# Signatures, keys and digests are not prose. Every signed receipt and every GAIA/oracle
+# attestation carries several (Ed25519 values and public keys in base64, PQ keys and values,
+# SHA-256 digests in hex or SRI form), and a word-bounded pattern such as `cp\b` or `csam`
+# matches a random run of their letters sooner or later: on 2026-10-30 a free-trial weather
+# reading was refused as "illegal content". Only a value that is entirely such a token, under a
+# key that names one, is left out of the scan — a long token in prose, or prose under one of
+# these keys, is still read, so the rule cannot be used to carry text past the gate.
+_OPAQUE_KEYS = frozenset({
+    "signature", "value", "public_key", "pubkey", "provider_pubkey", "signer_public_key",
+    "pq_public_key", "pq_value", "input_hash", "output_hash", "hash", "digest", "digest_sri",
+    "sha256", "nonce",
+})
+_OPAQUE_VALUE = re.compile(
+    r"(?:sha(?:256|384|512)-)?(?=[A-Za-z0-9+/_=-]*[0-9+/=])[A-Za-z0-9+/_=-]{32,}"
 )
+
+
+def _is_opaque_field(key: str, value: Any) -> bool:
+    return (isinstance(value, str) and key.lower() in _OPAQUE_KEYS
+            and _OPAQUE_VALUE.fullmatch(value) is not None)
+
 
 # ── Illegal content ───────────────────────────────────────────
 
@@ -420,13 +430,13 @@ class SafetyGate:
         Walks dict keys AND values (EXP-57: attacker hides jailbreaks in keys),
         converts bytes, ints, floats to strings, and applies NFKC Unicode
         normalization so fullwidth/Cyrillic homoglyphs don't bypass regex.
-        Opaque machine tokens (signatures, keys, digests) are blanked: see _OPAQUE_TOKEN.
+        Signature, key and digest fields are left out: see _OPAQUE_KEYS.
         """
         if isinstance(payload, str):
-            return _OPAQUE_TOKEN.sub(" ", unicodedata.normalize("NFKC", payload))
+            return unicodedata.normalize("NFKC", payload)
         if isinstance(payload, (bytes, bytearray)):
             try:
-                return _OPAQUE_TOKEN.sub(" ", unicodedata.normalize("NFKC", payload.decode("utf-8", errors="replace")))
+                return unicodedata.normalize("NFKC", payload.decode("utf-8", errors="replace"))
             except Exception:
                 return ""
         if isinstance(payload, (int, float, bool)):
@@ -436,6 +446,8 @@ class SafetyGate:
             for k, v in payload.items():
                 if isinstance(k, str):
                     parts.append(unicodedata.normalize("NFKC", k))
+                    if _is_opaque_field(k, v):
+                        continue  # a signature, key or digest: see _OPAQUE_KEYS
                 parts.append(SafetyGate._extract_text(v))
         elif isinstance(payload, (list, tuple, set)):
             for item in payload:

@@ -375,18 +375,40 @@ async def fetch_discovery(origin: str, *, hub_url: str = "", request: Any = None
     return "", None, last_error
 
 
+# HEAD-first: what a seller can do so that a listing check costs it nothing. A seller that
+# answers HEAD with its 402 (the terms in the V2 PAYMENT-REQUIRED header, since HEAD carries
+# no body) before its free-tier check is quoted without serving a call or counting one
+# against a trial. Most frameworks do not do this by default — Express and Starlette run the
+# GET handler for HEAD, and a POST-only route answers 404/405 — so HEAD is tried first and the
+# unpaid request of §2.7 is the fallback. A 2xx to HEAD means the seller served the route for
+# free (the free call is already spent), so there is no fallback: the result is not_priced.
+_HEAD_FALLBACK_STATUSES = frozenset({0, 400, 404, 405, 422, 501})
+
+
 async def probe_route(route: dict[str, Any], *, hub_url: str = "", request: Any = None
                       ) -> dict[str, Any]:
-    """One unpaid request to a route. Never carries a payment header."""
+    """At most two unpaid requests to a route, HEAD first. Never carries a payment header."""
     request = request or _default_request
     method = route.get("method") or "POST"
-    reply = await request(
-        method, route["url"], {**_request_headers(hub_url), "Content-Type": "application/json"}
-        if method == "POST" else _request_headers(hub_url),
-        MAX_PROBE_BYTES, {} if method == "POST" else None,
-    )
+    head = await request("HEAD", route["url"], _request_headers(hub_url), MAX_PROBE_BYTES, None)
+    head_status = int(head.get("status") or 0)
+    if head_status == 402 and offer_from_402(head.get("json"), head.get("headers")) is not None:
+        reply, probe_method = head, "HEAD"
+    elif 200 <= head_status < 300:
+        reply, probe_method = head, "HEAD"
+    elif head_status in _HEAD_FALLBACK_STATUSES or head_status == 402:
+        # No terms on HEAD (a 402 with its offer only in a body HEAD cannot carry, or a route
+        # that does not answer HEAD): the one unpaid request of §2.7.
+        reply = await request(
+            method, route["url"], {**_request_headers(hub_url), "Content-Type": "application/json"}
+            if method == "POST" else _request_headers(hub_url),
+            MAX_PROBE_BYTES, {} if method == "POST" else None,
+        )
+        probe_method = method
+    else:
+        reply, probe_method = head, "HEAD"
     status = int(reply.get("status") or 0)
-    seen = {"http_status": status, "probed_at": _now_iso()}
+    seen = {"http_status": status, "probed_at": _now_iso(), "probe_method": probe_method}
     if status == 402:
         offer = offer_from_402(reply.get("json"), reply.get("headers"))
         if offer is None:

@@ -346,43 +346,33 @@ class TestHarassmentGapDoesNotCrossASentence:
 class TestOpaqueTokensAreNotProse:
     """Signatures, keys and digests ride along in every signed receipt and attestation. A
     word-bounded pattern (`cp\\b`, `csam`) matches a random run of base64 sooner or later: on
-    2026-10-30 a free-trial weather reading was refused as "illegal content". Opaque tokens are
-    blanked before the text checks; prose, including long dash-joined slugs, is still read."""
+    2026-10-30 a free-trial weather reading was refused as "illegal content". Only a whole
+    token under a signature/key/digest key is left out; anything else is still read."""
 
     CONTRACT = ConstitutionalContract(blocked_categories=["class:illegal", "class:harassment"])
+    SIG = "LBzkDSm3BOVnFaR8Z7O1nvkZie8Lw03NPK7csz9QC/cp+Yf6Y/csam/MnNhCfzIsIv6gk89iPTDMM0ecVILgkT04FDw=="
 
-    SIGNED_READING = {
-        "ok": True,
-        "output": {
-            "reading": {"device_id": "om-wx-01", "values": {"temperature_c": 5.3, "wind_mps": 0.85}},
-            "attestation": {
-                "algorithm": "ed25519",
-                "public_key": "bdtWcNGNNk2Q6mcblT1OqAdtkncOohceH/G2dlxLDk0=",
-                # a signature whose base64 happens to contain word-bounded "cp" and "csam"
-                "value": "LBzkDSm3BOVnFaR8Z7O1nvkZie8Lw03NPK7csz9QC/cp+Yf6Y/csam/MnNhCfzIsIv6gk89iPTDMM0ecVILgkT04FDw==",
-            },
-        },
-        "provenance": {"input_hash": "98d3c945946e2a4fe639e55c70d0228ac297642da9240833b3c05d7b92c3fd8c"},
-        "receipt": {"nonce": "e95b92d0da155e00", "signature": "3q2+7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="},
-    }
-
-    def test_signed_reading_is_not_illegal(self):
+    def test_a_signed_reading_is_not_illegal(self):
         gate = SafetyGate(self.CONTRACT)
-        verdict = gate.post_response_check(self.SIGNED_READING)
+        verdict = gate.post_response_check({
+            "output": {"reading": {"values": {"temperature_c": 5.3}},
+                       "attestation": {"public_key": "bdtWcNGNNk2Q6mcblT1OqAdtkncOohceH/G2dlxLDk0=",
+                                       "value": self.SIG}},
+            "provenance": {"input_hash": "98d3c945946e2a4fe639e55c70d0228ac297642da9240833b3c05d7b92c3fd8c"},
+            "provenance_receipt": {"digest_sri": "sha256-/cp+csam/Kq0f2gQ8k6Rk1vF7jYb3d9uH2lP0a1s="},
+            "receipt": {"signature": {"value": self.SIG, "pq_value": self.SIG * 3}},
+        })
         assert verdict.passed, verdict
 
-    def test_opaque_tokens_are_blanked_but_prose_survives(self):
-        text = SafetyGate._extract_text({
-            "sig": "LBzkDSm3BOVnFaR8Z7O1nvkZie8Lw03NPK7csz9QC/cp+Yf6Y/csam/MnNhCfzIsIv6gk89iPTDMM0ecVILgkT04FDw==",
-            "hash": "98d3c945946e2a4fe639e55c70d0228ac297642da9240833b3c05d7b92c3fd8c",
-            "slug": "how-to-make-a-bomb-at-home-today-and-tomorrow",
-            "word": "Pneumonoultramicroscopicsilicovolcanoconiosis",
-            "note": "cp links for sale",
-        })
-        assert "/cp+" not in text and "csam" not in text and "98d3c945" not in text
-        assert "how-to-make-a-bomb-at-home-today-and-tomorrow" in text   # letters and dashes: not opaque
-        assert "Pneumonoultramicroscopicsilicovolcanoconiosis" in text   # no digit or base64 symbol: a word
-        assert "cp links for sale" in text
+    def test_the_same_token_outside_a_signature_field_is_still_read(self):
+        gate = SafetyGate(self.CONTRACT)
+        assert not gate.post_response_check({"output": {"text": "x/" + self.SIG}}).passed
+
+    def test_prose_under_a_signature_key_is_still_read(self):
+        """A provider cannot carry text past the gate by naming its field `signature`."""
+        gate = SafetyGate(self.CONTRACT)
+        verdict = gate.post_response_check({"output": {"signature": "cp links for sale, how to make a bomb"}})
+        assert not verdict.passed and verdict.category == "class:illegal"
 
     def test_prose_illegal_content_is_still_blocked(self):
         gate = SafetyGate(self.CONTRACT)
@@ -392,8 +382,5 @@ class TestOpaqueTokensAreNotProse:
 
     def test_pre_invoke_input_with_a_signature_passes(self):
         gate = SafetyGate(self.CONTRACT)
-        verdict = gate.pre_invoke_check({
-            "text": "verify this receipt",
-            "signature": "3q2+7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
-        })
+        verdict = gate.pre_invoke_check({"text": "verify this receipt", "signature": self.SIG})
         assert verdict.passed, verdict

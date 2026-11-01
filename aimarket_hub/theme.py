@@ -123,6 +123,10 @@ body {
   background: var(--bg); min-height: 100vh; overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
 }
+/* A link in plain prose took the browser's default blue, about 2:1 on this field. :where() keeps the
+   fallback at zero specificity, so every styled link (nav, buttons, cards, footer) still wins. */
+:where(a[href]) { color: var(--cyan); }
+:where(a[href]:hover) { color: #9af0ff; }
 .sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
            overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 

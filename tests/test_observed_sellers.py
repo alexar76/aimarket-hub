@@ -78,10 +78,13 @@ def _v2_402(amount="2000", pay_to=PAY_TO):
 class FakeSeller:
     """A seller's origin: a discovery document and a reply per route. Records every request."""
 
-    def __init__(self, doc, replies, default=None):
+    def __init__(self, doc, replies, default=None, head=None):
         self.doc = doc
         self.replies = replies
         self.default = default or _v1_402()
+        # What a route answers to HEAD. By default 405, as a POST-only route does, so the probe
+        # falls back to the unpaid request; a seller that follows the HEAD-first rule answers 402.
+        self.head = head or {"status": 405, "json": None, "headers": {}}
         self.calls = []
 
     async def __call__(self, method, url, headers, max_bytes, json_body):
@@ -92,6 +95,8 @@ class FakeSeller:
             return {"status": 200, "json": self.doc, "headers": {}}
         if url.startswith(SELLER + "/.well-known/"):
             return {"status": 404, "json": None, "headers": {}}
+        if method == "HEAD":
+            return self.head
         return self.replies.get(url, self.default)
 
 
@@ -213,6 +218,10 @@ def test_a_probe_is_unpaid_and_says_who_is_asking():
     seller = FakeSeller(SWARM_SHAPE, {})
     run(obs.probe_route({"url": f"{SELLER}/x", "method": "POST"}, hub_url="https://hub.example",
                         request=seller))
+    assert [c["method"] for c in seller.calls] == ["HEAD", "POST"]
+    for call in seller.calls:
+        names = {k.lower() for k in call["headers"]}
+        assert not names & {"x-payment", "payment-signature", "authorization"}
     call = seller.calls[-1]
     assert call["json"] == {}
     names = {k.lower() for k in call["headers"]}
@@ -254,8 +263,35 @@ def test_only_consented_routes_are_probed_and_a_missing_one_is_reported():
         f"{SELLER}/services/read-page", f"{SELLER}/services/gone"]}, request=seller))
     assert [r["url"] for r in seen["routes"]] == [f"{SELLER}/services/read-page"]
     assert "gone" in seen["last_error"]
-    probed = [c["url"] for c in seller.calls if "/.well-known/" not in c["url"]]
-    assert probed == [f"{SELLER}/services/read-page"]
+    probed = {c["url"] for c in seller.calls if "/.well-known/" not in c["url"]}
+    assert probed == {f"{SELLER}/services/read-page"}
+
+
+def test_head_with_terms_is_quoted_without_a_second_request():
+    """A seller that answers HEAD with its 402 before the free tier pays nothing for a check."""
+    v2 = _v2_402()
+    seller = FakeSeller(SWARM_SHAPE, {}, default={"status": 200, "json": {"ok": True}, "headers": {}},
+                        head={"status": 402, "json": None, "headers": v2["headers"]})
+    probe = run(obs.probe_route({"url": f"{SELLER}/x", "method": "POST"}, request=seller))
+    assert probe["result"] == "quoted" and probe["probe_method"] == "HEAD"
+    assert [c["method"] for c in seller.calls] == ["HEAD"]
+    assert seller.calls[0]["json"] is None
+
+
+def test_head_without_terms_falls_back_to_one_unpaid_request():
+    seller = FakeSeller(SWARM_SHAPE, {}, head={"status": 402, "json": None, "headers": {}})
+    probe = run(obs.probe_route({"url": f"{SELLER}/x", "method": "POST"}, request=seller))
+    assert probe["result"] == "quoted" and probe["probe_method"] == "POST"
+    assert [c["method"] for c in seller.calls] == ["HEAD", "POST"]
+
+
+def test_a_free_answer_to_head_is_not_priced_and_not_asked_twice():
+    """Express and Starlette run the GET handler for HEAD: the free call is spent already, so
+    the probe does not spend another one."""
+    seller = FakeSeller(SWARM_SHAPE, {}, head={"status": 200, "json": None, "headers": {}})
+    probe = run(obs.probe_route({"url": f"{SELLER}/x", "method": "GET"}, request=seller))
+    assert probe["result"] == "not_priced" and probe["probe_method"] == "HEAD"
+    assert [c["method"] for c in seller.calls] == ["HEAD"]
 
 
 def test_a_free_answer_stops_the_cycle_so_the_sellers_free_calls_are_not_spent():

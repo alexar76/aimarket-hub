@@ -476,7 +476,10 @@ def _page(body: str, title: str, description: str, active: str,
         ] + routes
     entry = '<section class="shell section">' + switcher + f'<h1>{escape(copy[2])}</h1><p>{escape(copy[3])}</p><div class="btn-row">'
     entry += ''.join(f'<a class="btn btn-ghost" href="{url}">{escape(label)}</a>' for url, label in routes)
-    entry += f'</div><p><a href="/developers?lang={lang}">{escape(copy[0])}</a> · <a href="/examples?lang={lang}">{escape(copy[1])}</a></p></section>'
+    # section-note gives the two links the site's cyan; bare, they took the browser's default blue,
+    # which was hard to read on the dark field.
+    entry += (f'</div><p class="section-note"><a href="/developers?lang={lang}">{escape(copy[0])}</a> · '
+              f'<a href="/examples?lang={lang}">{escape(copy[1])}</a></p></section>')
     reference = _localise(body, hub_url, ecosystem_links)
     if lang != "en":
         reference = f'<details class="shell"><summary>{escape(copy[8])}</summary><div lang="en">{reference}</div></details>'
