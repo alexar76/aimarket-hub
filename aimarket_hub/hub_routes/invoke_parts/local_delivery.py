@@ -35,8 +35,26 @@ async def _local_deliver(d: SimpleNamespace, call: _Call, local: _Local):
     if blocked is not None:
         return blocked
 
-    _local_settle(d, call, local)
-    _local_sign_receipt(d, call, local)
+    prepare = getattr(call.request.state, "prepare_escrow_response", None)
+    plan = local.vs_plan
+    checkpoint = (prepare is not None and local.accepted_authorization is not None
+                  and local.reserved and local.hold_rail == "channel"
+                  and not (plan is not None and plan.active and plan.paid))
+    if checkpoint:
+        _local_sign_receipt(d, call, local)
+        response = _local_answer(d, call, local, result, None, None, None, mark_delivered=False)
+        share = d._publisher_share(local.cap, local.price, local.nonce)
+        try:
+            settle_checkpoint = prepare(response, local.nonce, local.accepted_authorization.row.deadline, share)
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        # The durable checkpoint now owns the hold, even if capture raises.
+        local.resolved = True
+        if settle_checkpoint() is None:
+            raise HTTPException(status_code=503, detail="escrow settlement pending; retry the same request")
+    else:
+        _local_settle(d, call, local)
+        _local_sign_receipt(d, call, local)
     _local_register_verification(d, call, local, result)
     _local_record(d, call, local, result)
     acex_revenue, acex_audit_rewards = _local_accrue_acex(d, call, local)
@@ -315,14 +333,15 @@ def _local_refuse_undelivered(d: SimpleNamespace, call: _Call, local: _Local, re
     # an error body. Fail closed here — the reservation is still
     # unresolved, so `finally` hands the money back untouched.
     # Only an EXPLICIT false counts; most results carry no `ok` at all.
-    if isinstance(result, dict) and (
-        result.get("ok") is False or result.get("success") is False
+    if (local.accepted_authorization is not None and result is None) or (
+        isinstance(result, dict) and (result.get("ok") is False or result.get("success") is False)
     ):
         # An honest "I could not read" is correct provider behaviour, not
         # misbehaviour: skip the success recording, do not slash the stake.
         local.provider_invoke_failed = True
         provider_error = str(
-            result.get("error") or result.get("detail") or "provider reported failure"
+            (result.get("error") or result.get("detail") or "provider reported failure")
+            if isinstance(result, dict) else "provider returned no result"
         )[:200]
         logger.info(
             "invoke: provider %s/%s returned ok=false (%s) — no debit",
@@ -635,7 +654,7 @@ def _local_provenance(d: SimpleNamespace, call: _Call, local: _Local, result: An
 
 
 def _local_answer(d: SimpleNamespace, call: _Call, local: _Local, result: Any, provenance_receipt: Any,
-                  acex_revenue: Any, acex_audit_rewards: Any) -> JSONResponse:
+                  acex_revenue: Any, acex_audit_rewards: Any, *, mark_delivered: bool = True) -> JSONResponse:
     plugins = d.plugins
     price, list_price, elapsed_ms, sandbox_meta = local.price, local.list_price, local.elapsed_ms, local.sandbox_meta
     receipt, remaining, verification_env, vs_rejection = (
@@ -673,7 +692,8 @@ def _local_answer(d: SimpleNamespace, call: _Call, local: _Local, result: Any, p
     # alongside the verification envelope above: a refunded quality verdict still
     # delivered the result, and the free tier follows the money here rather than
     # inventing a second definition of "delivered".
-    local.delivered = True
+    if mark_delivered:
+        local.delivered = True
     headers = None
     if local.x402_settlement is not None:
         from aimarket_hub import x402

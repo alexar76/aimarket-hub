@@ -111,3 +111,42 @@ def test_other_rails_say_the_key_does_not_apply(market):
     r = client.post(INVOKE, json=BODY, headers={"Idempotency-Key": "anon-1"})
     assert r.headers["x-aimarket-idempotency"] == "not-applicable"
     assert _rows(db) == []
+
+
+def test_a_lost_connection_cannot_discard_the_completed_answer(market):
+    import asyncio
+    import json
+
+    from aimarket_hub.idempotency import InvokeIdempotency
+
+    _, db, _, api_key = market
+    executions = []
+
+    async def invoke(scope, receive, send):
+        executions.append(await receive())
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b'{"result":"paid work"}'})
+
+    scope = {
+        "type": "http", "method": "POST", "path": INVOKE,
+        "headers": [(b"x-api-key", api_key.encode()), (b"idempotency-key", b"lost-connection")],
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": json.dumps(BODY).encode()}
+
+    async def disconnected(message):
+        raise ConnectionError("the first response never reached the buyer")
+
+    with pytest.raises(ConnectionError):
+        asyncio.run(InvokeIdempotency(invoke, db._conn)(scope, receive, disconnected))
+
+    response = []
+
+    async def collect(message):
+        response.append(message)
+
+    asyncio.run(InvokeIdempotency(invoke, db._conn)(scope, receive, collect))
+    assert len(executions) == 1
+    assert (b"x-aimarket-idempotency", b"replayed") in response[0]["headers"]
+    assert response[1]["body"] == b'{"result":"paid work"}'

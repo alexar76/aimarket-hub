@@ -329,6 +329,10 @@ class LedgerSweepsMixin:
 
         def _query(conn: Any) -> set[str]:
             live: set[str] = set()
+            prepared: set[str] = set()
+            has_checkpoints = not isinstance(conn, sqlite3.Connection) or conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'invoke_idempotency'"
+            ).fetchone() is not None
             for i in range(0, len(nonces), 200):
                 chunk = nonces[i:i + 200]
                 marks = ",".join("?" for _ in chunk)
@@ -338,9 +342,16 @@ class LedgerSweepsMixin:
                     tuple(chunk),
                 ).fetchall()
                 live.update(r["nonce"] for r in rows)
+                if has_checkpoints:
+                    rows = conn.execute(
+                        "SELECT idem_key FROM invoke_idempotency WHERE status = 'prepared' "
+                        f"AND scope LIKE 'escrow:%' AND idem_key IN ({marks})",
+                        tuple(r.lower().removeprefix("0x") for r in chunk),
+                    ).fetchall()
+                    prepared.update(r["idem_key"] for r in rows)
             return {
                 r for r in receipt_ids
-                if r in live or (
+                if r in live or r.lower().removeprefix("0x") in prepared or (
                     r.startswith(channels.APPEAL_BOND_PREFIX) and r[len(channels.APPEAL_BOND_PREFIX):] in live
                 )
             }
