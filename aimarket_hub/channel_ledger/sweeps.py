@@ -4,6 +4,7 @@ unresolved settlements and stale holds.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -15,6 +16,17 @@ from typing import Any
 from aimarket_hub.paging import page_limit
 
 logger = logging.getLogger("aimarket_hub.channels")
+
+
+def _checkpoint_expired(saved: Any, now: float) -> bool:
+    """Whether an escrow checkpoint's authorization deadline has passed (see idempotency.py).
+
+    An unreadable checkpoint counts as live: when ownership is in doubt the reaper keeps the hold.
+    """
+    try:
+        return int(json.loads(saved)["deadline"]) <= int(now)
+    except (TypeError, ValueError, KeyError):
+        return False
 
 
 class LedgerSweepsMixin:
@@ -330,6 +342,7 @@ class LedgerSweepsMixin:
         def _query(conn: Any) -> set[str]:
             live: set[str] = set()
             prepared: set[str] = set()
+            now = time.time()
             has_checkpoints = not isinstance(conn, sqlite3.Connection) or conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'invoke_idempotency'"
             ).fetchone() is not None
@@ -344,11 +357,15 @@ class LedgerSweepsMixin:
                 live.update(r["nonce"] for r in rows)
                 if has_checkpoints:
                     rows = conn.execute(
-                        "SELECT idem_key FROM invoke_idempotency WHERE status = 'prepared' "
+                        "SELECT idem_key, response_headers FROM invoke_idempotency WHERE status = 'prepared' "
                         f"AND scope LIKE 'escrow:%' AND idem_key IN ({marks})",
                         tuple(r.lower().removeprefix("0x") for r in chunk),
                     ).fetchall()
-                    prepared.update(r["idem_key"] for r in rows)
+                    # A checkpoint owns its hold only until the buyer's authorization
+                    # expires: after that nothing can capture it, and a hold kept for
+                    # ever also keeps its channel from closing or expiring.
+                    prepared.update(r["idem_key"] for r in rows
+                                    if not _checkpoint_expired(r["response_headers"], now))
             return {
                 r for r in receipt_ids
                 if r in live or r.lower().removeprefix("0x") in prepared or (

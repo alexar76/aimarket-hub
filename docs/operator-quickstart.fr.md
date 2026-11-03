@@ -56,10 +56,10 @@ aimarket add weather.now@v1 --url https://api.example.com/weather \
 
 Le hub envoie un POST `{"input": …, "product_id": …, "capability_id": …}` à votre URL et attend
 `200` avec un objet JSON (ou `{"result": …}`). La recherche, MCP, A2A, l'offre x402 et le reçu
-signé viennent du hub. `--pay-to` est le portefeuille que l'acheteur paie en USDC, directement au
-vendeur : le hub ne détient jamais cet argent et n'en prend rien. Sans `--pay-to`, une offre
-payante ne peut être réglée que depuis des comptes de crédit de votre propre hub, qu'un acheteur
-routé depuis un autre hub ne possède pas.
+signé viennent du hub. Indiquez le portefeuille qui reçoit les USDC avec `--pay-to`. Pour une
+offre de l’opérateur, le hub peut utiliser `AIMARKET_X402_PAY_TO` à défaut. Le hub ne détient pas
+ces fonds. Les frais sont nuls par défaut. Sans bénéficiaire configuré, les acheteurs peuvent
+payer en crédits si ce circuit est activé.
 
 `add` écrit dans votre propre base, il n'y a donc pas de caution d'éditeur à vous payer à
 vous-même ; les inconnus qui publient sur votre hub passent par la porte contrôlée décrite
@@ -123,11 +123,10 @@ premier démarrage, à partir des seeds versionnées. Tout le chemin d'admission
 
 ## 6. Ce que cela rapporte, honnêtement
 
-- **Votre propre API :** chaque vente est payée sur votre portefeuille, directement au vendeur.
-  Le hub ne garde rien.
+- **Votre propre API :** x402 paie le portefeuille de l’offre. Une commission peut être répartie sur la chaîne.
 - **Courtage :** `AIMARKET_ROUTING_FEE_BPS` (1 % par défaut) quand votre hub route la vente d'une
   capacité d'un autre hub sur le rail de crédits. Une vente que l'acheteur paie directement au
-  vendeur via x402 ne porte aucuns frais.
+  vendeur via x402 est exonérée des frais de routage du circuit de crédits.
 - **Les ventes des autres :** une commission sur les vendeurs qui publient sur votre hub — section 7.
 - **Demande :** le trafic d'acheteurs dans la fédération reste faible. Les compteurs en direct
   sont publics (`https://verify.modelmarket.dev/demand.json`) ; lisez-les avant de compter sur
@@ -149,8 +148,7 @@ premier jour.
 - **Votre commission.** Sur une vente payée depuis un compte de crédit,
   `AIMARKET_PUBLISHER_SHARE_BPS` (70 % par défaut) va au solde du vendeur et le reste vous
   revient ; router la vente d'une capability d'un autre hub ajoute `AIMARKET_ROUTING_FEE_BPS`.
-  Un vendeur qui publie avec son propre portefeuille est payé directement via x402 et vous ne
-  prenez rien sur cette vente : cette porte reste la sienne.
+  Un vendeur qui publie avec son propre portefeuille est payé via x402. Un [contrat de répartition](money-rails.md#13-with-a-fee--the-splitter) configuré peut attribuer une commission.
 - **Les acheteurs rechargent en USDC** sur un portefeuille à vous
   ([recharge de crédits](credits-topup.fr.md)), ou vous les créditez après tout paiement que
   vous encaissez vous-même.
@@ -183,7 +181,7 @@ Contexte : [migration post-quantique](https://github.com/alexar76/aicom/blob/mai
 
 ## Comment vous êtes payé
 
-Il y a deux rails, et vous pouvez utiliser l'un ou les deux.
+Le hub prend en charge trois circuits de paiement. Le tableau compare les deux circuits prépayés. Pour le paiement direct en USDC au vendeur, voir « Accepter des paiements x402 ».
 
 | | Crédits (`X-API-Key`) | Canaux (`X-Payment-Channel`) |
 |---|---|---|
@@ -206,10 +204,7 @@ POST /ai-market/v2/accounts/{id}/status        # vous le désactivez  (admin bea
 GET  /ai-market/v2/stats/live                  # summary.credits : gagné et dû
 ```
 
-L'argent n'entre que par `/credit`, et cette route n'appartient qu'à vous. Quel que soit votre
-moyen d'être payé — une facture, un paiement en ligne, un virement de stablecoin que vous avez vu
-arriver —, vous appelez `/credit` une fois l'argent reçu. Le hub ne prétend pas avoir encaissé
-quoi que ce soit.
+La route `/credit`, réservée à l’administration, enregistre un paiement reçu hors du hub. Vous pouvez aussi activer les [recharges en USDC](credits-topup.fr.md) ou via [Stripe Checkout](card-topup.fr.md). Les deux sont désactivées par défaut.
 
 ### Ce que vous prenez en charge
 
@@ -302,9 +297,7 @@ export AIMARKET_PEER_API_KEYS="https://peer.example=aimk_your_key_there"
 
 Un appel acheminé vers ce pair devient alors une revente : votre acheteur paie le prix du
 catalogue plus votre commission, vous payez le pair depuis votre compte chez lui, et la commission
-est votre marge. Sans clé, le `402` du pair arrive chez un acheteur qui n'a pas de compte là-bas et
-ne peut rien en faire ; c'est pourquoi la fédération en production n'a jamais contenu que des
-pairs gratuits.
+est votre marge. Sans clé, l’acheteur reçoit le `402` du pair sur le circuit de crédits. Il lui faut un compte chez ce pair pour payer.
 
 Les hubs pairs sont appelés sur leur `/ai-market/v2/invoke`, pas sur leur `mcp_endpoint` : cet
 endpoint parle MCP JSON-RPC sur SSE et répond à une enveloppe acheminée par `Method not found`
@@ -336,6 +329,16 @@ le mode découverte seule.
 
 Les crédits et les canaux de paiement restent des commodités de prépaiement. Ce n'est pas par eux
 qu'un éditeur doté d'un portefeuille est payé.
+
+### Offres signées et vendeurs observés
+
+La demande de paiement du hub peut contenir une offre Ed25519 JWS dans `PAYMENT-REQUIRED`. Vérifiez-la à l’aide de `signer_public_key` du document de découverte. Après livraison d’un appel payé directement au vendeur, un reçu de règlement signé peut figurer dans `PAYMENT-RESPONSE` et `x402_settlement`. L’extension est activée par défaut. Pour la désactiver, définissez `AIMARKET_X402_OFFER_RECEIPT=0`. Un [contrat de répartition](money-rails.md#13-with-a-fee--the-splitter) configuré peut attribuer des frais sur la chaîne sans garde des fonds par le hub.
+
+L’opérateur peut consigner le consentement d’un vendeur à l’observation de ses routes x402 publiques. Le hub essaie d’abord une requête HEAD sans paiement, affiche les conditions récentes séparément des résultats invocables du catalogue et épingle l’adresse de paiement du vendeur. La liste publique est disponible via `GET /ai-market/v2/federation/observed-sellers`. Payez et appelez directement le vendeur. Le devis indique les conditions observées à un instant donné. La livraison et la demande nécessitent leurs propres preuves.
+
+### Reprendre un appel signé sous séquestre (3.17.1)
+
+Si la réponse est perdue, répétez le même appel avec l’autorisation d’origine et `payment_authorization.receiptId`. `409 escrow_settlement_pending` indique que le débit est en attente. Le hub réutilise le résultat enregistré du fournisseur. Si l’autorisation expire auparavant, il libère la réservation sans débit et renvoie `409 escrow_authorization_expired`. La clôture d’une obligation de remboursement EVM exige un versement finalisé au déposant. Le dépôt initial ne compte pas et une transaction de versement ne peut clôturer qu’une obligation. La migration `065` ajoute la table des versements utilisés.
 
 ## Laisser des inconnus vous trouver
 
@@ -369,5 +372,5 @@ Le code est sous Apache-2.0 (MIT ailleurs dans l'écosystème) et vous pouvez l'
 commercialement, fixer vos propres commissions et les garder toutes ; rien ne détourne une part
 où que ce soit. Il n'y a pas de licence de marque : n'appelez donc pas votre déploiement
 « AIMarket » et ne laissez pas entendre une approbation. « Implements the AIMarket Protocol » et
-« interoperates with <peer> » sont exacts et acceptables. Personne ne peut se dire « certified »
-ou « conformant » : il n'existe pas encore de suite de conformité.
+« interoperates with <peer> » sont exacts et acceptables.
+Le [programme de vérification de conformité](https://github.com/alexar76/aicom/blob/main/aimarket-protocol/conformance/run.py) vérifie les vecteurs couverts et les endpoints en service. Indiquez la portée et les résultats du test. Le programme ne délivre pas de certification.

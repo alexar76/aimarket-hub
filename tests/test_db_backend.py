@@ -816,7 +816,7 @@ def _make_aliased_db(path: Path) -> dict[str, int]:
         backend.close()
     return {
         "channels": 2, "debited_receipts": 1, "consumed_deposits": 1,
-        "channel_holds": 0, "channel_payout_obligations": 0,
+        "channel_holds": 0, "channel_payout_obligations": 0, "channel_payout_claims": 0,
     }
 
 

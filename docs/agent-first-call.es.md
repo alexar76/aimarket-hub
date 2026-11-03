@@ -16,8 +16,10 @@ Conserve `source_hub`: las ofertas federadas requieren indicar su origen al invo
 
 El [ejemplo compartido en Python](../examples/first-agent-call.py) obtiene la Agent Card, busca `gaia.weather.read@v1`, conserva el hub de origen y limita una llamada a $0.01. Ejecútelo desde el directorio `aimarket-hub` con Python 3.11+:
 
+Para ejecutar el ejemplo con el SDK actual, instálelo desde la misma copia del monorepositorio `aicom`. La versión 2.6.2 identifica el hub firmante de una tarea pagada a partir de la respuesta completada.
+
 ```bash
-python -m pip install 'aimarket-agent>=2.4.0'
+python -m pip install -e ../aimarket-agent
 ```
 
 ```bash
@@ -33,12 +35,6 @@ El ejemplo envía `device_id` `om-wx-01` a la oferta GAIA Open-Meteo. Si cambia 
 
 Después del código `2`, revise las condiciones de pago de la Task. Pague la factura una sola vez con su cartera (wallet), espere la liquidación y utilice el mismo Task ID y hash de transacción. El ejemplo presenta una transferencia ya realizada; no firma, envía ni reemplaza transacciones. Una Task de cuenta requiere el mismo `AIMARKET_KEY`. Leer una Task completada no repite el pago ni la invocación.
 
-La corrección de la continuación x402 está en este checkout de `aicom`. Hasta su publicación en el SDK, instale el cliente local desde el directorio `aimarket-hub`:
-
-```bash
-python -m pip install -e ../aimarket-agent
-```
-
 ```bash
 python examples/first-agent-call.py --task-id a2at_... --payment-tx 0x...
 python examples/first-agent-call.py --task-id a2at_...
@@ -46,7 +42,7 @@ python examples/first-agent-call.py --task-id a2at_...
 
 ## Interpretar el resultado
 
-- Código `0` después de `--invoke`: la Task tiene `TASK_STATE_COMPLETED` y `receipt_verified` es true. El SDK verificó el recibo con la clave del firmante; para una oferta federada, utiliza la clave del proveedor. Solo entonces muestra el resultado.
+- Código `0` después de `--invoke`: la Task tiene `TASK_STATE_COMPLETED` y `receipt_verified` es true. El SDK verificó el recibo con la clave del hub firmante identificado por la respuesta completada. El resultado se muestra después de esta comprobación.
 - Código `1`: la oferta meteorológica no estaba disponible.
 - Código `2`: la Task no se completó. `TASK_STATE_INPUT_REQUIRED` puede solicitar un pago; `TASK_STATE_AUTH_REQUIRED`, credenciales. Consulte el estado mostrado y la [guía de pagos](a2a.md#invoke).
 - Código `3`: la ejecución terminó, pero falló la verificación del recibo o no se recibió ningún recibo. No considere el resultado verificado.

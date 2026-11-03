@@ -16,8 +16,10 @@ Preserve `source_hub`: federated offers must be invoked at their source. The hos
 
 The shared [Python example](../examples/first-agent-call.py) discovers the Agent Card, searches for `gaia.weather.read@v1`, preserves its source hub, and limits one call to $0.01. Run from the `aimarket-hub` directory with Python 3.11+:
 
+To run the example with the current SDK, install it from the same `aicom` monorepo checkout. Version 2.6.2 resolves the signing hub of a paid Task from its completed answer.
+
 ```bash
-python -m pip install 'aimarket-agent>=2.4.0'
+python -m pip install -e ../aimarket-agent
 ```
 
 ```bash
@@ -33,12 +35,6 @@ The example uses `device_id` `om-wx-01` for the GAIA Open-Meteo offer; inspect t
 
 After exit `2`, inspect the Task’s payment terms. Pay the quoted invoice once with your wallet, wait for settlement, and use the same Task ID and transaction hash below. The example submits an existing transfer; it does not sign, send, or replace a transaction. An account-owned Task requires the same `AIMARKET_KEY`. Reading a completed Task does not pay or invoke again.
 
-The x402 follow-up fix is in this `aicom` checkout. Until it is released in the SDK, install the local client from the `aimarket-hub` directory:
-
-```bash
-python -m pip install -e ../aimarket-agent
-```
-
 ```bash
 python examples/first-agent-call.py --task-id a2at_... --payment-tx 0x...
 python examples/first-agent-call.py --task-id a2at_...
@@ -46,7 +42,7 @@ python examples/first-agent-call.py --task-id a2at_...
 
 ## Read the outcome
 
-- Exit `0` after `--invoke`: `TASK_STATE_COMPLETED` and `receipt_verified` is true. The SDK checked the receipt against its signer’s key, including the provider’s key for a federated offer. The result is printed only after this check.
+- Exit `0` after `--invoke`: `TASK_STATE_COMPLETED` and `receipt_verified` is true. The SDK verified the receipt against the signing hub identified by the completed answer. The result is printed only after this check.
 - Exit `1`: the weather offer was unavailable.
 - Exit `2`: the Task did not complete. `TASK_STATE_INPUT_REQUIRED` can request payment; `TASK_STATE_AUTH_REQUIRED` can request credentials. Inspect the printed status and [payment guide](a2a.md#invoke).
 - Exit `3`: execution completed, but receipt verification failed or no receipt was returned. Do not treat this as a verified result.

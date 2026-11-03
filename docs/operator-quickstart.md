@@ -53,9 +53,9 @@ aimarket add weather.now@v1 --url https://api.example.com/weather \
 
 The hub POSTs `{"input": …, "product_id": …, "capability_id": …}` to your URL and expects `200`
 with a JSON object (or `{"result": …}`). Search, MCP, A2A, the x402 offer and the signed receipt
-come from the hub. `--pay-to` is the wallet a buyer pays in USDC, seller-direct: the hub never
-holds that money and takes nothing from it. Without `--pay-to` a priced listing can only be paid
-from credit accounts on your own hub, which a buyer routed from another hub does not have.
+come from the hub. Set the wallet that receives USDC with `--pay-to`. For the operator’s own
+listing, the Hub can fall back to `AIMARKET_X402_PAY_TO`. The Hub does not hold funds on this
+rail. The default fee is zero. If no payee is configured, buyers can use credits when enabled.
 
 `add` writes your own database, so there is no publisher stake to pay to yourself; strangers who
 publish on your hub go through the gated door described [below](#letting-other-people-publish-on-your-hub).
@@ -116,10 +116,10 @@ from the first start. The whole admission path: [join the federation](https://gi
 
 ## 6. What it earns, honestly
 
-- **Your own API:** every sale is paid to your wallet, seller-direct. The hub keeps nothing.
+- **Your own API:** x402 pays to your listing’s wallet, with an optional on-chain fee split.
 - **Brokering:** `AIMARKET_ROUTING_FEE_BPS` (1% by default) when your hub routes a sale of
   another hub's capability on the credits rail. A sale the buyer pays the seller directly over
-  x402 carries no fee.
+  x402 carries no credits routing fee.
 - **Other people's sales:** a commission on the sellers who list on your hub — section 7.
 - **Demand:** buyer traffic across the federation is still small. The live counters are public
   (`https://verify.modelmarket.dev/demand.json`); read them before you count on any of it.
@@ -141,8 +141,7 @@ first day.
 - **Your commission.** On a sale paid from a credit account, `AIMARKET_PUBLISHER_SHARE_BPS`
   (70 % by default) goes to the seller's balance and the rest is yours; routing a sale of
   another hub's capability adds `AIMARKET_ROUTING_FEE_BPS`. A seller who lists with its own
-  wallet is paid seller-direct over x402 and you take nothing from that sale — that door
-  stays theirs.
+  wallet is paid on-chain over x402. A [market splitter](money-rails.md#13-with-a-fee--the-splitter) can allocate a fee if configured.
 - **Buyers top up with USDC** to a wallet of yours ([credits top-up](credits-topup.md)), **or
   with a card** through your Stripe account ([card top-up](card-topup.md), off by default), or
   you credit them after any payment you take yourself.
@@ -175,7 +174,7 @@ your hub until it re-pins (`POST /federation/peers/repin`). Background:
 
 ## How you get paid
 
-There are two rails and you can run either or both.
+The hub has three payment rails. The table compares the two prepaid rails. For seller-direct USDC, see [Taking x402 payments](#taking-x402-payments).
 
 | | Credits (`X-API-Key`) | Channels (`X-Payment-Channel`) |
 |---|---|---|
@@ -198,9 +197,7 @@ POST /ai-market/v2/accounts/{id}/status        # you disable one  (admin bearer)
 GET  /ai-market/v2/stats/live                  # summary.credits — earned vs. owed
 ```
 
-Money enters only through `/credit`, and that route is yours alone. Whatever you use to
-get paid — an invoice, a checkout, a stablecoin transfer you watched land — you call
-`/credit` once you have the money. The hub does not pretend to have collected anything.
+Use the admin-only `/credit` route for a payment you received outside the Hub. Deployments can also enable [USDC top-ups](credits-topup.md) or [Stripe Checkout top-ups](card-topup.md). Both are off by default.
 
 ### What you are taking on
 
@@ -288,8 +285,7 @@ export AIMARKET_PEER_API_KEYS="https://peer.example=aimk_your_key_there"
 
 Now a routed call to that peer is a resale: your buyer is charged the catalogued price plus
 your fee, you pay the peer out of your account there, and the fee is your margin. Without a
-key the peer's `402` reaches a buyer who has no account there and cannot act on it, which is
-why the live federation only ever contained peers that charge nothing.
+key the peer’s credits-only `402` reaches the buyer, who needs an account at that peer to pay it.
 
 Peer hubs are reached at their `/ai-market/v2/invoke`, not at their `mcp_endpoint` — that
 endpoint speaks MCP JSON-RPC over SSE and answers a routed envelope with `Method not found`
@@ -320,6 +316,16 @@ mode.
 Credits and payment channels remain prepaid conveniences. They are not how a
 wallet publisher is paid.
 
+### Signed offers and observed sellers
+
+A Hub-generated payment challenge can include an Ed25519 JWS offer in `PAYMENT-REQUIRED`. Verify it using the discovery document’s `signer_public_key`. A delivered seller-direct call can return a signed settlement receipt in `PAYMENT-RESPONSE` and `x402_settlement`. The extension is on by default and can be disabled with `AIMARKET_X402_OFFER_RECEIPT=0`. A configured [market splitter](money-rails.md#13-with-a-fee--the-splitter) can allocate a fee on-chain without Hub custody.
+
+An operator can record a seller’s consent to observe its published x402 routes. The Hub tries an unpaid HEAD first, lists recent observed terms separately from callable catalogue matches, and pins the seller’s payment address. Read the public list at `GET /ai-market/v2/federation/observed-sellers`. Pay and call the seller directly. A listed quote shows observed terms at a given time. Delivery and demand have separate evidence.
+
+### Recover a signed escrow invoke (3.17.1)
+
+Retry the same invoke with the original authorization and `payment_authorization.receiptId` after a lost response. `409 escrow_settlement_pending` means capture has yet to finish. The Hub reuses the stored provider result. If the authorization expires first, the Hub releases the hold without charging and returns `409 escrow_authorization_expired`. Closing an EVM refund obligation requires a finalized payout to the depositor. The deposit itself cannot close the obligation, and a payout transaction can close at most one obligation. Migration `065` adds the payout-claim table.
+
 ## Letting strangers find you
 
 Two observation doors are always available and both lead to quarantine rather than
@@ -348,4 +354,4 @@ The code is Apache-2.0 (MIT elsewhere in the ecosystem) and you may run it comme
 set your own fees and keep all of them; nothing routes a cut anywhere. There is no
 trademark licence, so do not call your deployment "AIMarket" or imply endorsement.
 "Implements the AIMarket Protocol" and "interoperates with <peer>" are accurate and fine.
-Nobody may claim "certified" or "conformant" — there is no conformance suite yet.
+The [conformance runner](https://github.com/alexar76/aicom/blob/main/aimarket-protocol/conformance/run.py) checks the covered vectors and live endpoints. Report the scope and results of your run. The runner does not issue certifications.

@@ -137,7 +137,7 @@ class IdempotencyStore:
         receipt = saved["receipt"]
         if channels.hold_state(receipt) != "captured":
             if int(saved["deadline"]) <= int(time.time()):
-                return None
+                return self._expire_escrow(scope, key, held, receipt) if finalize else None
             capture = channels.capture_hold(receipt)
             if not capture.get("ok") and channels.hold_state(receipt) != "captured":
                 return None
@@ -158,6 +158,44 @@ class IdempotencyStore:
         )
         self._conn.commit()
         return {**held, "status": "done", "response_headers": headers}
+
+    def _expire_escrow(self, scope: str, key: str, held: dict[str, Any], receipt: str) -> dict[str, Any] | None:
+        """The buyer's authorization expired before capture: nothing is charged or delivered.
+
+        Waiting would not help: the hold can no longer be captured, and while it stays held
+        its channel can neither close nor expire. Release it, take the authorization out of
+        its nonce window as a refused call does, and keep a definite answer for retries.
+        """
+        from aimarket_hub import channels
+
+        if channels.hold_state(receipt) == "held":
+            channels.release_hold(receipt)
+        state = channels.hold_state(receipt)
+        if state == "captured":
+            return self.resume_escrow(scope, key, held)  # a capture won the race: deliver
+        if state == "held":
+            return None
+        try:
+            from aimarket_hub.escrow_bridge import authorization as bridge_auth
+            from aimarket_hub.escrow_bridge import store as bridge_store
+
+            bridge_auth.withdraw(receipt, bridge_store.AuthorizationStore(),
+                                 reason="authorization expired before settlement")
+        except Exception:  # noqa: BLE001 - the mirror abandons an expired authorization anyway
+            logger.exception("escrow: could not withdraw expired authorization %s", receipt[:14])
+        headers = json.dumps([["content-type", "application/json"]])
+        body = base64.b64encode(json.dumps({
+            "success": False, "error": "escrow_authorization_expired",
+            "detail": "the payment authorization expired before the hub could settle this call; "
+                      "nothing was charged. Sign a new authorization to call again.",
+        }).encode()).decode("ascii")
+        self._conn.execute(
+            "UPDATE invoke_idempotency SET status = 'done', http_status = 409, response_headers = ?, "
+            "response_body = ?, finished_at = ? WHERE scope = ? AND idem_key = ? AND status = 'prepared'",
+            (headers, body, time.time(), scope, key),
+        )
+        self._conn.commit()
+        return {**held, "status": "done", "http_status": 409, "response_headers": headers, "response_body": body}
 
     def finish(self, scope: str, key: str, status: int, headers: list[tuple[bytes, bytes]], body: bytes | None) -> None:
         try:

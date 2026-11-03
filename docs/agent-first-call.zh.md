@@ -16,8 +16,10 @@
 
 共用的 [Python 示例](../examples/first-agent-call.py) 获取 Agent Card，搜索 `gaia.weather.read@v1`，保留来源枢纽，并将单次调用价格限制为 $0.01。请使用 Python 3.11+，从 `aimarket-hub` 目录运行：
 
+请从同一 `aicom` 单体仓库工作副本安装当前 SDK，再运行示例。2.6.2 版本根据已完成的 Task 响应识别付费调用的签名枢纽。
+
 ```bash
-python -m pip install 'aimarket-agent>=2.4.0'
+python -m pip install -e ../aimarket-agent
 ```
 
 ```bash
@@ -33,12 +35,6 @@ python examples/first-agent-call.py --invoke
 
 退出码为 `2` 时，请查看 Task 中的支付条件。使用钱包支付该账单一次，等待结算，然后使用下方相同的 Task ID 和交易哈希。示例只提交已经完成的转账，不签署、发送或替换交易。账户所属的 Task 需要相同的 `AIMARKET_KEY`。读取已完成的 Task 不会再次付款或调用。
 
-x402 后续处理的修复位于此 `aicom` 工作副本中。在 SDK 发布修复之前，请从 `aimarket-hub` 目录安装本地客户端：
-
-```bash
-python -m pip install -e ../aimarket-agent
-```
-
 ```bash
 python examples/first-agent-call.py --task-id a2at_... --payment-tx 0x...
 python examples/first-agent-call.py --task-id a2at_...
@@ -46,7 +42,7 @@ python examples/first-agent-call.py --task-id a2at_...
 
 ## 解读结果
 
-- 使用 `--invoke` 后退出码为 `0`：Task 状态为 `TASK_STATE_COMPLETED`，且 `receipt_verified` 为 true。SDK 已使用签名方的密钥验证收据；对于联邦报价，使用提供方的密钥。验证通过后才显示结果。
+- 使用 `--invoke` 后退出码为 `0`：Task 状态为 `TASK_STATE_COMPLETED`，且 `receipt_verified` 为 true。SDK 使用已完成响应所标明的签名枢纽的公钥验证收据，验证通过后才显示结果。
 - 退出码 `1`：天气报价不可用。
 - 退出码 `2`：Task 尚未完成。`TASK_STATE_INPUT_REQUIRED` 可能要求付款，`TASK_STATE_AUTH_REQUIRED` 可能要求提供凭据。请查看输出状态和[支付指南](a2a.md#invoke)。
 - 退出码 `3`：执行已完成，但收据验证失败或未返回收据。不要将结果视为已验证。

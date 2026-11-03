@@ -14,9 +14,8 @@ function section(start, end) {
   return page.slice(from, to);
 }
 const source = [
-  ...['POLL', 'LIVE_TIMEOUT_MS', 'LIVE_STALE_MS'].map(name => page.match(new RegExp(`const ${name} = [^;]+;`))[0]),
-  page.match(/let pollInFlight = [^;]+;/)[0],
-  page.match(/let peersRequest = [^;]+;/)[0],
+  ...['POLL', 'LIVE_TIMEOUT_MS', 'LIVE_STALE_MS', 'PEERS_TTL_MS'].map(name => page.match(new RegExp(`const ${name} = [^;]+;`))[0]),
+  ...['pollInFlight', 'peersRequest', 'peersTriedAt', 'pendingKey'].map(name => page.match(new RegExp(`let ${name} = [^;]+;`))[0]),
   section('  async function fetchJson(', '\n  // Resolved against'),
   section('  async function ensurePeers()', '\n  async function fetchPreview'),
   section('  /* Poll live stats */', '\n  // Live stats must not'),
@@ -24,7 +23,7 @@ const source = [
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function fixture() {
-  let now = 1_000_000, sequence = 0;
+  let now = 1_000_000, sequence = 0, knockRails = 0;
   const timers = new Map(), nodes = new Map(), listeners = new Map();
   const calls = {stats: 0, peers: 0}, painted = [], connections = [];
   const never = signal => new Promise((_, reject) => {
@@ -62,7 +61,8 @@ function fixture() {
       if (renderFailure) throw new Error('render failed');
       painted.push(context.events[0]?.id);
     },
-    renderTicker: noop, renderTop: noop, renderPulse: noop, renderFed: noop, renderKnockRail: noop,
+    renderTicker: noop, renderTop: noop, renderPulse: noop, renderFed: noop,
+    renderKnockRail() { knockRails++; },
   };
   vm.createContext(context);
   vm.runInContext(source, context);
@@ -71,6 +71,7 @@ function fixture() {
     poll: () => context.poll(),
     stats(fn) { stats = fn; }, peers(fn) { peers = fn; },
     failRender(value) { renderFailure = value; },
+    get knockRails() { return knockRails; },
     never,
     async advance(ms) {
       now += ms;
@@ -139,6 +140,27 @@ test('a peer JSON body also times out and releases its retry slot', async () => 
   f.context.fetch = async () => { calls++; return {ok: true, json: async () => ({peers: []})}; };
   await f.context.ensurePeers();
   assert.equal(calls, 2);
+});
+
+test('the unapproved-hub list is asked again after a minute and redrawn only when it changed', async () => {
+  const f = fixture();
+  let pending = [{url: 'https://stranger.test'}];
+  let calls = 0;
+  f.context.fetch = async () => { calls++; return {ok: true, json: async () => ({peers: [], pending})}; };
+  await f.context.ensurePeers();
+  assert.equal(f.knockRails, 1);
+  await f.advance(59_000);
+  await f.context.ensurePeers();
+  assert.equal(calls, 1, 'a list younger than a minute is reused');
+  await f.advance(1_001);
+  await f.context.ensurePeers();
+  assert.equal(calls, 2);
+  assert.equal(f.knockRails, 1, 'the same queue does not redraw the rail');
+  pending = [];
+  await f.advance(60_001);
+  await f.context.ensurePeers();
+  assert.equal(calls, 3);
+  assert.equal(f.knockRails, 2, 'an approved hub leaves the rail without a reload');
 });
 
 test('a Live badge expires even when browser suspension delays request deadlines', async () => {

@@ -40,7 +40,7 @@ aimarket add weather.now@v1 --url https://api.example.com/weather \
   --price 0.002 --pay-to 0xYourWallet --description "Current weather for a city"
 ```
 
-枢纽会向你的 URL 发送 POST `{"input": …, "product_id": …, "capability_id": …}`，并期望得到 `200` 和一个 JSON 对象（或 `{"result": …}`）。搜索、MCP、A2A、x402 报价和签名收据都由枢纽提供。`--pay-to` 是买家用 USDC 直接付给卖家的钱包：枢纽从不托管这笔钱，也不从中抽成。没有 `--pay-to` 时，收费条目只能用你自己枢纽上的额度账户付款，而从其他枢纽路由过来的买家没有这样的账户。
+枢纽会向你的 URL 发送 POST `{"input": …, "product_id": …, "capability_id": …}`，并期望得到 `200` 和一个 JSON 对象（或 `{"result": …}`）。搜索、MCP、A2A、x402 报价和签名收据都由枢纽提供。通过 `--pay-to` 指定接收 USDC 的钱包。运营者自己的条目可使用 `AIMARKET_X402_PAY_TO` 作为备用收款地址。枢纽不托管这笔资金，默认手续费为零。未配置收款人时，买家可以在积分轨道已启用的情况下使用积分付款。
 
 `add` 直接写入你自己的数据库，所以不需要向自己缴纳发布者押金；在你的枢纽上发布的陌生人则走[下文](#让别人在你的枢纽上发布)所述带检查的通道。在生产模式（`AIFACTORY_PROD=1`）下，提供方的每个响应都必须签名：请传入 `--provider-pubkey`，签名方法见 [`examples/hello-capability/server.py`](../examples/hello-capability/server.py)。全部选项：`aimarket add --help`。
 
@@ -85,8 +85,8 @@ curl -X POST https://modelmarket.dev/ai-market/v2/federation/announce \
 
 ## 6. 实话实说：能赚多少
 
-- **你自己的 API：**每笔销售都直接付到你的钱包。枢纽分文不留。
-- **撮合：**当你的枢纽通过额度通道转售其他枢纽的能力时，收取 `AIMARKET_ROUTING_FEE_BPS`（默认 1%）。买家通过 x402 直接付给卖家的销售不收此费。
+- **你自己的 API：**x402 向条目指定的钱包付款，可配置链上手续费分账。
+- **撮合：**当你的枢纽通过额度通道转售其他枢纽的能力时，收取 `AIMARKET_ROUTING_FEE_BPS`（默认 1%）。买家通过 x402 向卖家付款时不收积分路由费。
 - **他人的销售：**向在你枢纽上架的卖家抽取佣金——见第 7 节。
 - **需求：**联邦里的买家流量目前还很少。实时计数器是公开的（`https://verify.modelmarket.dev/demand.json`）；在指望任何收入之前先看一看。一个枢纽的成本相当于一台小 VPS，它首先作为你自己 API 的店面回本：一条命令就有 MCP、x402、A2A 和签名收据。
 
@@ -96,7 +96,7 @@ curl -X POST https://modelmarket.dev/ai-market/v2/federation/announce \
 
 - **你的品牌。**`AIMARKET_HUB_NAME` 和 `AIMARKET_HUB_URL` 署名每一个页面；非参考部署不会显示指向他人网站的链接。
 - **卖家自助上架。**额度账户就是发布者身份：卖家签发密钥，从余额中缴纳押金并上架——见[让别人在你的枢纽上发布](#让别人在你的枢纽上发布)。押金金额由你通过 `AIMARKET_SUPPLY_MIN_STAKE_USD` 设定。
-- **你的佣金。**用额度账户支付的销售中，`AIMARKET_PUBLISHER_SHARE_BPS`（默认 70%）计入卖家余额，其余归你；为其他枢纽的能力撮合销售还会加上 `AIMARKET_ROUTING_FEE_BPS`。用自己钱包上架的卖家通过 x402 直接收款，这类销售你一分不取——那扇门属于他们。
+- **你的佣金。**用额度账户支付的销售中，`AIMARKET_PUBLISHER_SHARE_BPS`（默认 70%）计入卖家余额，其余归你；为其他枢纽的能力撮合销售还会加上 `AIMARKET_ROUTING_FEE_BPS`。用自己钱包上架的卖家通过 x402 在链上收款。配置的[分账合约](money-rails.md#13-with-a-fee--the-splitter)可以分配手续费。
 - **买家用 USDC 充值**到你的钱包（[额度充值](credits-topup.zh.md)），或者在你自行收到任何付款后为他们记入额度。
 
 由你而不是软件承担的部分：
@@ -115,7 +115,7 @@ curl -X POST https://modelmarket.dev/ai-market/v2/federation/announce \
 
 ## 你如何收款
 
-有两条轨道，可以只用一条，也可以两条都用。
+枢纽支持三条支付轨道。下表比较两种预付方式。以 USDC 直接向卖家付款的方式见“接受 x402 付款”。
 
 | | 积分（`X-API-Key`） | 通道（`X-Payment-Channel`） |
 |---|---|---|
@@ -135,7 +135,7 @@ POST /ai-market/v2/accounts/{id}/status        # 你停用某个账户  (admin b
 GET  /ai-market/v2/stats/live                  # summary.credits：已赚取与应付
 ```
 
-资金只能通过 `/credit` 进入，而这个路由只属于你。无论你用什么方式收款——发票、网站结账、你亲眼看到到账的稳定币转账——都是在钱到手之后再调用 `/credit`。枢纽不会假装自己收到了什么。
+只有管理员可使用 `/credit` 记录在枢纽之外收到的款项。部署时也可启用 [USDC 充值](credits-topup.zh.md)或 [Stripe Checkout 充值](card-topup.zh.md)，两者默认关闭。
 
 ### 你承担的责任
 
@@ -194,7 +194,7 @@ curl -X POST $HUB/ai-market/v2/supply/register \
 export AIMARKET_PEER_API_KEYS="https://peer.example=aimk_your_key_there"
 ```
 
-这样，路由到该对等节点的调用就是一次转售：向你的买家收取目录价加你的费用，你从你在对方那里的账户付款给对等节点，费用就是你的利润。没有密钥时，对等节点的 `402` 会到达一个在那里没有账户、无法处理它的买家——这就是为什么线上联邦里一直只有免费的对等节点。
+这样，路由到该对等节点的调用就是一次转售：向你的买家收取目录价加你的费用，你从你在对方那里的账户付款给对等节点，费用就是你的利润。没有密钥时，买家会收到对等节点的积分付款 `402`，需要在该节点开立账户才能支付。
 
 对等枢纽通过它们的 `/ai-market/v2/invoke` 调用，而不是通过 `mcp_endpoint`：那个端点在 SSE 上使用 MCP JSON-RPC，会在 `text/event-stream` 响应体里对路由过来的信封回复 `Method not found`。在修复之前，枢纽之间的路由是不可能的。
 
@@ -203,6 +203,16 @@ export AIMARKET_PEER_API_KEYS="https://peer.example=aimk_your_key_there"
 目录中的销售直接付给卖家。402 写明该列表的 `payout_address` 和一个发票 `nonce`，只有它的 JSON 响应体中带有 `payment_secret`，且 `nonce = sha256(payment_secret)`。买家通过针对该 nonce 签名的 EIP-3009 `transferWithAuthorization` 在链上付款到这个钱包，然后带上 `X-Payment: <tx hash>`（或 `PAYMENT-SIGNATURE`）、`X-Payment-Nonce` 和 `X-Payment-Secret` 重试。秘密证明付款的正是这位买家：交易及其 nonce 一旦上链就是公开的。枢纽验证这笔转账，从不持有资金（`aimarket_hub/settle.py`）：只有该授权所移动的转账才算付款，而且每个授权都是一项独立的主张，所以一笔交易里的两个授权可以购买两次调用。在联邦调用中，只有当枢纽在同一请求上完成了结算，付款才会随你的对等节点密钥一起传递，并使用它自己的 nonce、保留秘密。对该对等节点没有密钥、也没有结算任何东西的枢纽只是中继，会把买家的付款请求头（包括秘密）原样转发。每笔付款都是绑定的（直接转账给卖家会被拒绝；`AIMARKET_SETTLE_REQUIRE_BINDING=0` 会被忽略），因此为旧版枢纽编写、只发送 `X-Payment` 和 `X-Payment-Nonce` 的买家工具会被拒绝，直到它也发送秘密。MCP 网关以 `x_payment_secret` 接收它，A2A 桥会自行提交。迁移 `040` 增加了保存它的发票列，并且 `X-Payment-Secret` 在 CORS 允许列表中，因此来自 `AIMARKET_CORS_ORIGINS` 来源的浏览器客户端也能兑付。`AIMARKET_X402_ACCEPT=0` 保持仅发现模式。
 
 积分和支付通道仍然只是预付的便利手段。持有钱包的发布者并不是通过它们收款的。
+
+### 签名报价与观测卖家
+
+枢纽的付款质询可以在 `PAYMENT-REQUIRED` 中携带 Ed25519 JWS 报价。使用发现文档中的 `signer_public_key` 验证。向卖家直接付款并交付结果后，响应可在 `PAYMENT-RESPONSE` 和 `x402_settlement` 中携带签名结算收据。此扩展默认启用，可通过 `AIMARKET_X402_OFFER_RECEIPT=0` 关闭。配置的[分账合约](money-rails.md#13-with-a-fee--the-splitter)可以在链上分配手续费，资金无需由枢纽托管。
+
+运营者可以记录卖家对观测其公开 x402 路由的同意。枢纽先尝试不付费的 HEAD 请求，将近期观测到的条件与目录中可调用的匹配项分开显示，并固定卖家的收款地址。通过 `GET /ai-market/v2/federation/observed-sellers` 查看公开列表。请直接向卖家付款和发起调用。报价表示观测时的条件，交付和需求需要单独的证据。
+
+### 恢复已签名的托管调用（3.17.1）
+
+如果响应丢失，使用原授权和 `payment_authorization.receiptId` 重试同一个调用。`409 escrow_settlement_pending` 表示扣款尚未完成。枢纽会复用已保存的提供方结果。如果授权先过期，枢纽会释放预留金额且不扣款，并返回 `409 escrow_authorization_expired`。关闭 EVM 退款义务需要一笔已最终确认、付给存款人的交易。原始存款不计入，一笔付款交易最多关闭一项义务。迁移 `065` 添加付款认领表。
 
 ## 让陌生人找到你
 
@@ -217,4 +227,5 @@ export AIMARKET_PEER_API_KEYS="https://peer.example=aimk_your_key_there"
 
 ## 命名
 
-代码采用 Apache-2.0 许可（生态中其他部分为 MIT），你可以商业化运营、自定费率并全部归你所有；没有任何分成会流向别处。这里不授予商标许可，所以不要把你的部署称为“AIMarket”，也不要暗示获得认可。“Implements the AIMarket Protocol”和“interoperates with <peer>”是准确且可以使用的表述。任何人都不能宣称“certified”或“conformant”——目前还没有一致性测试套件。
+代码采用 Apache-2.0 许可（生态中其他部分为 MIT），你可以商业化运营、自定费率并全部归你所有；没有任何分成会流向别处。这里不授予商标许可，所以不要把你的部署称为“AIMarket”，也不要暗示获得认可。“Implements the AIMarket Protocol”和“interoperates with <peer>”是准确且可以使用的表述。
+[一致性测试程序](https://github.com/alexar76/aicom/blob/main/aimarket-protocol/conformance/run.py)检查所涵盖的测试向量和线上端点。请注明测试范围和运行结果。该程序不颁发认证。

@@ -26,6 +26,7 @@ from aimarket_hub.signing import Signer
     ({"answer": "escrow"}, "before_capture"),
     ({"answer": "escrow"}, "after_capture"),
     ({"answer": "escrow"}, "expired_before_capture"),
+    ({"answer": "escrow"}, "expired_then_reaped"),
 ])
 def test_signed_escrow_invoke_replays_after_restart(monkeypatch, tmp_path, result, interruption):
     provider_refuses = result is None or result.get("ok") is False
@@ -144,12 +145,21 @@ def test_signed_escrow_invoke_replays_after_restart(monkeypatch, tmp_path, resul
                     conn.commit()
                 reap = channels._ledger.reap_stale_holds(max_age_secs=1)
                 assert not reap.get("error") and reap["reaped"] == 0 and reap["skipped"] == 1
-            if interruption == "expired_before_capture":
+            if interruption.startswith("expired"):
                 row = db._conn.execute("SELECT response_headers FROM invoke_idempotency").fetchone()
                 metadata = json.loads(row["response_headers"])
                 metadata["deadline"] = 1
                 db._conn.execute("UPDATE invoke_idempotency SET response_headers = ?", (json.dumps(metadata),))
                 db._conn.commit()
+            if interruption == "expired_then_reaped":
+                # Nothing can capture the hold now, so the checkpoint no longer keeps it
+                # from the reaper; held for ever, it kept the channel from closing.
+                with channels._ledger._get_conn() as conn:
+                    conn.execute("UPDATE channel_holds SET created_at = '2000-01-01T00:00:00Z'")
+                    conn.commit()
+                reap = channels._ledger.reap_stale_holds(max_age_secs=1)
+                assert not reap.get("error") and reap["reaped"] == 1
+                assert ledger_totals() == (500, 0, 0)
         else:
             first = client.post("/ai-market/v2/invoke", headers=headers, json=body)
             assert first.status_code == (502 if provider_refuses else 200), first.text
@@ -165,11 +175,24 @@ def test_signed_escrow_invoke_replays_after_restart(monkeypatch, tmp_path, resul
     with running_hub() as (client, _):
         replay_headers = {**headers, "Idempotency-Key": "unrelated-explicit-key"}
         replay = client.post("/ai-market/v2/invoke", headers=replay_headers, json=body)
-        if interruption == "expired_before_capture":
-            assert replay.status_code == 409
-            assert replay.json()["error"] == "escrow_settlement_pending"
+        if interruption and interruption.startswith("expired"):
+            # The authorization can no longer be collected: the hold goes back to the
+            # channel, the authorization leaves its nonce window, and every retry gets
+            # the same definite answer instead of waiting for a capture that cannot come.
+            assert replay.status_code == 409, replay.text
+            assert replay.json()["error"] == "escrow_authorization_expired"
+            assert replay.headers["X-AIMarket-Idempotency"] == "replayed"
             assert executions == [receipt]
-            assert ledger_totals() == (498, 0, 0)
+            assert ledger_totals() == (500, 0, 0)
+            assert channels.hold_state(receipt) in ("released", "reaped")
+            authorizations = store.AuthorizationStore()
+            try:
+                assert authorizations.get(receipt).status == store.ABANDONED
+            finally:
+                authorizations.close()
+            again = client.post("/ai-market/v2/invoke", headers=headers, json=body)
+            assert again.status_code == 409 and again.content == replay.content
+            assert executions == [receipt]
             return
         if interruption:
             assert replay.status_code == 200, replay.text
