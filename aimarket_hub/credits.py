@@ -41,7 +41,7 @@ import logging
 import os
 import secrets
 import time
-from typing import Any
+from typing import Any, NamedTuple
 from aimarket_hub import security_posture
 from aimarket_hub.db_backend import atomic, returning_one
 from aimarket_hub.paging import page_limit
@@ -173,6 +173,13 @@ def _mint_key() -> str:
 
 def _now() -> str:
     return "datetime('now')"
+
+
+class PublisherShare(NamedTuple):
+    account_id: str
+    amount_usd: float
+    receipt_id: str
+    note: str
 
 
 class CreditsLedger:
@@ -514,7 +521,7 @@ class CreditsLedger:
             return {"error": f"no hold for receipt {receipt_id}"}
         return {key: 0.0, "already": str(row["status"])}
 
-    def capture_hold(self, receipt_id: str) -> dict[str, Any]:
+    def capture_hold(self, receipt_id: str, *, publisher_share: PublisherShare | None = None) -> dict[str, Any]:
         """Turn a reservation into a recorded debit. A no-op on an already-resolved hold,
         so a late exception on a settled invoke cannot double-charge."""
         with atomic(self._conn):
@@ -529,6 +536,10 @@ class CreditsLedger:
                 (amount_mc, amount_mc, account_id),
             )
             self._log(account_id, "capture", amount_mc, receipt_id=receipt_id)
+            if publisher_share is not None:
+                result = self._pay_publisher(*publisher_share)
+                if result.get("error"):
+                    raise RuntimeError(f"could not settle publisher share: {result['error']}")
             return {"captured_usd": mc_to_usd(amount_mc), "remaining_balance": self.balance(account_id)}
 
     def release_hold(self, receipt_id: str) -> dict[str, Any]:
@@ -730,18 +741,32 @@ class CreditsLedger:
         seller's balance goes up, which makes it money the operator OWES rather than money
         the operator earned. `stats` reports both sides.
         """
+        with atomic(self._conn):
+            return self._pay_publisher(account_id, amount_usd, receipt_id, note)
+
+    def _pay_publisher(self, account_id: str, amount_usd: float, receipt_id: str, note: str) -> dict[str, Any]:
         amount_mc = usd_to_mc(amount_usd)
         if amount_mc <= 0:
             return {"error": "payout amount must be positive"}
-        with atomic(self._conn):
-            cur = self._conn.execute(
-                "UPDATE credit_accounts SET balance_mc = balance_mc + ? WHERE account_id = ?",
-                (amount_mc, account_id),
-            )
-            if not _changed(cur):
-                return {"error": f"unknown account {account_id}"}
-            self._log(account_id, "payout", amount_mc, receipt_id=receipt_id, note=note)
-            return {"paid_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
+        # Serialize crediting the same seller across processes before checking prior payouts.
+        # This also respects payouts written before receipt-based deduplication.
+        locked = self._conn.execute(
+            "UPDATE credit_accounts SET balance_mc = balance_mc WHERE account_id = ?",
+            (account_id,),
+        )
+        if not _changed(locked):
+            return {"error": f"unknown account {account_id}"}
+        if receipt_id and self._conn.execute(
+            "SELECT 1 FROM credit_ledger WHERE account_id = ? AND kind = 'payout' AND receipt_id = ? LIMIT 1",
+            (account_id, receipt_id),
+        ).fetchone():
+            return {"paid_usd": 0.0, "already": True, "balance_usd": self.balance(account_id)}
+        self._conn.execute(
+            "UPDATE credit_accounts SET balance_mc = balance_mc + ? WHERE account_id = ?",
+            (amount_mc, account_id),
+        )
+        self._log(account_id, "payout", amount_mc, receipt_id=receipt_id, note=note)
+        return {"paid_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
 
     def payouts_total_usd(self) -> float:
         row = self._conn.execute(

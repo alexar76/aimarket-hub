@@ -251,8 +251,8 @@ def register(
                 for state in ("owed", "paid")
             },
             "note": (
-                "Recorded debts to depositors. The hub never moves funds: pay them "
-                "out-of-band, then POST /channel/obligations/{channel_id}/paid."
+                "Recorded debts to depositors. Pay them out-of-band, then submit the "
+                "finalized transfer to POST /channel/obligations/{channel_id}/paid."
             ),
             "protocol_version": "v2",
         }
@@ -263,7 +263,7 @@ def register(
         body: dict[str, Any],
         authorization: str = Header(default=""),
     ):
-        """Attest that an obligation was settled out-of-band. Never sends value."""
+        """Verify a previously sent payout and close the corresponding obligation."""
         _require_admin(authorization)
         from aimarket_hub.channels import mark_obligation_paid
 

@@ -9,6 +9,7 @@ import os
 import sqlite3
 import threading
 import time
+from datetime import datetime
 from typing import Any
 
 from aimarket_hub.paging import page_limit
@@ -239,43 +240,65 @@ class LedgerSweepsMixin:
         }
 
     def mark_obligation_paid(self, channel_id: str, payout_tx_hash: str) -> dict[str, Any]:
-        """Record that the operator has paid an obligation OUT-OF-BAND.
+        """Mark a custodial obligation paid only against a verified payout."""
+        from aimarket_hub.deposit_verify import verify_custodial_payout
 
-        This is an operator attestation, not a transfer and not an on-chain proof: this
-        module never moves funds. A tx hash is REQUIRED, and it must be SHAPED like a
-        real transaction id for the obligation's own chain — the previous check was
-        "non-empty string", so `"paid"` cleared a depositor's debt and left an audit
-        trail that can never be checked against any chain.
-        """
-        tx = (payout_tx_hash or "").strip()
+        tx = channels._normalize_tx_hash(payout_tx_hash)
         if not tx:
             return {"error": "payout_tx_hash is required to mark an obligation paid"}
-        now = channels._now_iso()
-        with self._lock, self._get_conn() as conn:
+        with self._get_conn() as conn:
             row = conn.execute(
-                "SELECT * FROM channel_payout_obligations WHERE channel_id = ?",
+                "SELECT * FROM channel_payout_obligations WHERE channel_id = ? AND status = 'owed'",
                 (channel_id,),
             ).fetchone()
-            if not row or row["status"] != "owed":
-                return {"error": "no outstanding obligation for this channel"}
-            shape_error = channels._payout_tx_shape_error(tx, row["chain"])
-            if shape_error:
-                return {"error": shape_error}
+        if not row:
+            return {"error": "no outstanding obligation for this channel"}
+        chain = channels._normalize_chain(row["chain"])
+        if chain not in channels._EVM_PAYOUT_CHAINS:
+            return {"error": "on-chain payout verification is not supported for this chain"}
+        shape_error = channels._payout_tx_shape_error(tx, chain)
+        if shape_error:
+            return {"error": shape_error}
+        if tx == channels._normalize_tx_hash(row["deposit_tx_hash"]):
+            return {"error": "deposit transaction cannot prove its own payout"}
+        try:
+            created_at = datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+            owed_since = created_at.timestamp() if created_at.tzinfo is not None else 0
+        except (TypeError, ValueError):
+            owed_since = 0
+        if not verify_custodial_payout(
+            tx_hash=tx, amount_cents=int(row["amount_cents"]), chain=chain,
+            token=row["token"], recipient=row["wallet"], custodian=channels._RECIPIENT,
+            owed_since=owed_since,
+        ):
+            return {"error": "payout is not verified on chain"}
+
+        now = channels._now_iso()
+        with self._lock, self._get_conn() as conn:
+            # Existing attestations predate the claims table. Do not reuse their hashes.
+            if conn.execute(
+                "SELECT 1 FROM channel_payout_obligations WHERE status = 'paid' "
+                "AND LOWER(payout_tx_hash) = ?", (tx,),
+            ).fetchone():
+                return {"error": "payout transaction already recorded"}
+            claim = conn.execute(
+                "INSERT INTO channel_payout_claims (payout_tx_hash, channel_id) "
+                "VALUES (?, ?) ON CONFLICT DO NOTHING", (tx, channel_id),
+            )
+            if claim.rowcount != 1:
+                conn.rollback()
+                return {"error": "payout transaction or obligation already recorded"}
             cur = conn.execute(
                 "UPDATE channel_payout_obligations SET status = 'paid', "
                 "payout_tx_hash = ?, settled_at = ? "
                 "WHERE channel_id = ? AND status = 'owed'",
                 (tx, now, channel_id),
             )
-            if getattr(cur, "rowcount", 0) != 1:
-                # A concurrent writer settled it between the SELECT and the UPDATE.
+            if cur.rowcount != 1:
+                conn.rollback()
                 return {"error": "no outstanding obligation for this channel"}
             conn.commit()
-        logger.warning(
-            "Obligation on channel %s marked PAID out-of-band by the operator "
-            "(payout tx %s) — attestation only, no funds moved by this process",
-            channel_id, tx[:14],
-        )
+        logger.info("Verified payout for channel %s (tx %s)", channel_id, tx[:14])
         return {"ok": True, "channel_id": channel_id, "payout_tx_hash": tx, "settled_at": now}
 
     # ── Orphaned-hold reaper ──────────────────────────────────────

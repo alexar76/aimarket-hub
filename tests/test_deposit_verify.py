@@ -204,3 +204,40 @@ def test_registry_chain_id_reads_a_comma_separated_override_like_the_verifier(mo
     assert deposit_verify.registry_chain_id("base") is None  # nodes disagree: fail closed
     monkeypatch.setenv("AIMARKET_DEPOSIT_RPC_URL", "https://down.example")
     assert deposit_verify.registry_chain_id("base") is None
+
+
+def test_custodial_payout_requires_final_exact_chain_and_sufficient_sender_transfer(monkeypatch):
+    from aimarket_hub.deposit_verify import verify_custodial_payout
+
+    monkeypatch.setattr("aimarket_hub.deposit_verify.token_address_for", lambda *_: USDC)
+    block_hash = "0x" + "ef" * 32
+    receipt = _receipt(to=HUB, units=2_000_000)
+    receipt.update(transactionHash=TX, blockHash=block_hash)
+    chain_id = 8453
+    finalized_at = 1000
+    timestamp = 100
+
+    def rpc(method, params):
+        if method == "eth_chainId":
+            return hex(chain_id)
+        if method == "eth_getTransactionReceipt":
+            return receipt
+        if method == "eth_getBlockByNumber":
+            if params[0] == "finalized":
+                return {"number": hex(finalized_at)}
+            return {"hash": block_hash, "timestamp": hex(timestamp)}
+        if method == "eth_call":
+            return "0x6"
+        raise AssertionError(method)
+
+    args = dict(tx_hash=TX, amount_cents=200, chain="base", token="USDC",
+                recipient=HUB, custodian=PAYER, owed_since=100, rpc=rpc)
+    assert verify_custodial_payout(**args)
+    assert not verify_custodial_payout(**{**args, "amount_cents": 201})
+    assert not verify_custodial_payout(**{**args, "custodian": "0x" + "77" * 20})
+    assert not verify_custodial_payout(**{**args, "owed_since": 101})
+    finalized_at = 999
+    assert not verify_custodial_payout(**args)
+    finalized_at = 1000
+    chain_id = 1
+    assert not verify_custodial_payout(**args)

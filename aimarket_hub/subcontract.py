@@ -523,8 +523,8 @@ class AllowanceCredits:
                 self.released_micro += usd_to_micro(result.get("released_usd") or 0.0)
         return {k: v for k, v in result.items() if k != "remaining_balance"}
 
-    def capture_hold(self, receipt_id: str) -> dict[str, Any]:
-        result = self._inner.capture_hold(receipt_id)
+    def capture_hold(self, receipt_id: str, **kwargs: Any) -> dict[str, Any]:
+        result = self._inner.capture_hold(receipt_id, **kwargs)
         if not result.get("error") and not result.get("already"):
             self.captured_micro += usd_to_micro(result.get("captured_usd") or 0.0)
         return {**{k: v for k, v in result.items() if k != "remaining_balance"},

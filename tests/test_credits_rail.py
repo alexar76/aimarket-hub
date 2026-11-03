@@ -93,6 +93,33 @@ def test_resolution_is_idempotent(ledger):
     assert ledger.balance(acct) == pytest.approx(0.04)
 
 
+def test_capture_and_publisher_share_commit_together(ledger, monkeypatch):
+    buyer = ledger.create_account(grant_usd=0.05)["account_id"]
+    seller = ledger.create_account()["account_id"]
+    ledger.hold(buyer, 0.01, "sale")
+    share = credits.PublisherShare(seller, 0.005, "sale", "publisher sale")
+    original_log = ledger._log
+
+    def fail_after_credit(account_id, kind, *args, **kwargs):
+        if kind == "payout":
+            raise RuntimeError("ledger unavailable")
+        original_log(account_id, kind, *args, **kwargs)
+
+    with monkeypatch.context() as broken:
+        broken.setattr(ledger, "_log", fail_after_credit)
+        with pytest.raises(RuntimeError, match="ledger unavailable"):
+            ledger.capture_hold("sale", publisher_share=share)
+
+    assert ledger.hold_status("sale")["status"] == "held"
+    assert ledger.account(buyer)["spent_usd"] == 0
+    assert ledger.balance(seller) == 0
+
+    assert ledger.capture_hold("sale", publisher_share=share)["captured_usd"] == 0.01
+    assert ledger.capture_hold("sale", publisher_share=share)["already"] == "captured"
+    assert ledger.pay_publisher(seller, 0.005, receipt_id="sale")["already"] is True
+    assert ledger.earnings(seller) == ledger.balance(seller) == 0.005
+
+
 def test_receipt_ids_cannot_be_reused(ledger):
     acct = ledger.create_account(grant_usd=0.05)["account_id"]
     ledger.hold(acct, 0.01, "dup")

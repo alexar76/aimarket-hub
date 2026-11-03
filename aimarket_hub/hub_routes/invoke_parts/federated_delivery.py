@@ -359,7 +359,6 @@ def _fed_record(d: SimpleNamespace, call: _Call, fed: _Fed, result_data: dict[st
     fed_reserved, fed_nonce, fed_hold_rail = fed.reserved, fed.nonce, fed.hold_rail
     db, logger, _as_float, _observe_answer = d.db, d.logger, d._as_float, d._observe_answer
     _MAX_REPORTED_PRICE_USD, _MAX_REPORTED_LATENCY_MS = d._MAX_REPORTED_PRICE_USD, d._MAX_REPORTED_LATENCY_MS
-    _credit_hearth_owner = d._credit_hearth_owner
     # A peer controls these numbers, so coerce defensively: a string/None price
     # would otherwise blow up the fee arithmetic (500) or the stat insert, and a
     # merely huge finite latency (1e30) is fatal to the SQLite INTEGER column.
@@ -437,12 +436,16 @@ def _fed_record(d: SimpleNamespace, call: _Call, fed: _Fed, result_data: dict[st
     # Not on a refusal: `fed_settled` stays false, so the `finally` releases the
     # hold and the buyer pays nothing.
     if fed_reserved and not refused:
-        fed_capture = (
-            credits_ledger.capture_hold(fed_nonce)
-            if fed_hold_rail == "credits" and credits_ledger is not None
-            else invoke.capture_hold(fed_nonce)
-        )
-        if fed_capture.get("error"):
+        share = None
+        if hearth_bill is not None and (fed_sells or fed_resells) and fed_price > 0:
+            share = d._hearth_owner_share(peer, hearth_bill, body.capability_id, fed_price)
+        credit_hold = fed_hold_rail == "credits" and credits_ledger is not None
+        if credit_hold:
+            fed_capture = (credits_ledger.capture_hold(fed_nonce, publisher_share=share)
+                           if share is not None else credits_ledger.capture_hold(fed_nonce))
+        else:
+            fed_capture = invoke.capture_hold(fed_nonce)
+        if fed_capture.get("error") or fed_capture.get("already") not in (None, "captured"):
             logger.error(
                 "federated invoke: capture of reservation %s failed: %s",
                 fed_nonce, fed_capture.get("error"),
@@ -452,8 +455,8 @@ def _fed_record(d: SimpleNamespace, call: _Call, fed: _Fed, result_data: dict[st
                 detail="settlement failed: reservation could not be captured",
             )
         fed.settled = True
-        if hearth_bill is not None and (fed_sells or fed_resells) and fed_price > 0:
-            _credit_hearth_owner(peer, hearth_bill, body.capability_id, fed_price)
+        if share is not None and not credit_hold:
+            d._pay_publisher_share(share)
 
     # Bookkeeping must never be able to destroy delivered work. At this point the
     # peer has answered, the money side is settled, and the caller is owed the

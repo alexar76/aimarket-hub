@@ -71,7 +71,7 @@ Refunds are OBLIGATIONS, not transfers (ACCT-001)
     module can send value. The remainder is therefore recorded as an explicit,
     queryable payout obligation (`channel_payout_obligations`, migration 017) and the
     settlement dict reports `refund_executed_usd` (always 0.0 here) separately from
-    `refund_owed_usd`. Operator payouts happen out-of-band and are attested back with
+    `refund_owed_usd`. Operator payouts happen out-of-band and are verified with
     mark_obligation_paid().
 
 Rate limiting
@@ -831,9 +831,7 @@ def _release_deposit_shared(
 def _payout_tx_shape_error(tx: str, chain: str) -> str:
     """Why ``tx`` cannot be a payout transaction id on ``chain`` — "" if it can.
 
-    Not a chain lookup (this module never talks to an RPC) — a SHAPE check, so an
-    operator attestation always points at something an auditor can actually resolve.
-    Accepting any non-empty string meant "done" cleared a real depositor debt.
+    Shape validation before the separate on-chain payout check.
     """
     if _normalize_chain(chain) in _EVM_PAYOUT_CHAINS:
         body = tx[2:] if tx[:2].lower() == "0x" else ""
@@ -1230,15 +1228,7 @@ def channel_obligations_total(
 def mark_obligation_paid(
     channel_id: str, payout_tx_hash: str, *, operator_token: str = "",
 ) -> dict[str, Any]:
-    """Record an out-of-band operator payout against an obligation (attestation only).
-
-    OPERATOR ONLY, and crypto-gated. This writes off a real debt to a real depositor
-    on nothing but the operator's word; before this gate any in-process caller could
-    clear the whole liability ledger. The crypto gate is deliberate too: with the
-    master switch off the platform is asserting there is no payment rail at all, so
-    an on-chain payout hash cannot be honest evidence — flip AIFACTORY_CRYPTO_ENABLED
-    back on to settle debts recorded while it was on.
-    """
+    """Record an operator payout after on-chain verification (operator-only)."""
     _require_operator(operator_token, "marking an obligation paid")
     if not _crypto_enabled():
         return dict(_CRYPTO_DISABLED)

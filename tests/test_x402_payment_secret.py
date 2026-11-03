@@ -108,6 +108,10 @@ def test_someone_watching_the_chain_cannot_redeem_the_buyers_invoice(hub, monkey
     assert settle.InvoiceStore(hub.hub_db._conn).get(q["nonce"])["consumed_at"] == 0
     buyer = redeem(hub, tx, secret=q["payment_secret"])
     assert buyer.status_code == 200, buyer.text
+    payment = hub.hub_db._conn.execute(
+        "SELECT receipt_id FROM x402_payments WHERE nonce = ?", (q["nonce"],),
+    ).fetchone()
+    assert payment["receipt_id"] == buyer.json()["receipt"]["nonce"]
     again = redeem(hub, tx, secret=q["payment_secret"])
     assert again.status_code == 402
 
@@ -218,6 +222,33 @@ def test_an_old_invoice_and_its_secret_do_not_outlive_their_use(hub):
     hub.hub_db._conn.commit()
     quote(hub)                                   # any 402 sweeps
     assert store.get(stale) is None and store.secret_for(stale) == ""
+
+
+def test_invoice_claim_failure_does_not_consume_the_invoice(hub, monkeypatch):
+    q = quote(hub)["body"]
+    tx = "0x" + "a" * 64
+    chain(monkeypatch, [auth_used(BUYER, q["nonce"]), transfer(BUYER, SELLER, UNITS)])
+    invoices = settle.InvoiceStore(hub.hub_db._conn)
+    payments = settle.PaymentStore(hub.hub_db._conn)
+    with monkeypatch.context() as failure:
+        failure.setattr(settle.PaymentStore, "claim", lambda *args, **kwargs: False)
+        assert redeem(hub, tx, secret=q["payment_secret"]).status_code == 402
+
+    assert invoices.get(q["nonce"])["consumed_at"] == 0
+    assert not payments.seen_nonce(q["nonce"])
+    assert redeem(hub, tx, secret=q["payment_secret"]).status_code == 200
+
+
+def test_legacy_half_claim_can_only_be_redeemed_by_its_original_transaction(hub, monkeypatch):
+    q = quote(hub)["body"]
+    tx = "0x" + "b" * 64
+    invoices = settle.InvoiceStore(hub.hub_db._conn)
+    assert invoices.consume(q["nonce"], tx)
+    chain(monkeypatch, [auth_used(BUYER, q["nonce"]), transfer(BUYER, SELLER, UNITS)])
+
+    assert redeem(hub, "0x" + "c" * 64, secret=q["payment_secret"]).status_code == 402
+    assert redeem(hub, tx, secret=q["payment_secret"]).status_code == 200
+    assert redeem(hub, tx, secret=q["payment_secret"]).status_code == 402
 
 
 @pytest.mark.parametrize("mined_at_offset,redeemed", [(-1, True), (0, False), (None, False)])

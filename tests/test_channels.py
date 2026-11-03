@@ -1000,7 +1000,8 @@ class TestPayoutObligations:
         assert s["expired_volume_usd"] == 4.0
         assert s["closed_volume_usd"] == 4.0   # settled + expired, nothing dropped
 
-    def test_mark_paid_requires_tx_hash_and_is_single_shot(self, ledger):
+    def test_mark_paid_requires_tx_hash_and_is_single_shot(self, ledger, monkeypatch):
+        monkeypatch.setattr("aimarket_hub.deposit_verify.verify_custodial_payout", lambda **_: True)
         opened = ledger.open(2.0, wallet="0xAlice")["channel"]
         cid = opened["channel_id"]
         ledger.close(cid, wallet="0xAlice", secret=opened["channel_secret"])
@@ -1014,6 +1015,21 @@ class TestPayoutObligations:
         # already settled → no outstanding obligation to mark
         assert "error" in ledger.mark_obligation_paid(cid, "0x" + "22" * 32)
         assert "error" in ledger.mark_obligation_paid("ch_nope", payout)
+
+    def test_payout_requires_proof_and_cannot_be_reused(self, ledger, monkeypatch):
+        first = ledger.open(2.0, wallet="0xAlice", chain="base")["channel"]
+        second = ledger.open(2.0, wallet="0xAlice", chain="base")["channel"]
+        for channel in (first, second):
+            ledger.close(channel["channel_id"], wallet="0xAlice", secret=channel["channel_secret"])
+        payout = "0x" + "11" * 32
+        monkeypatch.setattr("aimarket_hub.deposit_verify.verify_custodial_payout", lambda **_: False)
+        assert "error" in ledger.mark_obligation_paid(first["channel_id"], payout)
+        assert len(ledger.obligations("owed")) == 2
+
+        monkeypatch.setattr("aimarket_hub.deposit_verify.verify_custodial_payout", lambda **_: True)
+        assert ledger.mark_obligation_paid(first["channel_id"], payout)["ok"]
+        assert "already" in ledger.mark_obligation_paid(second["channel_id"], payout)["error"]
+        assert ledger.obligations("owed")[0]["channel_id"] == second["channel_id"]
 
     def test_module_level_obligation_readers(self, monkeypatch):
         import uuid
@@ -1090,7 +1106,8 @@ class TestObligationExportsAreOperatorGated:
         assert "error" in out and "disabled" in out["error"]
         assert ledger.obligations()[0]["status"] == "owed"
 
-    def test_payout_hash_must_be_shaped_like_a_transaction(self, owed, ledger):
+    def test_payout_hash_must_be_shaped_like_a_transaction(self, owed, ledger, monkeypatch):
+        monkeypatch.setattr("aimarket_hub.deposit_verify.verify_custodial_payout", lambda **_: True)
         import aimarket_hub.channels as ch
         for junk in ("paid", "done", "0xshort", "0x" + "zz" * 32, "0x" + "ab" * 31):
             out = ch.mark_obligation_paid(owed, junk, operator_token=_OPERATOR_TOKEN)
@@ -1100,9 +1117,9 @@ class TestObligationExportsAreOperatorGated:
             owed, "0x" + "Ab" * 32, operator_token=_OPERATOR_TOKEN
         )
         assert good.get("ok"), good
-        assert ledger.obligations("paid")[0]["payout_tx_hash"] == "0x" + "Ab" * 32
+        assert ledger.obligations("paid")[0]["payout_tx_hash"] == "0x" + "ab" * 32
 
-    def test_non_evm_payout_hash_accepts_a_base58_signature(self, ledger, monkeypatch):
+    def test_non_evm_payout_remains_owed_without_a_verifier(self, ledger, monkeypatch):
         import aimarket_hub.channels as ch
         monkeypatch.setattr(ch, "_ledger", ledger)
         monkeypatch.setenv("AIMARKET_ADMIN_TOKEN", _OPERATOR_TOKEN)
@@ -1111,7 +1128,10 @@ class TestObligationExportsAreOperatorGated:
         ledger.close(cid, wallet="5KtPn1SolanaPayer", secret=opened["channel_secret"])
         assert "error" in ch.mark_obligation_paid(cid, "sent", operator_token=_OPERATOR_TOKEN)
         sig = "5" + "j" * 86
-        assert ch.mark_obligation_paid(cid, sig, operator_token=_OPERATOR_TOKEN).get("ok")
+        assert "not supported" in ch.mark_obligation_paid(
+            cid, sig, operator_token=_OPERATOR_TOKEN
+        )["error"]
+        assert ledger.obligations()[0]["status"] == "owed"
 
 
 # ── Orphaned-hold reaper ─────────────────────────────────────────

@@ -335,7 +335,7 @@ def _local_refuse_undelivered(d: SimpleNamespace, call: _Call, local: _Local, re
 
 
 def _local_settle(d: SimpleNamespace, call: _Call, local: _Local) -> None:
-    credits_ledger, logger, _pay_publisher_share = call.credits_ledger, d.logger, d._pay_publisher_share
+    credits_ledger, logger = call.credits_ledger, d.logger
     vs_plan, reserved, hold_rail, nonce = local.vs_plan, local.reserved, local.hold_rail, local.nonce
     cap, price, x402_accepted = local.cap, local.price, local.x402_accepted
     # ── Payment: settle the reservation taken before execution ────────────
@@ -371,11 +371,15 @@ def _local_settle(d: SimpleNamespace, call: _Call, local: _Local) -> None:
                 detail="settlement failed: no reservation backs the verified invoke",
             )
     elif reserved:
-        capture = (
-            credits_ledger.capture_hold(nonce)
-            if hold_rail == "credits" and credits_ledger is not None
-            else invoke.capture_hold(nonce)
-        )
+        share = None
+        if not (x402_accepted and x402_accepted.get("rail") == "seller_direct"):
+            share = d._publisher_share(cap, price, nonce)
+        credit_hold = hold_rail == "credits" and credits_ledger is not None
+        if credit_hold:
+            capture = (credits_ledger.capture_hold(nonce, publisher_share=share)
+                       if share is not None else credits_ledger.capture_hold(nonce))
+        else:
+            capture = invoke.capture_hold(nonce)
         if capture.get("error") or capture.get("already") not in (None, "captured"):
             # The ledger refused to convert OUR OWN reservation into a debit
             # (it existed a moment ago). Something is wrong with the ledger
@@ -394,10 +398,8 @@ def _local_settle(d: SimpleNamespace, call: _Call, local: _Local) -> None:
             )
         # The reservation is now a recorded debit — nothing left to release.
         local.resolved = True
-        # Credits-rail residual only. A seller-direct settle already
-        # paid the listing's payout_address on chain.
-        if not (x402_accepted and x402_accepted.get("rail") == "seller_direct"):
-            _pay_publisher_share(cap, price, nonce)
+        if share is not None and not credit_hold:
+            d._pay_publisher_share(share)
 
 
 def _local_sign_receipt(d: SimpleNamespace, call: _Call, local: _Local) -> None:
@@ -679,7 +681,21 @@ def _local_answer(d: SimpleNamespace, call: _Call, local: _Local, result: Any, p
         response_body["x402_settlement"] = local.x402_settlement
         headers = {"PAYMENT-RESPONSE": x402.encode_header(local.x402_settlement),
                    "Access-Control-Expose-Headers": "PAYMENT-RESPONSE"}
-    return JSONResponse(status_code=200, content=response_body, headers=headers)
+    response = JSONResponse(status_code=200, content=response_body, headers=headers)
+    accepted = local.x402_accepted
+    if accepted and accepted.get("rail") == "seller_direct":
+        try:
+            from aimarket_hub.settle import PaymentStore
+
+            linked = PaymentStore(d.db._conn).link_delivery_receipt(
+                nonce=accepted["nonce"], tx_hash=accepted["tx_hash"],
+                receipt_id=local.receipt["nonce"],
+            )
+            if not linked:
+                d.logger.warning("Seller-direct payment has no linked receipt: %s", accepted["tx_hash"])
+        except Exception:
+            d.logger.exception("Could not link seller-direct receipt: %s", accepted["tx_hash"])
+    return response
 
 
 def _x402_settlement(d: SimpleNamespace, call: _Call, local: _Local) -> dict[str, Any] | None:

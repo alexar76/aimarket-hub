@@ -45,6 +45,7 @@ CHANNEL_LEDGER_TABLES: tuple[str, ...] = (
     "consumed_deposits",
     "channel_holds",
     "channel_payout_obligations",
+    "channel_payout_claims",
 )
 
 
@@ -1639,6 +1640,16 @@ _register(64, "064_catalogue_evidence", """
 """, """
     ALTER TABLE capabilities DROP COLUMN catalogue_evidence;
 """)
+
+_register(65, "065_channel_payout_claims", """
+    CREATE TABLE IF NOT EXISTS channel_payout_claims (
+        payout_tx_hash TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL UNIQUE
+    );
+""", """
+    DROP TABLE IF EXISTS channel_payout_claims;
+""")
+
 
 def channel_ledger_versions() -> list[int]:
     """Migration versions whose DDL touches a channel-ledger table.

@@ -373,3 +373,58 @@ def verify_deposit(
         token_address=address,
         details={"decimals": decimals, "block": mined_in, "token": name, "chain": chain},
     )
+
+
+def verify_custodial_payout(
+    *, tx_hash: str, amount_cents: int, chain: str, token: str,
+    recipient: str, custodian: str, owed_since: float, rpc: RpcCaller | None = None,
+) -> bool:
+    """Verify a finalized EVM stablecoin payout from the configured custodian."""
+    from aimarket_hub import chain_net
+    from aimarket_hub.settle import is_address, is_tx_hash
+
+    if (not is_tx_hash(tx_hash) or not is_address(custodian)
+            or not is_address(recipient) or _same_address(custodian, recipient)
+            or amount_cents <= 0 or owed_since <= 0):
+        return False
+    try:
+        expected_chain = chain_net.network(chain).chain_id
+        address = token_address_for(chain, token)
+        if not expected_chain or token.upper() not in STABLECOINS or not is_address(address):
+            return False
+        if rpc is None:
+            urls = [url for url in rpc_urls_for(chain) if _rpc_chain_id(url) == expected_chain]
+            if not urls:
+                return False
+            rpc = _make_rpc(urls, 8.0)
+        if _hex_to_int(rpc("eth_chainId", [])) != expected_chain:
+            return False
+        receipt = rpc("eth_getTransactionReceipt", [tx_hash])
+        if not receipt or _hex_to_int(receipt.get("status")) != 1:
+            return False
+        if not _same_address(receipt.get("transactionHash"), tx_hash):
+            return False
+        block = _hex_to_int(receipt.get("blockNumber"))
+        finalized = rpc("eth_getBlockByNumber", ["finalized", False])
+        if not finalized or not 0 < block <= _hex_to_int(finalized.get("number")):
+            return False
+        canonical = rpc("eth_getBlockByNumber", [hex(block), False])
+        if (not canonical or not receipt.get("blockHash")
+                or not _same_address(canonical.get("hash"), receipt["blockHash"])
+                or _hex_to_int(canonical.get("timestamp")) < int(owed_since)):
+            return False
+        decimals = _hex_to_int(rpc("eth_call", [{"to": address, "data": _SEL_DECIMALS}, hex(block)]))
+        if not 2 <= decimals <= 36:
+            return False
+        paid = 0
+        for log in receipt.get("logs") or []:
+            topics = log.get("topics") or []
+            if (len(topics) == 3 and _same_address(log.get("address"), address)
+                    and _same_address(topics[0], TRANSFER_TOPIC)
+                    and _same_address(_topic_address(topics[1]), custodian)
+                    and _same_address(_topic_address(topics[2]), recipient)):
+                paid += _hex_to_int(log.get("data"))
+        return paid >= amount_cents * 10 ** (decimals - 2)
+    except Exception:
+        logger.warning("Could not verify custodial payout on chain", exc_info=False)
+        return False

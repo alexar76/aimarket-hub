@@ -632,13 +632,19 @@ class InvoiceStore:
         ).fetchone()
         return dict(row) if row else None
 
-    def consume(self, nonce: str, tx_hash: str) -> bool:
+    def consume(self, nonce: str, tx_hash: str, *, _atomic_claim: bool = False) -> bool:
+        # The legacy path could commit this marker without recording a claim.
+        # Only the original transaction may repair that marker.
+        eligible = "(consumed_at = 0 OR tx_hash = ?)" if _atomic_claim else "consumed_at = 0"
+        params = (time.time(), tx_hash.lower(), nonce.lower())
+        if _atomic_claim:
+            params += (tx_hash.lower(),)
         cur = self._conn.execute(
             "UPDATE settle_invoices SET consumed_at = ?, tx_hash = ? "
-            "WHERE nonce = ? AND consumed_at = 0",
-            (time.time(), tx_hash.lower(), nonce.lower()),
+            f"WHERE nonce = ? AND {eligible}", params,
         )
-        self._conn.commit()
+        if not _atomic_claim:
+            self._conn.commit()
         return (cur.rowcount or 0) > 0
 
     def release(self, nonce: str) -> None:
@@ -656,6 +662,51 @@ class PaymentStore:
 
     def __init__(self, conn: Any):
         self._conn = conn
+
+    def claim_invoice(self, **payment: Any) -> bool:
+        """Commit the invoice marker and payment claim together on a dedicated connection."""
+        with self._conn.get_connection() as conn:
+            if not InvoiceStore(conn).consume(
+                payment["nonce"], payment["tx_hash"], _atomic_claim=True,
+            ) or not PaymentStore(conn).claim(**payment, _commit=False):
+                conn.rollback()
+                return False
+            conn.commit()
+            return True
+
+    def release_invoice(self, tx_hash: str, nonce: str) -> bool:
+        """Restore the same invoice and claim together after a definite refusal."""
+        if not tx_hash or not nonce:
+            return False
+        with self._conn.get_connection() as conn:
+            conn.execute(
+                "UPDATE settle_invoices SET consumed_at = 0, tx_hash = '' "
+                "WHERE nonce = ? AND tx_hash = ?",
+                (nonce.lower(), tx_hash.lower()),
+            )
+            deleted = conn.execute(
+                "DELETE FROM x402_payments WHERE settle_tx_hash = ? AND nonce = ?",
+                (tx_hash.lower(), nonce.strip()),
+            )
+            if not deleted.rowcount:
+                conn.rollback()
+                return False
+            conn.commit()
+            return True
+
+    def link_delivery_receipt(self, *, nonce: str, tx_hash: str, receipt_id: str) -> bool:
+        """Attach an issued work receipt to the exact settled authorization."""
+        if not (nonce and tx_hash and receipt_id):
+            return False
+        with self._conn.get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE x402_payments SET receipt_id = ? WHERE nonce = ? "
+                "AND settle_tx_hash = ? AND status = 'settled' "
+                "AND (COALESCE(receipt_id, '') = '' OR receipt_id = ?)",
+                (receipt_id, nonce.lower(), tx_hash.lower(), receipt_id),
+            )
+            conn.commit()
+            return cur.rowcount == 1
 
     def seen_tx(self, tx_hash: str) -> bool:
         row = self._conn.execute(
@@ -692,6 +743,7 @@ class PaymentStore:
         capability_id: str = "",
         nonce: str = "",
         receipt_id: str = "",
+        _commit: bool = True,
     ) -> bool:
         """Record a settled payment. False if this payment was already spent.
 
@@ -707,11 +759,12 @@ class PaymentStore:
         if self.seen_nonce(key) or self.seen_whole(tx_hash):
             return False
         try:
-            self._conn.execute(
+            cur = self._conn.execute(
                 "INSERT INTO x402_payments "
                 "(nonce, payer, amount_atomic, amount_usd, asset, network, "
                 "receipt_id, capability_id, status, settle_tx_hash, settled_at, pay_to) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'settled', ?, datetime('now'), ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'settled', ?, datetime('now'), ?)"
+                + ("" if _commit else " ON CONFLICT (nonce) DO NOTHING"),
                 (
                     key, payer or "",
                     str(amount_atomic), float(amount_usd),
@@ -719,8 +772,13 @@ class PaymentStore:
                     tx_hash.lower(), pay_to.lower(),
                 ),
             )
-            self._conn.commit()
+            if _commit:
+                self._conn.commit()
+            else:
+                return cur.rowcount > 0
         except Exception:
+            if not _commit:
+                raise
             return False
         return True
 

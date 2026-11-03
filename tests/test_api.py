@@ -1271,7 +1271,8 @@ class TestObligationOperatorSurface:
         assert data["obligations"][0]["wallet"] == "0xAlice"
         assert data["totals"]["owed"]["total_usd"] == 2.0
 
-    def test_admin_can_clear_it_with_a_payout_hash(self, op):
+    def test_admin_can_clear_it_with_a_verified_payout_hash(self, op, monkeypatch):
+        monkeypatch.setattr("aimarket_hub.deposit_verify.verify_custodial_payout", lambda **_: True)
         client, cid = op
         payout = "0x" + "ab" * 32
         resp = client.post(

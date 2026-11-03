@@ -494,8 +494,9 @@ def create_app(
     )
     _bind_hub_fee_payee = payments_scope._bind_hub_fee_payee
     _bind_listing_payee = payments_scope._bind_listing_payee
-    _credit_hearth_owner = payments_scope._credit_hearth_owner
+    _hearth_owner_share = payments_scope._hearth_owner_share
     _pay_publisher_share = payments_scope._pay_publisher_share
+    _publisher_share = payments_scope._publisher_share
     _payment_hint = payments_scope._payment_hint
     _payment_ways = payments_scope._payment_ways
     _pays_a_third_party = payments_scope._pays_a_third_party
@@ -656,10 +657,11 @@ def create_app(
         _bind_hub_fee_payee=_bind_hub_fee_payee,
         _bind_listing_payee=_bind_listing_payee,
         _check_invoke_rate=_check_invoke_rate,
-        _credit_hearth_owner=_credit_hearth_owner,
+        _hearth_owner_share=_hearth_owner_share,
         _ecosystem_policy=_ecosystem_policy,
         _mcp_caller=_mcp_caller,
         _pay_publisher_share=_pay_publisher_share,
+        _publisher_share=_publisher_share,
         _payment_hint=_payment_hint,
         _payment_ways=_payment_ways,
         _pays_a_third_party=_pays_a_third_party,

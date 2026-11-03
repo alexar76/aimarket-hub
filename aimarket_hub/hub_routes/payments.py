@@ -14,7 +14,7 @@ from fastapi import HTTPException, Request
 
 from aimarket_hub import credits, settle, topup, x402
 from aimarket_hub.config import HubConfig
-from aimarket_hub.credits import CreditsLedger
+from aimarket_hub.credits import CreditsLedger, PublisherShare
 from aimarket_hub.settle import InvoiceStore, PaymentStore as SettlePaymentStore
 from aimarket_hub.signing import Signer
 
@@ -35,86 +35,60 @@ def register(
         logger,
     )
 
-    def _pay_publisher_share(cap: Any, price_usd: float, receipt_id: str) -> None:
-        """Credits-rail residual only. Catalogue sales pay the seller on-chain.
-
-        A wallet publisher is paid by ``payout_address``, not by a silent credit.
-        This helper remains for a buyer who prepaid in credits: if the publisher
-        also holds a credit account, they can be book-kept here. It never
-        substitutes for the market rail and never claims a wallet seller
-        "cannot be paid".
-        """
-        if price_usd <= 0 or config.publisher_share_bps <= 0:
-            return
+    def _publisher_share(cap: Any, price_usd: float, receipt_id: str) -> PublisherShare | None:
+        """Internal credit share for a seller with an account on this hub."""
         publisher_id = str(getattr(cap, "publisher_id", "") or "").strip()
-        if not publisher_id or not credits.enabled():
-            return
-        if hub_credits.account(publisher_id) is None:
-            return
         share = round(price_usd * config.publisher_share_bps / 10000, 6)
-        if share <= 0:
-            return
-        try:
-            result = hub_credits.pay_publisher(
-                publisher_id, share, receipt_id=receipt_id, note="capability sale",
-            )
-        except Exception as exc:  # noqa: BLE001 - never fail a delivered call on a payout
-            logger.error("payout: crediting %s failed: %s", publisher_id, exc)
-            return
-        if result.get("error"):
-            logger.error("payout: crediting %s failed: %s", publisher_id, result["error"])
-        else:
-            logger.info(
-                "payout: %s earned $%.6f (%d bps of $%.6f)",
-                publisher_id, share, config.publisher_share_bps, price_usd,
-            )
+        if credits.usd_to_mc(share) <= 0 or not publisher_id or not credits.enabled():
+            return None
+        if hub_credits.account(publisher_id) is None:
+            return None
+        return PublisherShare(publisher_id, share, receipt_id, "capability sale")
 
-    def _credit_hearth_owner(peer: Any, bill: Any, capability_id: str, charged_usd: float) -> None:
-        """Pay a hearth tenant's owner their share of what this hub charged its buyer.
-
-        The hearth served the call on this hub's key because the owner chose this hub and named
-        a credit account here (hestia/hub_billing.py). Its `hub_billing` block is signed by the
-        hearth's provider key, which this hub pinned when it indexed the hearth, so the account
-        to credit is the owner's word, carried by a key nobody else holds. The amount is never
-        the hearth's number: it is AIMARKET_PUBLISHER_SHARE_BPS of what THIS hub captured.
-        An operator tenant names no account, and the hub keeps what it charged.
-        """
+    def _hearth_owner_share(peer: Any, bill: Any, capability_id: str,
+                            charged_usd: float) -> PublisherShare | None:
+        """Derive a share of what this hub charged, for the account named in the peer's signed bill."""
         if not isinstance(bill, dict):
-            return
+            return None
         account = str(bill.get("bill_to_account") or "")
-        if not account:
-            return
+        bill_id = str(bill.get("id") or "").strip()
+        if not account or not bill_id:
+            return None
         if str(bill.get("hub") or "").rstrip("/") != (config.hub_url or "").rstrip("/"):
             logger.error("hearth bill from %s names hub %r, not this hub — not credited",
                          peer.url, bill.get("hub"))
-            return
+            return None
         if bill.get("capability_id") != capability_id:
             logger.error("hearth bill from %s is for %r, not %r — not credited",
                          peer.url, bill.get("capability_id"), capability_id)
-            return
+            return None
         if not Signer.verify_object_signature(
             bill, getattr(peer, "public_key", "") or "",
             pq_public_key_b64=getattr(peer, "pq_public_key", "") or None,
         ):
             logger.error("hearth bill from %s does not verify against its pinned key — "
                          "not credited", peer.url)
-            return
+            return None
         share = round(charged_usd * config.publisher_share_bps / 10000, 6)
-        if share <= 0 or not credits.enabled():
-            return
+        if credits.usd_to_mc(share) <= 0 or not credits.enabled():
+            return None
+        if hub_credits.account(account) is None:
+            logger.error("hearth bill from %s names an unknown credit account", peer.url)
+            return None
+        return PublisherShare(account, share, f"hearth:{bill_id}",
+                              f"hearth owner share: {peer.url} {bill.get('slug', '')}")
+
+    def _pay_publisher_share(payout: PublisherShare) -> None:
+        """Settle a share after capture on a rail with a separate ledger."""
         try:
             result = hub_credits.pay_publisher(
-                account, share, receipt_id=f"hearth:{bill.get('id', '')}",
-                note=f"hearth owner share: {peer.url} {bill.get('slug', '')}",
+                payout.account_id, payout.amount_usd, receipt_id=payout.receipt_id, note=payout.note,
             )
-        except Exception as exc:  # noqa: BLE001 - never fail a delivered call on a payout
-            logger.error("hearth owner payout to %s failed: %s", account, exc)
+        except Exception:
+            logger.exception("payout: crediting %s failed", payout.account_id)
             return
         if result.get("error"):
-            logger.error("hearth owner payout to %s failed: %s", account, result["error"])
-        else:
-            logger.info("hearth owner %s earned $%.6f for %s via %s",
-                        account, share, capability_id, peer.url)
+            logger.error("payout: crediting %s failed: %s", payout.account_id, result["error"])
 
     def _bind_listing_payee(request: Request, cap: Any) -> str:
         """Publish the seller on this request so a 402 names their wallet."""
@@ -208,7 +182,8 @@ def register(
             # A 402 quotes one call; its payment buys that call, not another the same
             # seller lists at the same price or less.
             return {"error": f"that invoice was quoted for {quoted_for}, not {capability_id}"}
-        if float(invoice.get("consumed_at") or 0) > 0:
+        if (float(invoice.get("consumed_at") or 0) > 0
+                and str(invoice.get("tx_hash") or "").lower() != tx_hash.lower()):
             return {"error": "that payment nonce has already been spent"}
         expired = time.time() > float(invoice["expires_at"])
         if str(invoice.get("pay_to") or "").lower() != terms.pay_to.lower():
@@ -231,9 +206,7 @@ def register(
             raise HTTPException(
                 status_code=503, detail="payment verifier unavailable",
             ) from None
-        if not hub_invoices.consume(nonce, settled["tx_hash"]):
-            return {"error": "that payment nonce has already been spent"}
-        if not hub_settle.claim(
+        if not hub_settle.claim_invoice(
             tx_hash=settled["tx_hash"],
             pay_to=terms.pay_to,
             payer=settled.get("authorizer") or "",
@@ -244,7 +217,6 @@ def register(
             capability_id=capability_id,
             nonce=nonce,
         ):
-            hub_invoices.release(nonce)
             return {"error": "that payment has already been spent on another call"}
         logger.info(
             "settle: $%.6f USDC to seller %s for %s tx=%s",
@@ -261,33 +233,18 @@ def register(
         }
 
     def _release_market_payment(accepted: object) -> None:
-        """Un-spend a verified seller-direct payment when the call is refused unserved.
+        """Keep the buyer's transfer redeemable after a definite refusal.
 
-        The money itself cannot come back: this rail pays the seller's wallet directly and
-        the Hub is not in the transaction. What the Hub can do, and did not, is stop
-        CONSUMING the buyer's claim. `_settle_market_payment` burns both replay keys the
-        moment the receipt verifies — `hub_invoices.consume` and `hub_settle.claim` — and
-        every refusal after that point (a short input, a safety block, a provider 502, a
-        failed capture) left the buyer having paid for a call that never ran, holding a
-        nonce and a tx hash that could never be presented again.
-
-        Releasing them restores the only compensation seller-direct can offer: the payment
-        stays redeemable, so the buyer retries the same money instead of paying twice. The
-        one place that already did this — `hub_settle.claim` failing on an
-        already-spent tx — shows the shape was understood; it was just never wired to the
-        exits that actually happen.
-
-        Never raises: it runs from `finally`, where an exception would mask the real error.
+        The transfer went directly to the seller. This restores the Hub claim and
+        invoice without moving funds, and runs from finally without masking errors.
         """
         if not isinstance(accepted, dict) or accepted.get("error") or not accepted.get("ok"):
             return
         try:
             nonce = str(accepted.get("nonce") or "")
-            if nonce:
-                hub_invoices.release(nonce)
             tx_hash = str(accepted.get("tx_hash") or "")
-            if tx_hash:
-                hub_settle.release(tx_hash, nonce)
+            if not hub_settle.release_invoice(tx_hash, nonce):
+                return
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "invoke: releasing the seller-direct payment %s raised: %s",
@@ -462,7 +419,8 @@ def register(
     return SimpleNamespace(
         _bind_hub_fee_payee=_bind_hub_fee_payee,
         _bind_listing_payee=_bind_listing_payee,
-        _credit_hearth_owner=_credit_hearth_owner,
+        _hearth_owner_share=_hearth_owner_share,
+        _publisher_share=_publisher_share,
         _pay_publisher_share=_pay_publisher_share,
         _payment_hint=_payment_hint,
         _payment_ways=_payment_ways,

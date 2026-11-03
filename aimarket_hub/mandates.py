@@ -1662,8 +1662,8 @@ class MandatedCredits:
         by subcontract.perCallAllowance (checked by the caller) rather than perCall."""
         return self._reserved_hold(account_id, amount_usd, receipt_id, per_call=False)
 
-    def capture_hold(self, receipt_id: str) -> dict[str, Any]:
-        result = self._inner.capture_hold(receipt_id)
+    def capture_hold(self, receipt_id: str, **kwargs: Any) -> dict[str, Any]:
+        result = self._inner.capture_hold(receipt_id, **kwargs)
         if not result.get("error"):
             self._admission.store.capture(receipt_id)
         return result
