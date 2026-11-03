@@ -163,7 +163,14 @@
   .hero .tagline { color: var(--muted); font-size: clamp(16px, 2.2vw, 20px); max-width: 680px; margin: 0 auto 18px; }
   .hero .trust-line { font-size: clamp(16px, 2.2vw, 20px); max-width: 680px; margin: 0 auto 8px; }
   .hero .trust-note { color: var(--muted); font-size: 14px; max-width: 680px; margin: 0 auto 26px; }
-  .hero .trust-note a { white-space: nowrap; }
+  .hero .trust-note a {
+    color: var(--cyan); white-space: nowrap;
+    text-underline-offset: 3px;
+  }
+  .hero .trust-note a:hover { color: var(--ink); }
+  .hero .trust-note a:focus-visible {
+    outline: 2px solid var(--cyan); outline-offset: 4px; border-radius: 2px;
+  }
   .proto-badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 28px; }
   .badge {
     font-family: var(--mono); font-size: 11px; letter-spacing: .5px;
@@ -2423,13 +2430,20 @@
   let capsHasMore = false;
   let capsLoadingMore = false;
   let peersCache = null;
+  // A tab left open kept its first answer: a peer approved elsewhere stayed under "Unapproved hubs" until a reload.
+  // poll() asks again once the list is a minute old (after a failed try too, not every 3 s); the rail is redrawn
+  // only when the queue changed, so an open preview or a typed search survives the refresh.
+  const PEERS_TTL_MS = 60000;
+  let peersTriedAt = 0;
+  let pendingKey = '';
   let peersRequest = null;
   let peersForFed = null;
   let pendingCache = [];
 
   async function ensurePeers() {
-    if (peersCache) return peersCache;
+    if (peersCache && Date.now() - peersTriedAt < PEERS_TTL_MS) return peersCache;
     if (peersRequest) return peersRequest;
+    peersTriedAt = Date.now();
     peersRequest = (async () => {
       // One bounded request, including its body, shared by the drawer and the diagram.
       const body = await fetchJson(`${HUB}/ai-market/v2/federation/peers`, LIVE_TIMEOUT_MS);
@@ -2438,7 +2452,8 @@
       // A stranger appears in its own section, never mixed into approved peers.
       pendingCache = Array.isArray(body.pending) ? body.pending : [];
       peersForFed = peersCache;
-      renderKnockRail();
+      const key = JSON.stringify(pendingCache);
+      if (key !== pendingKey) { pendingKey = key; renderKnockRail(); }
       return peersCache;
     })();
     try { return await peersRequest; }
