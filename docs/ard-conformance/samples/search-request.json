@@ -1,0 +1,12 @@
+{
+ "query": {
+  "text": "weather",
+  "filter": {
+   "type": [
+    "application/vnd.aimarket.capability+json"
+   ]
+  }
+ },
+ "federation": "none",
+ "pageSize": 5
+}

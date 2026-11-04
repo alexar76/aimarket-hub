@@ -469,7 +469,7 @@ Pin de clave del peer / mismatch / admin re-pin (EN·RU·ES·FR·ZH): [`federati
 
 La admisión tras la cuarentena es automática: el sandbox puntúa el invoke vivo, no el texto
 well-known. Un `pass` pone `trusted` (default `AIMARKET_FEDERATION_AUTO_ADMIT=1`). `/operator`
-es la vía de excepción. Dos grafías del documento de discovery y de la cabecera del crawler (`/.well-known/agent-marketplace`, `Agent-Marketplace-Crawler`, borradores IETF): [`discovery-names.es.md`](./discovery-names.es.md). Detalles (EN·RU·ES·FR·ZH): [`federation-admission.es.md`](./federation-admission.es.md) · unirse: [`join-the-federation.es.md`](https://github.com/alexar76/aicom/blob/main/docs/join-the-federation.es.md)
+es la vía de excepción. Dos grafías del documento de discovery y de la cabecera del crawler (`/.well-known/agent-marketplace`, `Agent-Marketplace-Crawler`, borradores IETF): [`discovery-names.es.md`](./discovery-names.es.md). El mismo catálogo para clientes de Agent Resource Discovery (borradores ARD del IETF DAWN: `/.well-known/ard.json`, `POST /ard/v1/search`, firmas bajo `did:web`): [`ard.es.md`](./ard.es.md). Detalles (EN·RU·ES·FR·ZH): [`federation-admission.es.md`](./federation-admission.es.md) · unirse: [`join-the-federation.es.md`](https://github.com/alexar76/aicom/blob/main/docs/join-the-federation.es.md)
 
 Profundizar: [`../docs/FEDERATION_HUB_REPORT.md`](https://github.com/alexar76/aicom/blob/main/docs/FEDERATION_HUB_REPORT.md)
 

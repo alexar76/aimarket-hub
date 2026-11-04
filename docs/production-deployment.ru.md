@@ -269,6 +269,8 @@ server {
     client_max_body_size 1m;
 
     location = /hub { return 301 /hub/; }
+    # ARD clients ask the origin for /.well-known/ard.json and follow one redirect (docs/ard.md).
+    location = /.well-known/ard.json { return 302 /hub/.well-known/ard.json; }
     location ^~ /hub/ {
         proxy_pass http://127.0.0.1:9083/;
         proxy_http_version 1.1;

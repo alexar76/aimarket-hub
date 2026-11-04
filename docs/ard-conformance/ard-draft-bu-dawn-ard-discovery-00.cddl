@@ -1,0 +1,138 @@
+start = ard-manifest
+
+; --- The Manifest ---
+ard-manifest = {
+  entries: [* ard-entry],
+  * tstr => any
+}
+
+; --- The ARD Entry ---
+ard-entry = {
+  ard-entry-required,
+  ard-entry-descriptive,
+  * tstr => any
+}
+
+ard-entry-required = (
+
+  ; URN: urn:air:{publisher}:{namespace}:{agent-name}
+  identifier: tstr,
+  displayName: tstr,
+  type: tstr,       ; IANA Media Type
+  content-delivery  ; value-or-reference
+)
+
+ard-entry-descriptive = (
+  ? "@context" => any,
+  ? "@id" => tstr,
+  ? description: tstr,
+  ? tags: [+ tstr],
+  ? capabilities: [+ tstr],
+  ? representativeQueries: [* tstr],
+  ? version: tstr,
+  ? digest: tstr,
+  ? updatedAt: tstr,
+  ? metadata: {* tstr => any},
+  ? trustManifest: trust-manifest,
+  ? trustManifests: [+ trust-manifest]
+)
+
+content-delivery = (
+  url: tstr //
+  data: {* tstr => any}
+)
+
+; --- Trust Envelope ---
+trust-manifest = {
+  identity: tstr,
+  ? issuedAt: tstr,
+  ? expiresAt: tstr,
+  ? subject: trust-subject,
+  ? identityType: tstr,
+  ? trustSchema: trust-schema,
+  ? attestations: [* attestation],
+  ? provenance: [* provenance-link],
+  ? signature: tstr,
+  * tstr => any
+}
+
+trust-subject = {
+  identifier: tstr,
+  type: tstr,
+  ? version: tstr,
+  ? digest: tstr,
+  ? url: tstr,
+  * tstr => any
+
+}
+
+trust-schema = {
+  ? identifier: tstr,
+  ? version: tstr,
+  ? governanceUri: tstr,
+  ? verificationMethods: [* tstr],
+  * tstr => any
+}
+
+attestation = {
+  type: tstr,
+  uri: tstr,
+  ? mediaType: tstr,
+  ? digest: tstr,
+  * tstr => any
+}
+
+provenance-link = {
+  relation: tstr,
+  sourceId: tstr,
+  ? sourceDigest: tstr,
+  * tstr => any
+}
+
+; --- Search API Payloads ---
+query-model = {
+  ? text: tstr,
+  ? "@context" => any,
+  ? filter: {* tstr => ([+ tstr] / tstr)}
+}
+
+search-request = {
+  query: query-model,
+  ? federation: "auto" / "referrals" / "none",
+  ? pageSize: uint,
+  ? pageToken: tstr
+}
+
+search-response = {
+  results: [* search-result-item],
+  ? referrals: [* registry-referral],
+  ? nextPageToken: tstr
+}
+
+search-result-item = {
+  identifier: tstr,
+  ? displayName: tstr,
+
+  ? type: tstr,
+  ? url: tstr,
+  ? digest: tstr,
+  ? trustManifest: trust-manifest,
+  score: 0..100,
+  source: tstr,
+  * tstr => any
+}
+
+registry-referral = {
+  identifier: tstr,
+  displayName: tstr,
+  type: "application/ai-registry+json",
+  url: tstr
+}
+
+; Helper types
+any = any-cbor / any-json
+any-cbor = bool / int / float / tstr / bstr /
+           [* any-cbor] / {* any-cbor => any-cbor}
+any-json = bool / int / float / tstr / null /
+           [* any-json] / {* tstr => any-json}
+null = nil

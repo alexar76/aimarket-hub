@@ -1,0 +1,79 @@
+{
+ "entries": [
+  {
+   "identifier": "urn:air:agent-exec.448c.org:agent-exec.448c.org:attest",
+   "displayName": "attest",
+   "type": "application/vnd.aimarket.capability+json",
+   "url": "https://modelmarket.dev/ard/v1/capability?product_id=agent-exec.448c.org&capability_id=attest&source_hub=https%3A%2F%2Fagent-exec.448c.org",
+   "description": "POST /attest -- Pay to have us fetch a URL from OUR vantage point and return a signed, timestamped attestation of what we saw -- hash, byte count, status and headers, never the body. Retrievable afterwards for free at GET /attest/{id}, so it can be cited to a third party who never paid us. Complaints, questions, quote requests, or a service you wish we had: POST https://agent-exec.448c.org/feedback -- free, no account. Every report is read and analysed daily; there is no individual reply.",
+   "capabilities": [
+    "agent-exec.448c.org.attest@v1"
+   ],
+   "version": "v1",
+   "digest": "sha256:5486720f108eea37dce28390357f90f9f5a70be228b0dd9e73e2989ac1b6c27e",
+   "metadata": {
+    "aimarket": {
+     "protocol": "aimarket-v2",
+     "product_id": "agent-exec.448c.org",
+     "capability_id": "attest",
+     "source_hub": "https://agent-exec.448c.org",
+     "price_per_call_usd": 0.35,
+     "access_mode": "paid",
+     "invoke_url": "https://modelmarket.dev/ai-market/v2/invoke"
+    }
+   },
+   "tags": [
+    "agents",
+    "attestation",
+    "code-execution",
+    "directory",
+    "dns",
+    "email",
+    "key-claims",
+    "risk-checks",
+    "sandbox",
+    "storage",
+    "url-watch",
+    "x402"
+   ]
+  },
+  {
+   "identifier": "urn:air:agent-exec.448c.org:agent-exec.448c.org:check_address",
+   "displayName": "check_address",
+   "type": "application/vnd.aimarket.capability+json",
+   "url": "https://modelmarket.dev/ard/v1/capability?product_id=agent-exec.448c.org&capability_id=check_address&source_hub=https%3A%2F%2Fagent-exec.448c.org",
+   "description": "POST /check/address -- Pay to check an EVM address against public risk feeds (OFAC, community darklists, on-chain age) and get back a verdict, score and reasons. Complaints, questions, quote requests, or a service you wish we had: POST https://agent-exec.448c.org/feedback -- free, no account. Every report is read and analysed daily; there is no individual reply.",
+   "capabilities": [
+    "agent-exec.448c.org.check_address@v1"
+   ],
+   "version": "v1",
+   "digest": "sha256:fc5e622e709b54443168ca068a4ebf66fa61973e7c026b58524e7605cadb30ba",
+   "metadata": {
+    "aimarket": {
+     "protocol": "aimarket-v2",
+     "product_id": "agent-exec.448c.org",
+     "capability_id": "check_address",
+     "source_hub": "https://agent-exec.448c.org",
+     "price_per_call_usd": 0.35,
+     "access_mode": "paid",
+     "invoke_url": "https://modelmarket.dev/ai-market/v2/invoke"
+    }
+   },
+   "tags": [
+    "agents",
+    "attestation",
+    "code-execution",
+    "directory",
+    "dns",
+    "email",
+    "key-claims",
+    "risk-checks",
+    "sandbox",
+    "storage",
+    "url-watch",
+    "x402"
+   ]
+  }
+ ],
+ "nextPageToken": "eyJvIjoyLCJxIjoiZDFhNTVjYmYzN2UxMGYxNiJ9"
+}

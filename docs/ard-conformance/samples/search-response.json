@@ -1,0 +1,66 @@
+{
+ "results": [
+  {
+   "identifier": "urn:air:iot.modelmarket.dev:gaia.gateway:gaia.weather.read@v1",
+   "displayName": "gaia.weather.read",
+   "type": "application/vnd.aimarket.capability+json",
+   "url": "https://modelmarket.dev/ard/v1/capability?product_id=gaia.gateway&capability_id=gaia.weather.read%40v1&source_hub=https%3A%2F%2Fiot.modelmarket.dev",
+   "version": "v1",
+   "digest": "sha256:ba27fb0aae61ff31334165cca03e75a9f7857bf8310b0393941796dcfb764b0a",
+   "score": 98,
+   "source": "https://iot.modelmarket.dev"
+  },
+  {
+   "identifier": "urn:air:modelmarket.dev:weather-witness:weather.witness@v1",
+   "displayName": "weather witness",
+   "type": "application/vnd.aimarket.capability+json",
+   "url": "https://modelmarket.dev/ard/v1/capability?product_id=weather-witness&capability_id=weather.witness%40v1&source_hub=local",
+   "version": "v1",
+   "digest": "sha256:4586b78d0699ab23d32b00b5515c367a020eee8241747f675650f6a327fd4ff1",
+   "trustManifest": {
+    "identity": "did:web:modelmarket.dev",
+    "issuedAt": "2026-11-04T08:47:42Z",
+    "subject": {
+     "identifier": "urn:air:modelmarket.dev:weather-witness:weather.witness@v1",
+     "type": "application/vnd.aimarket.capability+json",
+     "version": "v1",
+     "digest": "sha256:4586b78d0699ab23d32b00b5515c367a020eee8241747f675650f6a327fd4ff1"
+    },
+    "signature": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6bW9kZWxtYXJrZXQuZGV2I2h1Yi1lZDI1NTE5In0..w7W0YSccuK8-PVvSzcZD_H6x_JhEzoKVxJ56fVsJ9_cijZsnXKYjd6Z-PPpIuqCke63qzFl03asw_MD8CpUYBA"
+   },
+   "score": 98,
+   "source": "https://modelmarket.dev"
+  },
+  {
+   "identifier": "urn:air:atlas.modelmarket.dev:atlas.products:atlas.fire.weather@v1",
+   "displayName": "atlas.fire.weather",
+   "type": "application/vnd.aimarket.capability+json",
+   "url": "https://modelmarket.dev/ard/v1/capability?product_id=atlas.products&capability_id=atlas.fire.weather%40v1&source_hub=https%3A%2F%2Fatlas.modelmarket.dev",
+   "version": "v1",
+   "digest": "sha256:c177a207b2ae2baa33481c48b1c181dad2634e34c9ad320efc0a154a0084d1a6",
+   "score": 98,
+   "source": "https://atlas.modelmarket.dev"
+  },
+  {
+   "identifier": "urn:air:iot.modelmarket.dev:gaia.gateway:gaia.spacewx.read@v1",
+   "displayName": "gaia.spacewx.read",
+   "type": "application/vnd.aimarket.capability+json",
+   "url": "https://modelmarket.dev/ard/v1/capability?product_id=gaia.gateway&capability_id=gaia.spacewx.read%40v1&source_hub=https%3A%2F%2Fiot.modelmarket.dev",
+   "version": "v1",
+   "digest": "sha256:093db463a138fee32653663c702797e9a55bccf42cb03ab6bd39cd43bfe63de3",
+   "score": 73,
+   "source": "https://iot.modelmarket.dev"
+  },
+  {
+   "identifier": "urn:air:atlas.modelmarket.dev:atlas.products:atlas.pv.irradiance.record@v1",
+   "displayName": "atlas.pv.irradiance.record",
+   "type": "application/vnd.aimarket.capability+json",
+   "url": "https://modelmarket.dev/ard/v1/capability?product_id=atlas.products&capability_id=atlas.pv.irradiance.record%40v1&source_hub=https%3A%2F%2Fatlas.modelmarket.dev",
+   "version": "v1",
+   "digest": "sha256:98d6ba7da8c8ed2f052fb784c3521c340b57384d39e7ca9beb31918d2d05fb5f",
+   "score": 72,
+   "source": "https://atlas.modelmarket.dev"
+  }
+ ],
+ "nextPageToken": "eyJvIjo1LCJxIjoiNzVkYmJiNmU5MWQxM2QxZiJ9"
+}

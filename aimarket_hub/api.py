@@ -134,6 +134,7 @@ from aimarket_hub.hub_routes import capital as _capital_routes
 from aimarket_hub.hub_routes import channels as _channels_routes
 from aimarket_hub.hub_routes import plugins as _plugins_routes
 from aimarket_hub.hub_routes import agents as _agents_routes
+from aimarket_hub.hub_routes import ard as _ard_routes
 from aimarket_hub.hub_routes import pages as _pages_routes
 from aimarket_hub.hub_routes import middleware as _middleware_routes
 from aimarket_hub.hub_routes import payments as _payments_routes
@@ -780,6 +781,15 @@ def create_app(
         hub_invoices=hub_invoices,
         hub_mandates=hub_mandates,
         search=search,
+        wellknown_router=wellknown_router,
+    )
+    # Agent Resource Discovery (IETF DAWN drafts): the catalogue in ARD formats, read-only.
+    _ard_routes.register(
+        app=app,
+        config=config,
+        db=db,
+        search=search,
+        signer=signer,
         wellknown_router=wellknown_router,
     )
     app.include_router(wellknown_router)
