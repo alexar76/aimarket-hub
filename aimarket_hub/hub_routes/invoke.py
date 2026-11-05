@@ -92,6 +92,9 @@ class _Call:
     forwarded_call: bool
     rate_key: str
     payer_wallet: str = ""  # the verified x402 payer, once there is one
+    # Another hub routed this call here (X-AIMarket-Routing-Hub). Its credits or channel are that hub's,
+    # not the buyer's, so they never name an owner for the operator's providers (provider_buyer_ref).
+    routed_by_hub: bool = False
 
 
 @dataclass
@@ -524,6 +527,7 @@ def _read_call(
         client_ip=client_ip,
         forwarded_call=forwarded_call,
         rate_key=rate_key,
+        routed_by_hub=bool((request.headers.get("x-aimarket-routing-hub") or "").strip()),
     )
 
 

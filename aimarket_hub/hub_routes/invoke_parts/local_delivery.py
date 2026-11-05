@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 import httpx
 
-from aimarket_hub import invoke_funding, oracle_paid_tier, provider_request_auth, subcontract
+from aimarket_hub import invoke_funding, oracle_paid_tier, provider_buyer_ref, provider_request_auth, subcontract
 from aimarket_hub.acex_storage import LedgerNotConfigured
 from aimarket_hub.models import InvocationStat
 from aimarket_hub.sandbox_trials import release_sandbox_trial, sandbox_demo_result, sandbox_stub_invoke_enabled
@@ -183,6 +183,12 @@ async def _local_call_provider(d: SimpleNamespace, call: _Call, local: _Local):
         target_host = (urlparse(resolve_invoke_url(invoke_url)).hostname or "").lower()
         if capability_token and target_host in set(invoke_gateway_hosts()):
             provider_headers["X-AIMarket-Internal-Token"] = capability_token
+            # Who the buyer is, as one stable pseudonym the operator's own provider can key
+            # the buyer's data by (Attested Memory owners). Same gate as the token, so a
+            # third-party seller never gets it; left out for anonymous and trial calls.
+            buyer_ref = provider_buyer_ref.buyer_ref(d.signer, call, local)
+            if buyer_ref:
+                provider_headers[provider_buyer_ref.HEADER] = buyer_ref
         # Signed with this hub's key, so a provider behind a price gate
         # (oracle_core.price_gate) can tell this hub admitted the call: the paywall or the
         # trial above has already run. Over the registered invoke_url, before any

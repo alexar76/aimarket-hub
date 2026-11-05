@@ -777,7 +777,7 @@ pytest tests/ -q --cov=aimarket_hub
   только для кошелька, который за него подписал ([`channels.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/channels.py))
 - **Мутация стейка — per-subject, слэшинг — только оператор** — общий токен не может ни зачислить
   чужой стейк, ни сжечь чужой bond ([`api.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/api.py))
-- **Отчёты об уязвимостях:** [SECURITY.md](https://github.com/alexar76/aimarket-hub/blob/main/SECURITY.md) → alexar76@rambler.ru
+- **Отчёты об уязвимостях:** [SECURITY.md](https://github.com/alexar76/aimarket-hub/blob/main/SECURITY.md) → qwezzy721@gmail.com
 
 ---
 

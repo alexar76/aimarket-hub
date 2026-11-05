@@ -708,7 +708,7 @@ pip install -e ".[dev]"
 - **残留风险 — 质押存款未绑定付款人。** 质押验证器回答的是「是否有人向平台付款？」，而不是「是否是*该*发布方付款？」，因此谁先提交匹配哈希谁入账。绑定需要质押账本尚不具备的 publisher→wallet 记录；通道存款已绑定（见下）。在此之前，将质押存款哈希视为 bearer 密钥，并在公开前提交
 - **一次性通道存款 + 付款人证明** — 已验证存款恰好资助一条通道，且仅属于为其签名的钱包（[`channels.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/channels.py)）
 - **质押变更按主体；罚没仅运营商** — 共享令牌既不能给陌生人的质押入账，也不能烧掉对手的 bond（[`api.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/api.py)）
-- **漏洞报告：** [SECURITY.md](https://github.com/alexar76/aimarket-hub/blob/main/SECURITY.md) → alexar76@rambler.ru
+- **漏洞报告：** [SECURITY.md](https://github.com/alexar76/aimarket-hub/blob/main/SECURITY.md) → qwezzy721@gmail.com
 
 ---
 

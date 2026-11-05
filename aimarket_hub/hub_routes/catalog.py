@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ipaddress
 import time
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter
 
@@ -19,6 +21,37 @@ from aimarket_hub.semantic_search import interpret_intent
 from aimarket_hub.signing import Signer
 from aimarket_hub.supply_security import SupplySecurity
 
+
+
+def published_invoke_url(capability: Any, hub_url: str) -> str | None:
+    """The address a buyer is shown for a capability in the public manifest.
+
+    A federated row has no stored address (the crawler never keeps a peer-supplied one): the address is this
+    hub. A local row normally carries its provider's own public URL. An operator gateway provider is different:
+    it lives on the hub's private network (a host in ``AIMARKET_INVOKE_HOST_GATEWAY``, a container name without
+    a dot, a loopback or private IP) and only this hub can reach it. Publishing that address told every reader
+    an internal hostname and offered them a URL they cannot call (the supplier review of 2026-11-04 found
+    ``http://aicom-diagnostics:8124/diagnose`` on modelmarket.dev). Buyers reach it through this hub, so the
+    hub's invoke endpoint is shown; routing still uses the stored address.
+    """
+    hub_invoke = f"{hub_url.rstrip('/')}/ai-market/v2/invoke"
+    stored = (getattr(capability, "invoke_url", "") or "").strip()
+    if (getattr(capability, "source_hub", "") or "local") != "local":
+        return stored or hub_invoke
+    if not stored:
+        return None
+    host = (urlparse(stored).hostname or "").lower()
+    if not host:
+        return hub_invoke
+    from aimarket_hub.outbound_http import invoke_gateway_hosts
+
+    if host in {h.lower() for h in invoke_gateway_hosts()} or host == "localhost" or "." not in host:
+        return hub_invoke
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return stored
+    return hub_invoke if (ip.is_private or ip.is_loopback or ip.is_link_local) else stored
 
 def register(
     *,
@@ -99,11 +132,9 @@ def register(
                 # hub — routed invokes go here with `source_hub` naming the peer, which
                 # the entry above already carries. Derived from our own configured
                 # hub_url, never from the peer.
-                "invoke_url": c.invoke_url or (
-                    f"{config.hub_url.rstrip('/')}/ai-market/v2/invoke"
-                    if (c.source_hub or "local") != "local"
-                    else None
-                ),
+                # An operator gateway provider's private address is shown as this hub's invoke
+                # endpoint: see published_invoke_url.
+                "invoke_url": published_invoke_url(c, config.hub_url),
                 # The key OUR OWN provider signs answers and delivery receipts with, so a hub
                 # that crawls us can count buyers' signed receipts for this seller
                 # (deliveries.py) — what `aimarket node` already publishes. Never repeated

@@ -770,7 +770,7 @@ Ajouter un plugin : créez un paquet sous [`../plugins/`](https://github.com/ale
   uniquement pour le portefeuille qui a signé pour lui ([`channels.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/channels.py))
 - **La mutation de stake est per-subject ; le slashing est réservé à l’opérateur** — un jeton partagé ne peut ni créditer
   le stake d’un inconnu ni brûler le bond d’un rival ([`api.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/api.py))
-- **Rapports de vulnérabilités :** [SECURITY.md](https://github.com/alexar76/aimarket-hub/blob/main/SECURITY.md) → alexar76@rambler.ru
+- **Rapports de vulnérabilités :** [SECURITY.md](https://github.com/alexar76/aimarket-hub/blob/main/SECURITY.md) → qwezzy721@gmail.com
 
 ---
 

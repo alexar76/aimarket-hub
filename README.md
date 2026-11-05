@@ -979,7 +979,7 @@ Add a plugin: create package under [`../plugins/`](https://github.com/alexar76/a
   only for the wallet that signed for it ([`channels.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/channels.py))
 - **Stake mutation is per-subject, slashing is operator-only** — a shared token can neither credit
   a stranger's stake nor burn a rival's bond ([`api.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/api.py))
-- **Vulnerability reports:** [SECURITY.md](https://github.com/alexar76/aimarket-hub/blob/main/SECURITY.md) → alexar76@rambler.ru
+- **Vulnerability reports:** [SECURITY.md](https://github.com/alexar76/aimarket-hub/blob/main/SECURITY.md) → qwezzy721@gmail.com
 
 ---
 

@@ -770,7 +770,7 @@ Añadir un plugin: crea un paquete bajo [`../plugins/`](https://github.com/alexa
   solo para la cartera que firmó por él ([`channels.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/channels.py))
 - **La mutación de stake es per-subject; el slashing es solo del operador** — un token compartido no puede acreditar
   el stake de un extraño ni quemar el bond de un rival ([`api.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/api.py))
-- **Informes de vulnerabilidades:** [SECURITY.md](https://github.com/alexar76/aimarket-hub/blob/main/SECURITY.md) → alexar76@rambler.ru
+- **Informes de vulnerabilidades:** [SECURITY.md](https://github.com/alexar76/aimarket-hub/blob/main/SECURITY.md) → qwezzy721@gmail.com
 
 ---
 
