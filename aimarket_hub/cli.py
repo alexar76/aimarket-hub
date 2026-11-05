@@ -11,7 +11,7 @@ Usage:
   aimarket crawl                     Run a federation crawl cycle
   aimarket search <query>            Search the federated catalog
   aimarket invoke <capability_id>    Invoke a capability
-  aimarket peers                     List known peer hubs
+  aimarket peers [--reset-catalogue-time URL]  List known peer hubs
   aimarket stats                     Show hub statistics
   aimarket trust <hub_url>           Show trust score for a hub
 """
@@ -190,7 +190,12 @@ def main(argv: list[str] | None = None) -> int:
     invoke_p.add_argument("--hub", default="local", help="Source hub")
 
     # peers
-    sub.add_parser("peers", help="List known peers")
+    peers_p = sub.add_parser("peers", help="List known peers")
+    peers_p.add_argument(
+        "--reset-catalogue-time", metavar="URL", default="",
+        help="Forget the newest catalogue time verified from this peer, so an older one is "
+             "accepted again (for a peer whose clock went backwards)",
+    )
 
     # stats
     sub.add_parser("stats", help="Show hub statistics")
@@ -237,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "invoke":
         return _cmd_invoke(args)
     elif args.command == "peers":
-        return _cmd_peers()
+        return _cmd_peers(getattr(args, "reset_catalogue_time", ""))
     elif args.command == "stats":
         return _cmd_stats()
     elif args.command == "trust":
@@ -1165,9 +1170,16 @@ def _cmd_invoke(args) -> int:
         return 1
 
 
-def _cmd_peers() -> int:
+def _cmd_peers(reset_catalogue_time: str = "") -> int:
     config = HubConfig()
     db = HubDatabase(config.db_path)
+    if reset_catalogue_time:
+        url = reset_catalogue_time.rstrip("/")
+        if db.clear_catalogue_watermark(url):
+            print(f"Catalogue time for {url} forgotten; the next verified catalogue sets it again.")
+            return 0
+        print(f"No catalogue time recorded for {url}.")
+        return 1
     peers = db.list_peers()
 
     print(f"\n{BOLD}Known Peers ({len(peers)}){RESET}\n")

@@ -546,9 +546,39 @@ class HubDatabase:
         # search and routing, each answering "Peer hub not found" when bought (found removing
         # a test hub from modelmarket.dev, 2026-10-12).
         self._conn.execute("DELETE FROM capabilities WHERE source_hub=?", (url,))
+        self._conn.execute("DELETE FROM peer_catalogue_watermarks WHERE url=?", (url,))
         cur = self._conn.execute("DELETE FROM peers WHERE url=?", (url,))
         self._conn.commit()
         return cur.rowcount > 0
+
+    # ── Catalogue watermarks (migration 066, discovery draft -04 §5) ──────────
+
+    def get_catalogue_watermark(self, url: str) -> dict | None:
+        """The newest verified catalogue time for a peer and the key it was verified under."""
+        row = self._conn.execute(
+            "SELECT url, public_key, generated_at, recorded_at "
+            "FROM peer_catalogue_watermarks WHERE url=?", (url,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def record_catalogue_watermark(self, url: str, *, public_key: str, generated_at: str) -> None:
+        """Store the value as given. Whether it is newer is the crawler's decision, since it
+        compares parsed times and not strings."""
+        self._conn.execute("""
+            INSERT INTO peer_catalogue_watermarks (url, public_key, generated_at, recorded_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(url) DO UPDATE SET
+                public_key=excluded.public_key,
+                generated_at=excluded.generated_at,
+                recorded_at=excluded.recorded_at
+        """, (url, public_key, generated_at[:64], _utc_now_iso()))
+        self._conn.commit()
+
+    def clear_catalogue_watermark(self, url: str) -> bool:
+        """Operator reset, for a peer whose clock went backwards (draft -04 §5)."""
+        cur = self._conn.execute("DELETE FROM peer_catalogue_watermarks WHERE url=?", (url,))
+        self._conn.commit()
+        return bool(getattr(cur, "rowcount", 0))
 
     def promote_pending_peer(self, url: str) -> bool:
         """Move a pending peer to active. Trust is granted separately, by

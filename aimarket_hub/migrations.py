@@ -1650,6 +1650,22 @@ _register(65, "065_channel_payout_claims", """
     DROP TABLE IF EXISTS channel_payout_claims;
 """)
 
+# 066: the newest `generated_at` this hub has verified from each peer, under which pinned key.
+# A crawl refuses a catalogue older than that (discovery draft -04 §5): without it, anyone who
+# kept an old, validly signed catalogue could serve it again within the max-age window and put
+# back an entry or a price the peer had withdrawn. Its own table, not a `peers` column, because
+# upsert_peer rewrites the whole row on every crawl.
+_register(66, "066_peer_catalogue_watermarks", """
+    CREATE TABLE IF NOT EXISTS peer_catalogue_watermarks (
+        url TEXT PRIMARY KEY,
+        public_key TEXT NOT NULL DEFAULT '',
+        generated_at TEXT NOT NULL DEFAULT '',
+        recorded_at TEXT NOT NULL DEFAULT ''
+    );
+""", """
+    DROP TABLE IF EXISTS peer_catalogue_watermarks;
+""")
+
 
 def channel_ledger_versions() -> list[int]:
     """Migration versions whose DDL touches a channel-ledger table.

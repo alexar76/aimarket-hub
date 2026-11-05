@@ -226,6 +226,20 @@ def _canonical_base_from_manifest_url(value: Any) -> str:
     return text[: -len(marker)].rstrip("/")
 
 
+def _parse_generated_at(raw: Any):
+    """A catalogue's `generated_at` as an aware UTC datetime, or None if absent or unparseable."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _safe_tool_endpoint(tool: Any, base_url: str) -> str:
     """`peer_tool_endpoint`, and only if the SSRF guard would let us call it."""
     url = peer_tool_endpoint(tool, base_url)
@@ -1046,6 +1060,11 @@ class Crawler:
                 )
                 return {"capabilities_count": 0, "new_peer_urls": self._extract_peer_urls(wk, include_observed=signed_gossip)}
 
+            # Rollback: older than a catalogue already verified from this peer. Treated like
+            # a failed retrieval, so the stored entries stay and nothing is pruned.
+            if self._catalogue_rolled_back(base_url, pinned_key, manifest):
+                return {"capabilities_count": 0, "new_peer_urls": self._extract_peer_urls(wk, include_observed=signed_gossip)}
+
             # Index capabilities
             indexed = self._index_manifest_capabilities(manifest, base_url, hub_name, evidence={
                 "kind": "signed_catalogue",
@@ -1057,6 +1076,7 @@ class Crawler:
             })
             self._warn_on_index_shortfall(manifest, base_url, indexed)
             self._prune_unlisted(base_url)
+            self._record_catalogue_time(base_url, pinned_key, manifest)
 
         except Exception as exc:
             logger.warning("Failed to fetch/parse manifest at %s: %s", manifest_url, exc)
@@ -1132,6 +1152,8 @@ class Crawler:
                 return 0
             if self._manifest_too_stale(manifest):
                 return 0
+            if self._catalogue_rolled_back(base_url, pinned_key, manifest):
+                return 0
             # A manifest carries `tools`, not `capabilities` — `capabilities_count` is a
             # number beside it, and reading the wrong key previewed zero rows against every
             # real peer while every test passed, because the tests wrote preview rows directly.
@@ -1140,7 +1162,10 @@ class Crawler:
                 return 0
             limit = max(0, int(self.config.federation_preview_max_caps))
             rows = [c for c in caps[:limit] if isinstance(c, dict)]
-            return self.db.replace_preview_capabilities(base_url, rows)
+            written = self.db.replace_preview_capabilities(base_url, rows)
+            # Recorded here too, so a peer approved later keeps the same floor.
+            self._record_catalogue_time(base_url, pinned_key, manifest)
+            return written
         except Exception as exc:  # pragma: no cover - defensive
             # WARNING, not INFO. This branch is how a preview turns into a permanent zero
             # on the operator's screen, and at INFO the container swallowed it: the
@@ -1351,18 +1376,72 @@ class Crawler:
         max_age = getattr(self.config, "manifest_max_age_s", 0) or 0
         if max_age <= 0:
             return False
-        raw = manifest.get("generated_at")
-        if not isinstance(raw, str) or not raw:
+        dt = _parse_generated_at(manifest.get("generated_at"))
+        if dt is None:
             return False
         from datetime import datetime, timezone
-        try:
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
-            return False
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
         age = (datetime.now(timezone.utc) - dt).total_seconds()
         return age > max_age or age < -3600
+
+    def _catalogue_rolled_back(
+        self, base_url: str, pinned_key: str, manifest: dict[str, Any]
+    ) -> bool:
+        """True if this verified catalogue is OLDER than the newest one already verified
+        from the same peer under the same pinned key (discovery draft -04 §5, first check).
+
+        The max-age check alone left a week-long window: anyone who kept an older catalogue
+        that the peer signed could serve it again and put back an entry or a price the peer
+        had since withdrawn. This compares two times the peer itself signed, so it does not
+        depend on this hub's clock. An equal time is the same catalogue served again and
+        passes. A different pinned key starts over, since a re-pin is an operator decision.
+
+        If the peer's clock goes backwards, its catalogues are refused until its clock passes
+        the recorded time again; the operator can clear the record with
+        `aimarket peers --reset-catalogue-time <url>`.
+        """
+        mark = self.db.get_catalogue_watermark(base_url)
+        if not mark or (mark.get("public_key") or "") != (pinned_key or ""):
+            return False
+        newest = _parse_generated_at(mark.get("generated_at"))
+        if newest is None:
+            return False
+        current = _parse_generated_at(manifest.get("generated_at"))
+        # A peer that has dated its catalogues cannot go back to undated ones: an undated
+        # catalogue cannot be shown to be newer, so it is refused like an older one.
+        if current is not None and current >= newest:
+            return False
+        logger.warning(
+            "Catalogue from %s refused: generated_at %s is older than %s, the newest one "
+            "already verified under the same key. If the peer's clock went backwards, an "
+            "operator can reset the record: aimarket peers --reset-catalogue-time %s",
+            base_url, manifest.get("generated_at"), mark.get("generated_at"), base_url,
+        )
+        return True
+
+    def _record_catalogue_time(
+        self, base_url: str, pinned_key: str, manifest: dict[str, Any]
+    ) -> None:
+        """Remember the newest verified `generated_at` for this peer and key."""
+        raw = manifest.get("generated_at")
+        current = _parse_generated_at(raw)
+        if current is None or not pinned_key:
+            return
+        # Never a time far ahead of this hub's clock. `_manifest_too_stale` already refuses
+        # those, but not when the max age is switched off, and one catalogue dated years ahead
+        # would then lock the peer out until an operator noticed.
+        from datetime import datetime, timedelta, timezone
+        if current > datetime.now(timezone.utc) + timedelta(hours=1):
+            return
+        try:
+            mark = self.db.get_catalogue_watermark(base_url)
+            if mark and (mark.get("public_key") or "") == pinned_key:
+                newest = _parse_generated_at(mark.get("generated_at"))
+                if newest is not None and current <= newest:
+                    return
+            self.db.record_catalogue_watermark(base_url, public_key=pinned_key, generated_at=raw)
+        except Exception as exc:  # pragma: no cover - defensive
+            # The catalogue is already indexed; losing the record only weakens the next check.
+            logger.warning("Could not record catalogue time for %s: %s", base_url, exc)
 
     def _extract_peer_urls(
         self, well_known: dict[str, Any], *, include_observed: bool = False,
