@@ -146,7 +146,7 @@ def test_odd_shapes_get_json_rpc_errors_not_a_500(monkeypatch, tmp_path, message
 
 # --- direct tools ---------------------------------------------------------------------------
 
-def _seed_direct(monkeypatch, tmp_path):
+def _seed_direct(monkeypatch, tmp_path, price=0.001):
     """A hub whose catalogue carries weather_now's capability on a live peer."""
     from aimarket_hub.models import Peer
     import tests.test_mcp_gateway as base
@@ -160,7 +160,7 @@ def _seed_direct(monkeypatch, tmp_path):
             self.upsert_capability(Capability(
                 capability_id="gaia.weather.read@v1", product_id="gaia.gateway",
                 name="gaia.weather.read", description="Current weather at a place.",
-                price_per_call_usd=0.001, source_hub="https://iot.modelmarket.dev",
+                price_per_call_usd=price, source_hub="https://iot.modelmarket.dev",
                 source_hub_name="GAIA", trust_score=0.5,
             ))
 
@@ -178,10 +178,57 @@ def test_direct_tools_are_listed_only_when_routable(monkeypatch, tmp_path):
         info = client.get("/mcp").json()
     assert "weather_now" in tools
     assert {"air_quality_now", "nearby_sensors", "fair_random"}.isdisjoint(tools)
-    assert "$0.001 per call" in tools["weather_now"]["description"]
+    assert "Paid per call; market_search shows the current price." in tools["weather_now"]["description"]
+    assert "$" not in tools["weather_now"]["description"]
     assert set(tools["weather_now"]["inputSchema"]["properties"]) == {"latitude", "longitude", "city"}
     assert info["direct_tools"] == ["weather_now"]
     assert set(info["tools"]) == {"market_search", "market_invoke", "pipeline_prepare", "pipeline_invoke", "pipeline_status", "pipeline_refund_prepare", "pipeline_refund", "pipeline_refund_status"}
+
+
+def test_a_price_or_trial_change_leaves_the_tool_definitions_alone(monkeypatch, tmp_path):
+    """Clients that pin tool definitions (WARDEN, ARGUS, mcp-scan) treat any change as a possible
+    rug pull and stop using the server until someone re-approves it. The amounts are settings,
+    so they stay out of the definitions; market_search still shows the current price."""
+    import aimarket_hub.sandbox_trials as trials
+
+    def listed(price, allowance):
+        # max_per_visitor() keeps the value it read at import, so the setting is replaced, not the env.
+        monkeypatch.setattr(trials, "max_per_visitor", lambda: allowance)
+        _seed_direct(monkeypatch, tmp_path, price=price)
+        with _hub_client(monkeypatch, tmp_path) as client:
+            tools = _sse(_rpc(client, "tools/list"))["result"]["tools"]
+            found = _call(client, "market_search", {"query": "weather"})["result"]
+        return tools, json.dumps(found)
+
+    before, search_before = listed(0.001, 5)
+    after_price, search_after = listed(0.05, 5)
+    after_trial, _ = listed(0.001, 9)
+    assert before == after_price == after_trial
+    assert "0.001" in search_before and "0.05" in search_after
+
+
+def test_direct_tool_text_follows_free_and_trial_settings():
+    """The two settings the text does follow: a free tool says so, and the trial sentence
+    appears only while the trial runs."""
+    import aimarket_hub.mcp_gateway as gateway
+    import aimarket_hub.sandbox_trials as trials
+
+    class Cap:
+        def __init__(self, price):
+            self.price_per_call_usd = price
+
+    spec = gateway._DIRECT_BY_NAME["weather_now"]
+    assert gateway._direct_tool_definition(spec, Cap(0))["description"].endswith(" Free.")
+    original = trials.sandbox_enabled
+    try:
+        trials.sandbox_enabled = lambda: True
+        on = gateway._direct_tool_definition(spec, Cap(0.001))["description"]
+        trials.sandbox_enabled = lambda: False
+        off = gateway._direct_tool_definition(spec, Cap(0.001))["description"]
+    finally:
+        trials.sandbox_enabled = original
+    assert on.endswith("market_search shows the current price. The first few priced calls per caller are free.")
+    assert off.endswith("market_search shows the current price.")
 
 
 def test_a_direct_tool_calls_its_capability_through_the_trial(monkeypatch, tmp_path, upstream_body):
@@ -455,7 +502,7 @@ def test_x402_check_is_a_direct_tool_and_calls_the_hearth_agent(monkeypatch, tmp
             "validBefore": "1893456000", "nonce": "0x" + "33" * 32}
     with _hub_client(monkeypatch, tmp_path) as client:
         tools = {t["name"]: t for t in _sse(_rpc(client, "tools/list"))["result"]["tools"]}
-        assert "x402_check" in tools and "$0.003 per call" in tools["x402_check"]["description"]
+        assert "x402_check" in tools and "Paid per call" in tools["x402_check"]["description"]
         assert {"x_payment", "authorization", "signature", "network"} <= set(tools["x402_check"]["inputSchema"]["properties"])
         result = _call(client, "x402_check", {"authorization": auth, "signature": "0x" + "ab" * 65,
                                               "network": "base", "extra": "dropped"},

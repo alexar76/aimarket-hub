@@ -1,7 +1,7 @@
 {
   "serverInfo": {
     "name": "aimarket-hub-mcp",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "title": "AIMarket Hub MCP",
     "description": "Hosted marketplace MCP at https://modelmarket.dev/mcp. Search, invoke, prepare and resume capability pipelines. No install for free graphs.",
     "documentationUrl": "https://github.com/alexar76/aicom/blob/main/docs/hosted-mcp-endpoint.md"

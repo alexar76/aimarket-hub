@@ -244,6 +244,7 @@ def test_packaged_server_card_matches_live_tools():
     assert packaged["tools"] == live["tools"]
     assert packaged["authentication"]["required"] is False
     assert packaged["serverInfo"]["name"] == live["serverInfo"]["name"]
+    assert packaged["serverInfo"]["version"] == live["serverInfo"]["version"]
     assert {t["name"] for t in packaged["tools"]} == (
         {t["name"] for t in TOOLS} | {s["name"] for s in DIRECT_TOOLS}
     )
