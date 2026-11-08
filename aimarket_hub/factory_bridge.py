@@ -74,6 +74,14 @@ def import_factory_products(
             if not has_execution_path(invoke_url, prompt):
                 skipped += 1
                 continue
+            previous = db.get_capability(cap["product_id"], cap["capability_id"], "local")
+            evidence = {}
+            if (previous and previous.invoke_url == invoke_url
+                    and isinstance(previous.catalogue_evidence, dict)
+                    and previous.catalogue_evidence.get("operator_invoke_url") == invoke_url):
+                # Preserve only the hub's existing exact-URL grant. Factory product
+                # files cannot create a grant or extend it to a different endpoint.
+                evidence["operator_invoke_url"] = invoke_url
             db.upsert_capability(Capability(
                 capability_id=cap["capability_id"],
                 product_id=cap["product_id"],
@@ -90,6 +98,7 @@ def import_factory_products(
                 agent=cap.get("agent", ""),
                 prompt_template=cap.get("prompt_template", ""),
                 invoke_url=invoke_url,
+                catalogue_evidence=evidence,
                 is_demo=bool(cap.get("demo") or cap.get("is_demo")),
             ))
             count += 1

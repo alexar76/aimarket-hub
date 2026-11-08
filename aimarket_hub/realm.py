@@ -37,6 +37,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+from pathlib import Path
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -273,13 +274,16 @@ def assert_seeds_sealed(seeds: list[str]) -> None:
 # and every bubble invoke of them went out to histor.modelmarket.dev. `check_seed` was never
 # consulted, because nothing on that path is a seed.
 
-def peer_inside(url: str) -> bool:
-    """May this hub federate with ``url``? Always true outside UNI.
+def peer_inside(url: str, *, db_path: str | Path | None = None) -> bool:
+    """May this hub federate with ``url`` after operator rejections and the realm seal?
 
     Inside UNI the answer is the same one `check_seed` gives — a host the bubble itself
     answers on — but as a predicate, for the doors that must refuse quietly per request
     rather than refuse to start.
     """
+    from aimarket_hub.peer_rejections import peer_is_rejected
+    if peer_is_rejected(url, db_path=db_path):
+        return False
     if not is_uni():
         return True
     host = _host_of(url)
@@ -298,7 +302,7 @@ def evict_outside_peers(db: object) -> list[str]:
     evicted: list[str] = []
     for peer in list(db.list_peers()):
         url = str(getattr(peer, "url", "") or "")
-        if not url or peer_inside(url):
+        if not url or peer_inside(url, db_path=getattr(db, "db_path", None)):
             continue
         for cap in db.list_capabilities(source_hub=url, limit=10000):
             db.delete_capability(cap.capability_id, source_hub=url)

@@ -122,6 +122,16 @@ def parse_config(obj: Any) -> dict[str, str]:
             "config_id": config_id}
 
 
+async def parse_config_async(obj: Any) -> dict[str, str]:
+    """Validate caller-chosen DNS off-loop without an unbounded executor queue."""
+    from aimarket_hub.dns_limits import DNSCheckBusy, DNSCheckTimeout, bounded_dns_call
+
+    try:
+        return await bounded_dns_call(parse_config, obj)
+    except (DNSCheckBusy, DNSCheckTimeout) as exc:
+        raise PushConfigError("webhook URL validation is busy or timed out; retry later") from exc
+
+
 def render(row: dict[str, Any]) -> dict[str, Any]:
     """The ``TaskPushNotificationConfig`` as the hub returns it. Credentials are never sent
     back: the client has them, and an answer is one more place for them to leak from."""

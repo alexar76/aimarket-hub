@@ -17,7 +17,7 @@ name = "aimarket-hub"
 #        verifier, and the mandates/subcontracting audit fixes (migrations 036-038).
 # 3.8.0: credit accounts bought with USDC (topup.py, migration 041) and a failed A2A Task that
 #        keeps the bill of materials its subcontractors were paid for.
-version = "3.18.0"
+version = "3.19.0"
 description = "AI Market Federation Hub — crawl, index, search, and route AI capabilities across the network"
 license = "Apache-2.0"
 readme = "README.md"
@@ -34,10 +34,10 @@ classifiers = [
 ]
 dependencies = [
     "httpx>=0.28",
-    "fastapi>=0.115",
+    "fastapi>=0.162.0",
     "uvicorn>=0.34",
     "pydantic>=2.10",
-    "cryptography>=44",
+    "cryptography>=50.0.2",
     "jsonschema>=4.23",
     "prometheus_client>=0.21",
     # Mandates verify owner-signed VCs with the AWR/2 reference implementation (our own

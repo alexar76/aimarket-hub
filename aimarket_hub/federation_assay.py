@@ -31,6 +31,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from aimarket_hub import crawler as _crawler
+from aimarket_hub.federation_urls import url_has_public_syntax as _url_has_public_syntax
+from aimarket_hub.assay_limits import limit_assay_concurrency
 from aimarket_hub.access_policy import OPERATOR_GATED, capability_access_mode
 from aimarket_hub.config import OPENROUTER_CHAT_COMPLETIONS, HubConfig
 from aimarket_hub.database import HubDatabase
@@ -314,7 +316,14 @@ def analyze_sandbox_output(payload: dict[str, Any], tool: dict[str, Any]) -> tup
     if isinstance(schema, dict) and schema.get("type") and result is not None:
         try:
             import jsonschema
-            jsonschema.validate(instance=result, schema=schema)
+            from referencing import Registry
+
+            # The peer controls this schema. jsonschema.validate's default
+            # resolver may GET an arbitrary remote $ref, outside our HTTP guard.
+            # An empty registry permits embedded definitions and never retrieval.
+            validator = jsonschema.validators.validator_for(schema)
+            validator.check_schema(schema)
+            validator(schema, registry=Registry()).validate(result)
         except Exception as exc:
             return False, f"result failed declared output_schema: {exc}"[:400]
     return True, ""
@@ -543,7 +552,7 @@ def _pick_priced_tools(tools: list[Any], limit: int = MAX_SANDBOX_CANDIDATES) ->
 def _direct_endpoint(tool: Any, base: str) -> str:
     """The tool's own URL on the peer when it is sold there (see peer_tool_endpoint), or ""."""
     url = peer_tool_endpoint(tool, base)
-    return url if url and _crawler._url_is_safe(url) else ""
+    return url if url and _url_has_public_syntax(url) else ""
 
 
 def _pick_direct_tools(tools: list[Any], base: str, limit: int = MAX_SANDBOX_CANDIDATES) -> list[dict[str, Any]]:
@@ -800,6 +809,7 @@ def _manifest_is_stale(manifest: dict[str, Any], max_age_s: int) -> bool:
     return age > max_age_s or age < -3600
 
 
+@limit_assay_concurrency
 async def run_assay(
     url: str,
     *,
@@ -856,7 +866,7 @@ async def run_assay(
             "use AIMARKET_FEDERATION_JUDGE_URL for veto-on-sandbox-evidence"
         )
 
-    url_ok = bool(base) and _crawler._url_is_safe(base) and _crawler._url_is_safe(
+    url_ok = bool(base) and _url_has_public_syntax(base) and _url_has_public_syntax(
         f"{base}/.well-known/ai-market.json"
     )
     _add(checks, "url_public", url_ok, "" if url_ok else "rejected by the SSRF / public-URL guard")
@@ -958,7 +968,7 @@ async def run_assay(
             manifest_url = str(
                 well_known.get("manifest_url") or f"{base}/ai-market/manifest"
             ).strip()
-            manifest_url_ok = _crawler._url_is_safe(manifest_url) and same_origin(base, manifest_url)
+            manifest_url_ok = _url_has_public_syntax(manifest_url) and same_origin(base, manifest_url)
             if not manifest_url_ok:
                 _add(checks, "manifest_schema", False, "manifest URL is unsafe or off-origin")
                 _add(checks, "manifest_signed", False, "not fetched")
@@ -995,7 +1005,7 @@ async def run_assay(
             # or unsafe: a peer does not get to redirect its own sandbox probe elsewhere.
             endpoints = [
                 url for url in invoke_endpoint_candidates(base, well_known)
-                if same_origin(base, url) and _crawler._url_is_safe(url)
+                if same_origin(base, url) and _url_has_public_syntax(url)
             ]
             invoke_url = endpoints[0] if endpoints else _invoke_endpoint(base, well_known)
             origin_ok = bool(endpoints)

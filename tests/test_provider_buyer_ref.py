@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from tests.test_capability_internal_token import CAP_TOKEN, _account, _hub
+from tests.test_capability_internal_token import ADMIN_HEADERS, CAP_TOKEN, _account, _hub
 
 from aimarket_hub import provider_buyer_ref
 from aimarket_hub.signing import Signer
@@ -106,9 +106,10 @@ def _register(client, product_id: str, capability_id: str, invoke_url: str) -> N
     seller = client.post("/ai-market/v2/accounts", json={"label": product_id}).json()
     r = client.post(
         "/ai-market/v2/supply/register",
-        headers={"X-API-Key": seller["api_key"]},
+        headers=ADMIN_HEADERS,
         json={
             "product_id": product_id, "capability_id": capability_id, "name": "n",
+            "publisher_id": seller["account_id"],
             "description": "d", "invoke_url": invoke_url, "price_per_call_usd": 0.001,
             "input_schema": {"type": "object"}, "output_schema": {"type": "object"},
         },

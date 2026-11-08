@@ -156,6 +156,9 @@ async def _local_call_provider(d: SimpleNamespace, call: _Call, local: _Local):
             resolve_invoke_url,
             safe_post,
         )
+        from aimarket_hub.publish import private_invoke_authorized
+
+        allow_private = private_invoke_authorized(cap)
 
         provider_headers = {
             # A reference, never the id: see _provider_channel_ref.
@@ -180,8 +183,9 @@ async def _local_call_provider(d: SimpleNamespace, call: _Call, local: _Local):
         # localhost→gateway remaps still get the token. Never forward
         # to federated / public URLs.
         capability_token = os.environ.get("AIMARKET_CAPABILITY_TOKEN", "").strip()
-        target_host = (urlparse(resolve_invoke_url(invoke_url)).hostname or "").lower()
-        if capability_token and target_host in set(invoke_gateway_hosts()):
+        transport_url = resolve_invoke_url(invoke_url) if allow_private else invoke_url
+        target_host = (urlparse(transport_url).hostname or "").lower()
+        if allow_private and capability_token and target_host in set(invoke_gateway_hosts()):
             provider_headers["X-AIMarket-Internal-Token"] = capability_token
             # Who the buyer is, as one stable pseudonym the operator's own provider can key
             # the buyer's data by (Attested Memory owners). Same gate as the token, so a
@@ -211,7 +215,7 @@ async def _local_call_provider(d: SimpleNamespace, call: _Call, local: _Local):
                 "capability_id": body.capability_id,
             },
             headers=provider_headers,
-            invoke=True,
+            invoke=allow_private,
             oracle_paid=oracle_paid_tier.funded(
                 price=local.price, sandbox=sandbox_mode, reserved=local.reserved,
                 hold_rail=local.hold_rail, x402_accepted=local.x402_accepted,

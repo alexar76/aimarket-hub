@@ -26,6 +26,7 @@ on the channel; it never touches the request it reports on.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -49,6 +50,7 @@ MAX_CHANNELS_PER_ACCOUNT = 8
 DELIVERY_TIMEOUT_S = 10.0
 RETRY_DELAYS_S = (2.0, 10.0)
 MAX_REPLY_BYTES = 64 * 1024
+MAX_PENDING_DELIVERIES = 2048
 TELEGRAM_API = "https://api.telegram.org"
 SLACK_HOOKS = ("https://hooks.slack.com/services/", "https://hooks.slack.com/triggers/")
 
@@ -148,6 +150,16 @@ def parse_channel(obj: Any) -> tuple[str, dict[str, str]]:
     url = _safe_https(obj.get("url"), "url")
     secret = _printable(obj.get("secret") or "", "secret", limit=256, required=False)
     return kind, {"url": url, "secret": secret}
+
+
+async def parse_channel_async(obj: Any) -> tuple[str, dict[str, str]]:
+    """Resolve an owner's destination off-loop with bounded DNS capacity/deadline."""
+    from aimarket_hub.dns_limits import DNSCheckBusy, DNSCheckTimeout, bounded_dns_call
+
+    try:
+        return await bounded_dns_call(parse_channel, obj)
+    except (DNSCheckBusy, DNSCheckTimeout) as exc:
+        raise NotifyConfigError("notification URL validation is busy or timed out; retry later") from exc
 
 
 def public(row: dict[str, Any]) -> dict[str, Any]:
@@ -309,20 +321,16 @@ PostCallable = Callable[[str, str, dict[str, str], bytes], tuple[int, str]]
 def _http(method: str, url: str, headers: dict[str, str], body: bytes) -> tuple[int, str]:
     """One request to a destination an owner chose: validated, pinned against DNS rebinding,
     no redirects, a short timeout, a capped reply."""
-    import httpx
-
     from aimarket_hub import outbound_http
 
-    target, pin_headers, ext = outbound_http.prepare_safe_request(url)
-    with httpx.Client(timeout=DELIVERY_TIMEOUT_S, follow_redirects=False) as client:
-        with client.stream(method, target, headers={**headers, **pin_headers}, content=body,
-                           extensions=ext or None) as response:
-            chunks = bytearray()
-            for chunk in response.iter_bytes():
-                chunks.extend(chunk)
-                if len(chunks) > MAX_REPLY_BYTES:
-                    break
-            return response.status_code, bytes(chunks[:MAX_REPLY_BYTES]).decode("utf-8", "replace")
+    # Called only by notification/test-delivery workers. The common async transport
+    # bounds DNS, total time, wire bytes and decompression before allocating a reply.
+    # Pass exact bytes: webhook HMACs commit to this serialization.
+    status, reply, _ = asyncio.run(outbound_http.safe_request_capped(
+        method, url, content=body, headers=headers,
+        timeout=DELIVERY_TIMEOUT_S, max_bytes=MAX_REPLY_BYTES,
+    ))
+    return status, reply.decode("utf-8", "replace")
 
 
 class OwnerNotifier:
@@ -360,9 +368,15 @@ class OwnerNotifier:
             logger.warning("owner notify: reading channels of %s failed: %s", account_id, exc)
             return
         for channel in channels:
-            future = self._pool.submit(self._deliver, channel, event, approval)
             with self._lock:
-                self._futures = [f for f in self._futures if not f.done()] + [future]
+                self._futures = [f for f in self._futures if not f.done()]
+                if len(self._futures) >= MAX_PENDING_DELIVERIES:
+                    # ThreadPoolExecutor's submission queue is otherwise unbounded.
+                    # The approval is durable; a notification must not exhaust memory.
+                    logger.warning("owner notify: delivery queue full; dropped channel %s",
+                                   channel.get("channel_id"))
+                    continue
+                self._futures.append(self._pool.submit(self._deliver, channel, event, approval))
 
     def drain(self, timeout: float = 30.0) -> None:
         """Wait for deliveries in flight (tests, and a clean shutdown)."""

@@ -12,24 +12,16 @@ _SAFE_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 _CAP_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*@[vV]\d+$")
 
 
-def _invoke_url_allowed(url: str) -> bool:
+def _invoke_url_allowed(url: str, *, allow_local: bool = True) -> bool:
     """May this hub list a capability served at ``url``?
 
-    Two gates decide whether a private address is reachable, and they used to disagree: the
-    INVOKE path honours ``AIMARKET_INVOKE_HOST_GATEWAY`` (the operator naming one private
-    host their hub may call — a docker bridge address, typically), while this PUBLISH gate
-    knew only about loopback. So a hub could be configured to invoke an address it was
-    forbidden to publish, and the operator's own provider was unlistable for a reason the
-    error message did not mention. Whatever the operator has already allowed the hub to
-    call, it may also list — the allowance is one decision, not two.
-
-    This matters most inside a sealed bubble, where there is no public https endpoint at all
-    because there is no public anything, but it is not bubble-specific: a self-hosted hub
-    with its provider on the docker gateway hits exactly the same wall.
+    The operator's explicit local configuration is consulted only after the
+    authenticated caller has been granted operator authority. Community publishers
+    always pass the public-network guard, even on a hub with private providers.
     """
     from aimarket_hub.crawler import _url_is_safe
 
-    if os.environ.get("AIMARKET_ALLOW_LOCAL_PUBLISH", "").strip() == "1":
+    if allow_local and os.environ.get("AIMARKET_ALLOW_LOCAL_PUBLISH", "").strip() == "1":
         low = url.lower()
         if low.startswith(("http://127.", "http://localhost", "http://[::1]")):
             return True
@@ -43,8 +35,22 @@ def _invoke_url_allowed(url: str) -> bool:
     return _url_is_safe(url)
 
 
-def validate_manifest(data: dict[str, Any]) -> Capability:
-    """Parse and validate a developer capability manifest."""
+def private_invoke_authorized(cap: Capability) -> bool:
+    """Private provider access belongs to operator-managed local listings only.
+
+    The exact-URL grant is written by the authenticated supply route, never read
+    from a submitted manifest. A stored publisher name does not prove how a
+    legacy row was authenticated. Unmarked rows use public transport even when
+    a global gateway exception is configured.
+    """
+    if cap.source_hub != "local" or not cap.invoke_url:
+        return False
+    evidence = cap.catalogue_evidence
+    return bool(isinstance(evidence, dict) and evidence.get("operator_invoke_url") == cap.invoke_url)
+
+
+def validate_manifest(data: dict[str, Any], *, allow_local: bool = True) -> Capability:
+    """Parse a manifest; HTTP callers must supply their authenticated local authority."""
     product_id = str(data.get("product_id", "")).strip()
     capability_id = str(data.get("capability_id", "")).strip()
     name = str(data.get("name", "")).strip() or capability_id.split("@")[0]
@@ -60,10 +66,10 @@ def validate_manifest(data: dict[str, Any]) -> Capability:
     invoke_url = str(data.get("invoke_url", "")).strip()
     if not invoke_url.startswith(("http://", "https://")):
         raise ValueError("invoke_url must be http(s) and reachable by the hub")
-    if not _invoke_url_allowed(invoke_url):
+    if not _invoke_url_allowed(invoke_url, allow_local=allow_local):
         raise ValueError(
-            "invoke_url must be a public https endpoint "
-            "(or set AIMARKET_ALLOW_LOCAL_PUBLISH=1 for localhost dev)"
+            "invoke_url must be a public http(s) endpoint; "
+            "private providers require operator authorization and local configuration"
         )
 
     raw_price = data.get("price_per_call_usd", 0.01)

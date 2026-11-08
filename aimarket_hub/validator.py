@@ -66,12 +66,18 @@ def validate_receipt(data: dict[str, Any]) -> list[str]:
 
 
 def _validate(schema: dict[str, Any], data: dict[str, Any]) -> list[str]:
+    from referencing import Registry
+    from referencing.exceptions import Unresolvable
+
     errors: list[str] = []
     validator_cls = jsonschema.validators.validator_for(schema)
-    # Custom resolver to not fetch $ref from network
-    resolver = jsonschema.RefResolver.from_schema(schema)
-    for err in validator_cls(schema, resolver=resolver).iter_errors(data):
-        errors.append(err.message)
+    # RefResolver.from_schema alone still permits remote retrieval. All schemas
+    # used here must carry their own definitions; validation is an offline task.
+    try:
+        for err in validator_cls(schema, registry=Registry()).iter_errors(data):
+            errors.append(err.message)
+    except Unresolvable:
+        errors.append("schema reference is not embedded")
     return errors
 
 

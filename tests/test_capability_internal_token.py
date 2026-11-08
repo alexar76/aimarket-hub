@@ -76,9 +76,10 @@ def test_internal_token_sent_only_to_gateway_hosts(monkeypatch, tmp_path):
         assert (
             client.post(
                 "/ai-market/v2/supply/register",
-                headers={"X-API-Key": seller["api_key"]},
+                headers=ADMIN_HEADERS,
                 json={
                     "product_id": "kova-network",
+                    "publisher_id": seller["account_id"],
                     "capability_id": "kova.network.status@v1",
                     "name": "status",
                     "description": "network",

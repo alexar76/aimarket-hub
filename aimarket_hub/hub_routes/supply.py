@@ -228,6 +228,7 @@ def register(
         centrally can keep using AIMARKET_ADMIN_TOKEN for any publisher_id.
         """
         from aimarket_hub.publish import validate_manifest
+        from aimarket_hub.dns_limits import bounded_dns_call, DNSCheckTimeout
         from aimarket_hub.supply_security import manifest_publisher_id
 
         # Resolved with the SAME helper validate_publish uses, and named before the auth
@@ -241,6 +242,7 @@ def register(
                 detail="publisher_id is required (wallet address or stable publisher slug)",
             )
         if credit_account:
+            granting_role = "credit-account"
             # Self-serve publishing: the key authenticates exactly one publisher, so there
             # is no shared token that could name somebody else's id.
             if publisher_id != credit_account:
@@ -250,9 +252,16 @@ def register(
                 )
             body = {**body, "publisher_id": publisher_id}
         else:
-            _require_subject_credential(authorization, publisher_id)
+            granting_role = _require_subject_credential(authorization, publisher_id)
+        allow_local = granting_role == "admin" or (
+            granting_role == "publisher" and publisher_id in supply_security.policy.operator_publishers
+        )
         try:
-            cap = validate_manifest(body)
+            cap = await bounded_dns_call(validate_manifest, body, allow_local=allow_local)
+            if allow_local:
+                # Hub-owned authority, bound to this exact URL. The manifest parser
+                # never copies caller-supplied catalogue_evidence into the listing.
+                cap.catalogue_evidence = {"operator_invoke_url": cap.invoke_url}
             publisher_id, pubkey = supply_security.validate_publish(body)
             cap.publisher_id = publisher_id
             cap.provider_pubkey = pubkey
@@ -278,6 +287,8 @@ def register(
             trust = supply_security.after_publish(cap, publisher_id)
         except HTTPException:
             raise
+        except DNSCheckTimeout as exc:
+            raise HTTPException(status_code=400, detail="invoke_url validation deadline exceeded") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {

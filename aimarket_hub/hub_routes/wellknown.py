@@ -100,7 +100,7 @@ def register(
 
             if db.get_peer(url) is not None:
                 return
-            if not realm.peer_inside(url):
+            if not realm.peer_inside(url, db_path=db.db_path):
                 return
             # Admission is different: a pending peer is a URL the crawler will later
             # fetch, so it passes the same DNS-resolving SSRF check as a seed. Done

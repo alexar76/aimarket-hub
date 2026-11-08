@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import httpx
 
 from aimarket_hub.config import HubConfig
+from aimarket_hub.federation_urls import url_has_public_syntax as _url_has_public_syntax
 from aimarket_hub.federation_transport import peer_tool_endpoint
 from aimarket_hub.database import HubDatabase
 from aimarket_hub import contracts_declaration, realm
@@ -243,7 +244,7 @@ def _parse_generated_at(raw: Any):
 def _safe_tool_endpoint(tool: Any, base_url: str) -> str:
     """`peer_tool_endpoint`, and only if the SSRF guard would let us call it."""
     url = peer_tool_endpoint(tool, base_url)
-    return url if url and _url_is_safe(url) else ""
+    return url if url and _url_has_public_syntax(url) else ""
 
 
 def _norm_hub(value: Any) -> str:
@@ -297,7 +298,7 @@ def _self_description(wk: dict[str, Any], base_url: str) -> dict[str, str]:
             )
         except ValueError:
             same_origin = False
-        if not (same_origin and _url_is_safe(endpoint)):
+        if not (same_origin and _url_has_public_syntax(endpoint)):
             endpoint = ""
 
     return {
@@ -364,56 +365,53 @@ class Crawler:
         )
 
     async def _safe_get(self, url: str) -> httpx.Response:
-        """Fetch a URL with size limits and SSRF protection.
-
-        Disables redirects (each redirect target must pass _url_is_safe).
-        Validates Content-Type is JSON-like.
-        """
-        # Import lazily: outbound_http delegates URL policy back to this module.
-        # The helper pins the validated public IP, closing the check/connect DNS
-        # rebinding window that a second hostname lookup would leave open.
+        """Fetch JSON with pinned DNS, bounded decompression and a total deadline."""
+        import asyncio
+        import math
+        from aimarket_hub import realm
         from aimarket_hub.outbound_http import prepare_safe_request_async
+        from aimarket_hub.response_limits import read_capped_response, ResponseLimitError
 
-        target, pin_headers, extensions = await prepare_safe_request_async(url)
-        # Both spellings of the reciprocal-identification header: the legacy one every
-        # peer reads today, and the draft's (aimarket-protocol/ietf). Same value.
-        headers = {
-            "User-Agent": USER_AGENT,
-            LEGACY_CRAWLER_HEADER: self.config.hub_url,
-            DRAFT_CRAWLER_HEADER: self.config.hub_url,
-            **pin_headers,
-        }
-
-        # follow_redirects=False — each hop would need its own _url_is_safe check.
-        # If the server returns 3xx, the caller can re-fetch with the new URL
-        # explicitly (after re-running _url_is_safe).
-        request = self._http.build_request("GET", target, headers=headers)
-        request.extensions.update(extensions)
-        resp = await self._http.send(request, stream=True, follow_redirects=False)
-        try:
-            # Check Content-Length before reading body. Invalid values are refused
-            # instead of accidentally disabling the limit.
-            content_length = resp.headers.get("content-length")
-            if content_length:
+        # Applies to manual assays and stale/inflight queues as well as the BFS
+        # admission doors. A rejected URL must not reach DNS or the HTTP client.
+        if not realm.peer_inside(url, db_path=getattr(getattr(self, "db", None), "db_path", None)):
+            raise ValueError("peer rejected by operator policy or federation realm")
+        timeout = float(getattr(self.config, "request_timeout_s", 30.0))
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("request timeout must be positive and finite")
+        async with asyncio.timeout(timeout):
+            # Imported lazily above: outbound_http delegates URL policy back here.
+            target, pin_headers, extensions = await prepare_safe_request_async(url)
+            headers = {
+                "User-Agent": USER_AGENT,
+                LEGACY_CRAWLER_HEADER: self.config.hub_url,
+                DRAFT_CRAWLER_HEADER: self.config.hub_url,
+                **pin_headers,
+                "Accept-Encoding": "gzip, deflate",
+            }
+            request = self._http.build_request("GET", target, headers=headers)
+            request.extensions.update(extensions)
+            resp = await self._http.send(request, stream=True, follow_redirects=False)
+            try:
+                content_length = resp.headers.get("content-length")
+                if content_length:
+                    try:
+                        declared_length = int(content_length)
+                    except ValueError as exc:
+                        raise ValueError("Invalid Content-Length") from exc
+                    if declared_length < 0 or declared_length > MAX_RESPONSE_BYTES:
+                        raise ValueError(f"Response too large: {content_length} bytes")
+                resp.raise_for_status()
+                ctype = resp.headers.get("content-type", "").lower()
+                if ctype and "json" not in ctype:
+                    raise ValueError(f"Unexpected Content-Type: {ctype[:60]}")
                 try:
-                    declared_length = int(content_length)
-                except ValueError as exc:
-                    raise ValueError("Invalid Content-Length") from exc
-                if declared_length < 0 or declared_length > MAX_RESPONSE_BYTES:
-                    raise ValueError(f"Response too large: {content_length} bytes")
-            resp.raise_for_status()
-            ctype = resp.headers.get("content-type", "").lower()
-            if ctype and "json" not in ctype:
-                raise ValueError(f"Unexpected Content-Type: {ctype[:60]}")
-            body = bytearray()
-            async for chunk in resp.aiter_bytes(chunk_size=65536):
-                body.extend(chunk)
-                if len(body) > MAX_RESPONSE_BYTES:
-                    raise ValueError("Response body exceeds 2 MB limit")
-            resp._content = bytes(body)
-            return resp
-        finally:
-            await resp.aclose()
+                    resp._content = await read_capped_response(resp, max_bytes=MAX_RESPONSE_BYTES)
+                except ResponseLimitError as exc:
+                    raise ValueError("Response body exceeds 2 MB limit") from exc
+                return resp
+            finally:
+                await resp.aclose()
 
     async def crawl(self, *, clear_first: bool = True) -> dict[str, Any]:
         """Run a full crawl cycle. Returns summary dict.
@@ -438,7 +436,7 @@ class Crawler:
         # check stays as the backstop for the paths that do not pass through here.
         safe_seeds = []
         for seed in self.config.seed_list:
-            if not _url_is_safe(seed):
+            if not realm.peer_inside(seed, db_path=self.db.db_path) or not _url_has_public_syntax(seed):
                 continue
             if _norm_hub(seed.rsplit("/.well-known/", 1)[0]) == _norm_hub(self.config.hub_url):
                 logger.warning(
@@ -466,7 +464,8 @@ class Crawler:
             pending = list(self.db.list_pending_peers())
         for peer in pending:
             wk_url = peer.well_known_url or f"{peer.url.rstrip('/')}/.well-known/ai-market.json"
-            if wk_url in seeded or not _url_is_safe(wk_url):
+            if (wk_url in seeded or not realm.peer_inside(wk_url, db_path=self.db.db_path)
+                    or not _url_has_public_syntax(wk_url)):
                 continue
             # A self row already in the table (written before the guards existed) would
             # otherwise be re-dialled every cycle and counted as an error every cycle.
@@ -482,14 +481,13 @@ class Crawler:
                 url, depth, discoverer = queue.popleft()
                 if url in visited:
                     continue
-                # SSRF guard: reject internal URLs discovered mid-crawl
-                if not _url_is_safe(url):
-                    logger.warning("Skipping unsafe peer URL: %s", url[:60])
-                    continue
                 # The realm seal: every path onto the frontier (seed, pending, gossip,
-                # refresh) passes here, so a bubble never dials a host outside itself.
-                if not realm.peer_inside(url):
+                # refresh) passes here before even DNS-based SSRF validation.
+                if not realm.peer_inside(url, db_path=self.db.db_path):
                     logger.warning("Skipping peer outside the realm: %s", url[:60])
+                    continue
+                if not _url_has_public_syntax(url):
+                    logger.warning("Skipping unsafe peer URL: %s", url[:60])
                     continue
                 visited.add(url)
 
@@ -516,8 +514,8 @@ class Crawler:
                         not peer_base
                         or _norm_hub(peer_base) == _norm_hub(self.config.hub_url)
                         or peer_wk in visited
-                        or not _url_is_safe(peer_wk)
-                        or not realm.peer_inside(peer_wk)
+                        or not realm.peer_inside(peer_wk, db_path=self.db.db_path)
+                        or not _url_has_public_syntax(peer_wk)
                     ):
                         continue
                     # A trusted Hub told us this address exists. Persist that knowledge
@@ -561,7 +559,7 @@ class Crawler:
                     if str(getattr(peer, "status", "active")) != "active":
                         continue
                     wk_url = peer.well_known_url or f"{peer.url.rstrip('/')}/.well-known/ai-market.json"
-                    if wk_url in visited or wk_url in seeded or not _url_is_safe(wk_url):
+                    if wk_url in visited or wk_url in seeded or not _url_has_public_syntax(wk_url):
                         continue
                     unreached.append((str(getattr(peer, "last_crawl", "") or ""), wk_url, peer))
             unreached.sort(key=lambda row: row[0])
@@ -649,7 +647,7 @@ class Crawler:
         """
         url = peer_url.rstrip("/") + "/ai-market/v2/reputation/slashes"
         try:
-            if not _url_is_safe(url):
+            if not _url_has_public_syntax(url):
                 return 0
             resp = await self._safe_get(url)
             if resp.status_code != 200:
@@ -1024,7 +1022,7 @@ class Crawler:
 
         # Fetch and index manifest (trusted peers only)
         manifest_url = wk.get("manifest_url", f"{base_url}/ai-market/manifest")
-        if not _url_is_safe(manifest_url):
+        if not _url_has_public_syntax(manifest_url):
             logger.warning("Manifest URL rejected as unsafe: %s", manifest_url[:60])
             return {"capabilities_count": 0, "new_peer_urls": self._extract_peer_urls(wk, include_observed=signed_gossip)}
         indexed = 0
@@ -1124,7 +1122,7 @@ class Crawler:
         if not pinned_key:
             return 0  # nothing to verify against — refuse rather than show unsigned claims
         manifest_url = wk.get("manifest_url", f"{base_url}/ai-market/manifest")
-        if not _url_is_safe(manifest_url):
+        if not _url_has_public_syntax(manifest_url):
             return 0
         try:
             manifest = (await self._safe_get(manifest_url)).json()

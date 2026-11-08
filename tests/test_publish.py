@@ -53,6 +53,8 @@ class _RoutingAsyncClient:
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("AIMARKET_PUBLISH_TOKEN", PUBLISH_TOKEN)
+    # This fixture manages a private operator provider, rather than community supply.
+    monkeypatch.setenv("AIMARKET_ADMIN_TOKEN", PUBLISH_TOKEN)
     monkeypatch.setenv("AIMARKET_ALLOW_LOCAL_PUBLISH", "1")
     monkeypatch.setenv("AIMARKET_SANDBOX_STUB_INVOKE", "1")
     monkeypatch.setenv("AIMARKET_SUPPLY_SECURITY_RELAXED", "1")

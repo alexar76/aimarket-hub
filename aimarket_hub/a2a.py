@@ -1227,8 +1227,8 @@ def attach_a2a_routes(
                     )
                 try:
                     # Off the loop: checking the webhook resolves the caller's own host name.
-                    push_config = await asyncio.to_thread(a2a_push.parse_config,
-                                                          configuration["taskPushNotificationConfig"])
+                    push_config = await a2a_push.parse_config_async(
+                        configuration["taskPushNotificationConfig"])
                 except a2a_push.PushConfigError as exc:
                     return _json_error(request_id, -32602, str(exc), reason="INVALID_CONFIGURATION")
             immediate = configuration.get("returnImmediately", False)
@@ -1858,7 +1858,7 @@ def attach_a2a_routes(
                 # Nothing will change any more; a webhook would never be called.
                 return _json_error(request_id, -32004, f"task {task_id} is already {row['task_state']}",
                                    reason="UNSUPPORTED_OPERATION")
-            stored = push.store.create(task_id, await asyncio.to_thread(a2a_push.parse_config, params))
+            stored = push.store.create(task_id, await a2a_push.parse_config_async(params))
             return _ok(request_id, a2a_push.render(stored))
         if method == "ListTaskPushNotificationConfigs":
             configs = push.store.list(task_id)

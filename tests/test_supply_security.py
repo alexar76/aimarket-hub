@@ -94,6 +94,7 @@ def _no_signal(reason: str = "no_edges") -> dict:
 def hub_client(monkeypatch, keys_and_signer):
     pubkey, provider_signer = keys_and_signer
     monkeypatch.setenv("AIMARKET_PUBLISH_TOKEN", PUBLISH_TOKEN)
+    monkeypatch.setenv("AIMARKET_ADMIN_TOKEN", PUBLISH_TOKEN)
     monkeypatch.setenv("AIMARKET_ALLOW_LOCAL_PUBLISH", "1")
     monkeypatch.setenv("AIMARKET_SANDBOX_STUB_INVOKE", "1")
     monkeypatch.setenv("AIFACTORY_PUBLIC_URL", "http://factory.test")
@@ -298,6 +299,7 @@ def test_invoke_5xx_streak_accumulates_and_slashes_over_http(tmp_path, monkeypat
     the api.py handler (>=500 branch, cap.publisher_id, record_invoke call) — a unit test
     on record_invoke alone cannot catch a regression there."""
     monkeypatch.setenv("AIMARKET_PUBLISH_TOKEN", PUBLISH_TOKEN)
+    monkeypatch.setenv("AIMARKET_ADMIN_TOKEN", PUBLISH_TOKEN)
     monkeypatch.setenv("AIMARKET_ALLOW_LOCAL_PUBLISH", "1")
     monkeypatch.setenv("AIMARKET_SUPPLY_SECURITY_RELAXED", "0")
     monkeypatch.setenv("AIMARKET_SUPPLY_MIN_STAKE_USD", "0")
@@ -344,6 +346,7 @@ def test_lumen_outage_on_invoke_is_502_not_403(tmp_path, monkeypatch):
     is forbidden" — and an oracle the hub cannot consult is a hub dependency
     failure, the same class as a provider 5xx."""
     monkeypatch.setenv("AIMARKET_PUBLISH_TOKEN", PUBLISH_TOKEN)
+    monkeypatch.setenv("AIMARKET_ADMIN_TOKEN", PUBLISH_TOKEN)
     monkeypatch.setenv("AIMARKET_ALLOW_LOCAL_PUBLISH", "1")
     monkeypatch.setenv("AIMARKET_SUPPLY_SECURITY_RELAXED", "0")
     monkeypatch.setenv("AIMARKET_SUPPLY_MIN_STAKE_USD", "0")

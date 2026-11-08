@@ -200,6 +200,13 @@ class HubDatabase:
     # ── Capabilities ──────────────────────────────────────────
 
     def upsert_capability(self, cap: Capability) -> None:
+        from aimarket_hub.peer_rejections import capability_is_rejected, invoke_is_rejected, peer_is_rejected
+        if (capability_is_rejected(cap.product_id, cap.capability_id,
+                                   source_hub=cap.source_hub, db_path=self.db_path)
+                or peer_is_rejected(cap.source_hub, db_path=self.db_path)
+                or invoke_is_rejected(cap.invoke_url or "", db_path=self.db_path)
+                or invoke_is_rejected(cap.peer_endpoint or "", db_path=self.db_path)):
+            return
         self._conn.execute("""
             INSERT OR REPLACE INTO capabilities
                 (capability_id, product_id, name, version, description,
@@ -416,6 +423,10 @@ class HubDatabase:
         reading ``pin_reject_reason: ""``, so the cause had to be found by
         comparing keys by hand.
         """
+        from aimarket_hub.peer_rejections import peer_is_rejected
+        if (peer_is_rejected(peer.url, db_path=self.db_path)
+                or peer_is_rejected(peer.well_known_url or peer.url, db_path=self.db_path)):
+            return
         if status not in ("active", "pending", "key_mismatch", "pq_key_mismatch"):
             raise ValueError(f"unsupported peer status: {status!r}")
         existing = self._conn.execute(
@@ -463,11 +474,17 @@ class HubDatabase:
 
         Never upgrades: an already-known peer is left exactly as it is, so an
         announcement can neither downgrade a trusted peer to pending nor rewrite
-        a pinned key. Returns ``"known"``, ``"added"`` or ``"rejected_cap"``.
+        a pinned key. The ceiling counts rows: varying paths on one hostname must
+        not create an unbounded crawl queue. Returns ``"known"``, ``"added"``,
+        ``"rejected_cap"`` or ``"rejected_policy"``.
         """
+        from aimarket_hub.peer_rejections import peer_is_rejected
+        if (peer_is_rejected(peer.url, db_path=self.db_path)
+                or peer_is_rejected(peer.well_known_url or peer.url, db_path=self.db_path)):
+            return "rejected_policy"
         if self.get_peer(peer.url) is not None:
             return "known"
-        if self.count_pending_hosts() >= max_pending:
+        if self.count_pending_peers() >= max_pending:
             return "rejected_cap"
         self.upsert_peer(peer, status="pending")
         return "added"
@@ -520,11 +537,10 @@ class HubDatabase:
         ).fetchone()[0]
 
     def count_pending_hosts(self) -> int:
-        """Distinct hostnames among pending peers.
+        """Diagnostic distinct-host count; admission limits pending rows instead.
 
-        The cap is keyed on this rather than on rows: a URL is free to mint, so
-        `https://x.example/a`, `/b`, `/c` … would fill a row-based cap in one loop. A
-        hostname costs something to obtain, which is the property a limit needs.
+        A host count alone does not bound storage or crawling: a single hostname
+        can announce arbitrarily many paths while this number remains one.
         """
         from urllib.parse import urlparse
 

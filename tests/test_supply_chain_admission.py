@@ -322,11 +322,13 @@ def test_public_rows_never_persist_manifest_or_evidence_urls(tmp_path, manifest,
 def test_supply_register_runs_admission_before_catalog_write(
     tmp_path, manifest, monkeypatch, decision, expected_status, published
 ):
-    manifest = {**manifest, "invoke_url": "http://127.0.0.1:3456/invoke"}
+    # This tests admission before publication, independently of operator-only
+    # private-provider grants. A public literal needs no DNS, and the auditor
+    # client below is mocked: no real provider or auditor is contacted.
+    manifest = {**manifest, "invoke_url": "https://93.184.216.34/provider/invoke"}
     private = Ed25519PrivateKey.generate()
     pubkey = base64.b64encode(private.public_key().public_bytes_raw()).decode()
     monkeypatch.setenv("AIMARKET_PUBLISH_TOKEN", "publish-secret")
-    monkeypatch.setenv("AIMARKET_ALLOW_LOCAL_PUBLISH", "1")
     monkeypatch.setenv("AIMARKET_SUPPLY_SECURITY_RELAXED", "1")
     monkeypatch.setenv("AIMARKET_SUPPLY_REQUIRE_RESPONSE_SIG", "0")
     monkeypatch.setenv("AIMARKET_SKIP_SEED", "1")

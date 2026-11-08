@@ -29,19 +29,27 @@ class RemotePending(Exception):
 
 
 async def request_json(method, url, *, body=None, token=None):
-    target, headers, ext = await prepare_safe_request_async(url)
-    if token:
-        headers['X-Operation-Token'] = token
-    async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
-        async with client.stream(method, target, json=body, headers=headers, extensions=ext) as response:
-            response.raise_for_status()
-            chunks, size = [], 0
-            async for chunk in response.aiter_bytes():
-                size += len(chunk)
-                if size > 2_000_000:
-                    raise ValueError('peer operation response exceeds 2 MB')
-                chunks.append(chunk)
-    value = json.loads(b''.join(chunks))
+    import asyncio
+    from aimarket_hub.response_limits import read_capped_response, ResponseLimitError
+
+    try:
+        async with asyncio.timeout(30):
+            target, headers, ext = await prepare_safe_request_async(url)
+            headers['Accept-Encoding'] = 'gzip, deflate'
+            if token:
+                headers['X-Operation-Token'] = token
+            async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+                async with client.stream(method, target, json=body, headers=headers, extensions=ext) as response:
+                    response.raise_for_status()
+                    try:
+                        raw = await read_capped_response(response, max_bytes=2_000_000)
+                    except ResponseLimitError as exc:
+                        raise ValueError('peer operation response exceeds 2 MB') from exc
+    except TimeoutError as exc:
+        # The caller treats HTTP timeouts as an unknown seller outcome. Preserve
+        # that reconciliation path instead of turning a deadline into redispatch.
+        raise httpx.ReadTimeout('peer operation request deadline exceeded') from exc
+    value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError('peer operation response must be an object')
     return value

@@ -74,7 +74,7 @@ def register(
             return config.federation_open_max_pending
         return config.federation_gossip_max_observed
 
-    def _validate_hub_url(url: str) -> None:
+    async def _validate_hub_url(url: str) -> None:
         """Reject URLs pointing to internal/private hosts (SSRF prevention).
 
         Uses the same DNS-resolving safety check as the crawler — protects
@@ -86,7 +86,12 @@ def register(
             raise HTTPException(status_code=400, detail="hub_url is required")
         if any(c in url for c in "\r\n\t"):
             raise HTTPException(status_code=400, detail="Invalid characters in URL")
-        if not _url_is_safe(url):
+        from aimarket_hub.dns_limits import DNSCheckBusy, DNSCheckTimeout, bounded_dns_call
+        try:
+            public = await bounded_dns_call(_url_is_safe, url)
+        except (DNSCheckBusy, DNSCheckTimeout):
+            public = False
+        if not public:
             raise HTTPException(
                 status_code=400,
                 detail=f"URL resolves to restricted network or invalid scheme: {url[:40]}...",
@@ -110,7 +115,8 @@ def register(
         # address seen on the network, a syntactically safe public Hub is always made
         # visible in quarantine; credentials are still required to trust it.
         open_mode = not _is_admin_bearer(authorization)
-        if not (realm.peer_inside(body.hub_url) and realm.peer_inside(body.well_known_url or body.hub_url)):
+        if not (realm.peer_inside(body.hub_url, db_path=db.db_path)
+                and realm.peer_inside(body.well_known_url or body.hub_url, db_path=db.db_path)):
             # Worded like the SSRF refusal on purpose: a knock from outside must not learn
             # that it reached a sealed bubble rather than a hub that will not federate.
             raise HTTPException(
@@ -118,9 +124,9 @@ def register(
                 detail=f"hub_url is not admissible to this federation: {body.hub_url[:40]}",
             )
         if open_mode:
-            _validate_hub_url(body.hub_url)
+            await _validate_hub_url(body.hub_url)
             if body.well_known_url:
-                _validate_hub_url(body.well_known_url)
+                await _validate_hub_url(body.well_known_url)
             url = body.hub_url.rstrip("/")
             outcome = db.announce_peer(
                 Peer(
@@ -171,7 +177,8 @@ def register(
                     except Exception as exc:
                         logger.warning("post-announce assay of %s failed: %s", assay_url, exc)
 
-                asyncio.create_task(_assay_knock())
+                from aimarket_hub.assay_limits import schedule_background_assay
+                knock_assay = schedule_background_assay(assay_url, _assay_knock)
             return {
                 "acknowledged": True,
                 "peer_added": outcome == "added",
@@ -187,9 +194,9 @@ def register(
                 "note": _knock_promise(),
             }
         _require_admin(authorization)
-        _validate_hub_url(body.hub_url)
+        await _validate_hub_url(body.hub_url)
         if body.well_known_url:
-            _validate_hub_url(body.well_known_url)
+            await _validate_hub_url(body.well_known_url)
         peer = Peer(
             url=body.hub_url,
             name=body.hub_name or body.hub_url,
@@ -662,7 +669,7 @@ def register(
         origin = _observed.normalize_origin(str(body.get("origin") or ""))
         if not origin:
             raise HTTPException(status_code=400, detail="origin must be an https URL")
-        _validate_hub_url(origin)
+        await _validate_hub_url(origin)
         try:
             consent = _observed.clean_consent(body.get("consent"))
         except ValueError as exc:

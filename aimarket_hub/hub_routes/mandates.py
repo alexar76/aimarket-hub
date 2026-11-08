@@ -172,7 +172,7 @@ def register(
             return account
         try:
             payload = await _json_body(request, limit=8192)
-            kind, target = owner_notify.parse_channel(payload)
+            kind, target = await owner_notify.parse_channel_async(payload)
             row = hub_notify_store.add(account, kind, target)
         except owner_notify.NotifyConfigError as exc:
             return JSONResponse(status_code=400, content={"success": False, "error": "channel_invalid",

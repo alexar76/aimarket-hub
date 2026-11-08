@@ -360,7 +360,8 @@ def register(
                 "name": cap.name,
                 # Historical evidence for this indexed row, not the peer's last attempted
                 # crawl. Missing records stay unknown until a successful signed refresh.
-                "evidence": cap.catalogue_evidence or {
+                "evidence": {key: value for key, value in (cap.catalogue_evidence or {}).items()
+                             if key != "operator_invoke_url"} or {
                     "kind": "local_catalogue" if (cap.source_hub or "local") == "local" else "catalogue_unrecorded",
                     "scope": "catalogue",
                     "signer": None,

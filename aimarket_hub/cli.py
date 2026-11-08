@@ -736,6 +736,7 @@ def _cmd_add(args) -> int:
         source_hub="local",
         source_hub_name=config.hub_name,
         invoke_url=url,
+        catalogue_evidence={"operator_invoke_url": url},
         payout_address=pay_to,
         provider_pubkey=pubkey,
         trust_score=0.5,
@@ -953,6 +954,7 @@ def _cmd_doctor(args) -> int:
                 signer = Signer(acfg.signing_key_path, pqc=False)
             local = not _public_host(url)
             saved_guard = fa._crawler._url_is_safe
+            saved_syntax_guard = fa._url_has_public_syntax
             get_json = post_json = None
             if local:
                 # Reach a local hub anyway, so a pre-deploy run checks everything but
@@ -974,6 +976,7 @@ def _cmd_doctor(args) -> int:
                                 "bytes": len(resp.content)}
 
                 fa._crawler._url_is_safe = lambda _u, *_a, **_k: True
+                fa._url_has_public_syntax = lambda _u: True
             try:
                 dossier = asyncio.run(fa.run_assay(
                     url, config=acfg, db=db, signer=signer,
@@ -997,6 +1000,7 @@ def _cmd_doctor(args) -> int:
                 return 1
             finally:
                 fa._crawler._url_is_safe = saved_guard
+                fa._url_has_public_syntax = saved_syntax_guard
             if local:
                 dossier["verdict_once_public"] = fa.score_verdict(dossier.get("checks", []))
                 for check in dossier.get("checks", []):
