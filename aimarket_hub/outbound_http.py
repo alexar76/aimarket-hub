@@ -152,6 +152,34 @@ def _checked_target(url: str, *, invoke: bool = False) -> tuple[str, dict[str, s
     return _pin_target(target, allow_hosts=_invoke_allow_hosts() if invoke else None)
 
 
+def _checked_loopback_target(url: str) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Opt-in local delivery without granting configured gateway authority.
+
+    Never resolve localhost through DNS: the opt-in names this machine, not
+    whichever address a resolver returns. Keep its Host/SNI for HTTPS identity.
+    """
+    if os.environ.get("AIMARKET_ALLOW_LOCAL_PUBLISH", "").strip() != "1":
+        raise ValueError("local loopback delivery is not enabled")
+    if not isinstance(url, str) or any(ord(char) < 32 or ord(char) == 127 for char in url):
+        raise ValueError("unsafe loopback URL")
+    try:
+        parsed = urlparse(url)
+        host, port = parsed.hostname, parsed.port
+    except ValueError as exc:
+        raise ValueError("unsafe loopback URL") from exc
+    if (parsed.scheme not in ("http", "https")
+            or host not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.username is not None or parsed.password is not None):
+        raise ValueError("unsafe loopback URL")
+    if host != "localhost":
+        return url, {}, {}
+    if parsed.scheme == "https" and not _HTTPS_PIN_OK:
+        raise ValueError("installed httpx cannot safely pin HTTPS loopback destinations")
+    netloc = "127.0.0.1" + (f":{port}" if port is not None else "")
+    target = urlunparse(parsed._replace(netloc=netloc))
+    return target, {"Host": parsed.netloc}, {"sni_hostname": host} if parsed.scheme == "https" else {}
+
+
 def prepare_safe_request(url: str) -> tuple[str, dict[str, str], dict[str, str]]:
     """Validate an attacker-influenced URL and return its pinned request target."""
     return _checked_target(url)
@@ -231,6 +259,7 @@ async def safe_post(
     timeout: float = 30.0,
     invoke: bool = False,
     oracle_paid: bool = False,
+    allow_loopback: bool = False,
 ) -> httpx.Response:
     from aimarket_hub import oracle_paid_tier
 
@@ -238,12 +267,15 @@ async def safe_post(
     # caller-supplied spelling of the header; it is never payment evidence.
     transport_url = resolve_invoke_url(url) if invoke else url
     grant = oracle_paid_tier.headers_for(url, transport_url=transport_url, admitted=oracle_paid)
-    target, pin_headers, ext = await prepare_safe_request_async(url, invoke=invoke)
+    if allow_loopback and not invoke:
+        target, pin_headers, ext = _checked_loopback_target(url)
+    else:
+        target, pin_headers, ext = await prepare_safe_request_async(url, invoke=invoke)
     out_headers = {k: v for k, v in (headers or {}).items() if k.lower() != oracle_paid_tier.HEADER.lower()}
     out_headers.update(grant)
     out_headers.update(pin_headers)
     # A configured bearer grant must not be exposed to an ambient HTTP proxy.
-    transport_options = {"trust_env": False} if grant else {}
+    transport_options = {"trust_env": False} if grant or (allow_loopback and not invoke) else {}
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, **transport_options) as client:
         return await client.post(target, json=json, headers=out_headers, extensions=ext or None)
 

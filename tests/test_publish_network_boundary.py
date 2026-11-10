@@ -137,6 +137,87 @@ def test_legacy_community_private_row_is_blocked_before_http(hub, evidence, publ
         assert requests == []
 
 
+@pytest.mark.parametrize("url,host", [
+    ("http://127.0.0.1:9123/private", "127.0.0.1"),
+    ("http://localhost:9123/private", "127.0.0.1"),
+    ("http://[::1]:9123/private", "::1"),
+])
+def test_opted_in_legacy_loopback_cannot_borrow_gateway_authority(hub, url, host):
+    # The hub fixture deliberately configures an operator gateway and hostile
+    # localhost DNS. A dev opt-in must still reach only the literal loopback.
+    with hub() as (client, db, requests, headers, _):
+        cap = Capability(product_id="network-test", capability_id="network.test@v1",
+                         name="local-dev", price_per_call_usd=0,
+                         invoke_url=url, source_hub="local", catalogue_evidence={})
+        assert not private_invoke_authorized(cap)
+        db.upsert_capability(cap)
+        response = invoke(client, headers)
+        assert response.status_code == 200, response.text
+        assert len(requests) == 1
+        assert requests[0].url.host == host
+        assert requests[0].url.port == 9123
+        assert requests[0].url.path == "/private"
+        assert "X-AIMarket-Internal-Token" not in requests[0].headers
+        assert "X-AIMarket-Buyer-Ref" not in requests[0].headers
+
+
+@pytest.mark.parametrize("flag", ["", "0", "true"])
+def test_legacy_loopback_requires_exact_local_opt_in(hub, monkeypatch, flag):
+    monkeypatch.setenv("AIMARKET_ALLOW_LOCAL_PUBLISH", flag)
+    with hub() as (client, db, requests, headers, _):
+        db.upsert_capability(Capability(
+            product_id="network-test", capability_id="network.test@v1",
+            name="local-dev", price_per_call_usd=0,
+            invoke_url="http://127.0.0.1:9123/private", source_hub="local",
+            catalogue_evidence={},
+        ))
+        assert invoke(client, headers).status_code == 502
+        assert requests == []
+
+
+def test_opted_in_loopback_does_not_follow_gateway_redirect_or_use_proxy(hub, monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://untrusted-proxy.invalid:3128")
+    monkeypatch.setenv("HTTPS_PROXY", "http://untrusted-proxy.invalid:3128")
+    original_client = httpx.AsyncClient
+    options = []
+    captured = []
+
+    def provider(request):
+        captured.append(request)
+        return httpx.Response(302, headers={"Location": PRIVATE})
+
+    def client_with_redirect(**kwargs):
+        options.append(kwargs)
+        kwargs["transport"] = httpx.MockTransport(provider)
+        return original_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_with_redirect)
+    with hub() as (client, db, _, headers, _):
+        db.upsert_capability(Capability(
+            product_id="network-test", capability_id="network.test@v1",
+            name="local-dev", price_per_call_usd=0,
+            invoke_url="http://localhost:9123/private", source_hub="local",
+            catalogue_evidence={},
+        ))
+        assert invoke(client, headers).status_code == 502
+    assert len(captured) == 1
+    assert captured[0].url.host == "127.0.0.1"
+    assert captured[0].headers["Host"] == "localhost:9123"
+    assert options and all(option.get("trust_env") is False for option in options)
+
+
+def test_explicit_loopback_operator_grant_retains_gateway_rewrite(hub):
+    url = "http://127.0.0.1:9123/private"
+    with hub() as (client, _, requests, buyer, _):
+        registered = client.post("/ai-market/v2/supply/register", headers=ADMIN,
+                                 json=manifest(url, publisher_id="operator-seller"))
+        assert registered.status_code == 200, registered.text
+        assert invoke(client, buyer).status_code == 200
+        assert len(requests) == 1
+        assert str(requests[0].url) == "http://operator-provider:9123/private"
+        assert requests[0].headers["X-AIMarket-Internal-Token"] == "fake-internal-token"
+
+
 def test_untrusted_manifest_cannot_forge_operator_grant_and_public_still_works(hub):
     with hub() as (client, db, requests, headers, _):
         forged = {**manifest(PUBLIC), "catalogue_evidence": {"operator_invoke_url": PRIVATE},

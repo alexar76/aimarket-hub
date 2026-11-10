@@ -159,6 +159,14 @@ async def _local_call_provider(d: SimpleNamespace, call: _Call, local: _Local):
         from aimarket_hub.publish import private_invoke_authorized
 
         allow_private = private_invoke_authorized(cap)
+        # AIMARKET_ALLOW_LOCAL_PUBLISH still means loopback providers may be
+        # *called* (course sandboxes, local stubs). Privileged headers and
+        # host-gateway rewrite stay gated on allow_private below.
+        allow_local_loopback = (
+            os.environ.get("AIMARKET_ALLOW_LOCAL_PUBLISH", "").strip() == "1"
+            and (urlparse(invoke_url).hostname or "").lower()
+            in {"127.0.0.1", "localhost", "::1"}
+        )
 
         provider_headers = {
             # A reference, never the id: see _provider_channel_ref.
@@ -220,6 +228,7 @@ async def _local_call_provider(d: SimpleNamespace, call: _Call, local: _Local):
                 price=local.price, sandbox=sandbox_mode, reserved=local.reserved,
                 hold_rail=local.hold_rail, x402_accepted=local.x402_accepted,
             ),
+            **({"allow_loopback": True} if allow_local_loopback and not allow_private else {}),
         )
         if ir.status_code == 200:
             try:
