@@ -129,6 +129,7 @@ from aimarket_hub.hub_routes import invoke as _invoke_routes
 from aimarket_hub.hub_routes import federation as _federation_routes
 from aimarket_hub.hub_routes import reputation as _reputation_routes
 from aimarket_hub.hub_routes import accounts as _accounts_routes
+from aimarket_hub.hub_routes import bridge as _bridge_routes
 from aimarket_hub.hub_routes import market_stats as _market_stats_routes
 from aimarket_hub.hub_routes import capital as _capital_routes
 from aimarket_hub.hub_routes import channels as _channels_routes
@@ -346,6 +347,8 @@ def create_app(
     # it can actually execute; both local interpreters skip these tests at fixture setup.
     peer_routing._peer_endpoint_cache.clear()
     peer_routing._peer_seller_direct.clear()
+    peer_routing._peer_bills_x402.clear()
+    peer_routing._peer_x402_payees.clear()
     trust_scorer = trust_scorer or TrustScorer(db)
     builtin_safety = default_safety_gate()  # Built-in fallback
     # Pay-on-Verified settlement worker (buyer-opt-in escrow holds; env-gated per invoke).
@@ -697,6 +700,10 @@ def create_app(
         trust_scorer=trust_scorer,
     )
     _publishable_pending_peers = federation_scope._publishable_pending_peers
+
+    # The x402 bridge: its status, and buying observed x402 routes with credits.
+    _bridge_routes.register(config=config, db=db, hub_credits=hub_credits, router=router,
+                            check_rate=_check_invoke_rate)
 
     # Reputation: slashes, events, deliveries, disputes.
     _reputation_routes.register(

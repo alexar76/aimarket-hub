@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import secrets
+import re
 import time
 from typing import Any
 
@@ -90,6 +91,41 @@ _peer_endpoint_cache: dict[str, tuple[float, str | None]] = {}
 # Read from the same well-known fetch: does the peer declare that buyers pay its listings
 # directly (payment_rails.seller_direct.enabled)? Decides the routing fee — see invoke.
 _peer_seller_direct: dict[str, bool] = {}
+# Same fetch again, for the x402 bridge (x402_bridge.py): does the peer bill over x402 at all
+# (seller_direct, or `payment.enforced` with protocol x402), and which Base addresses does it
+# publish as its payees? The bridge pays only a payee the peer itself named, here or in the
+# listing's signed `payout_address`.
+_peer_bills_x402: dict[str, bool] = {}
+_peer_x402_payees: dict[str, frozenset[str]] = {}
+_BASE_NETWORKS = frozenset({"base", "eip155:8453"})
+
+
+def _declared_x402(doc: dict[str, Any]) -> tuple[bool, frozenset[str]]:
+    """(bills over x402, the Base payees it declares) from a peer's well-known."""
+    rails = doc.get("payment_rails")
+    direct = rails.get("seller_direct") if isinstance(rails, dict) else None
+    bills = bool(isinstance(direct, dict) and direct.get("enabled") is True)
+    payees: set[str] = set()
+    if bills:
+        # mach402.dev's shape: {"enabled": true, "network": "eip155:8453", "payTo": "0x…"}. With no network
+        # named the payee counts only if it is an EVM address, and the 402 still has to name Base itself.
+        pay_to = str(direct.get("payTo") or direct.get("pay_to") or "").strip()
+        network = str(direct.get("network") or "base").strip().lower()
+        if network in _BASE_NETWORKS and re.fullmatch(r"0x[0-9a-fA-F]{40}", pay_to):
+            payees.add(pay_to.lower())
+    payment = doc.get("payment")
+    if isinstance(payment, dict) and payment.get("enforced") is True \
+            and str(payment.get("protocol") or "").lower() == "x402":
+        bills = True
+        accepts = payment.get("accepts")
+        for entry in accepts if isinstance(accepts, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            pay_to = str(entry.get("pay_to") or entry.get("payTo") or "").strip()
+            if str(entry.get("network") or "").strip().lower() in _BASE_NETWORKS \
+                    and re.fullmatch(r"0x[0-9a-fA-F]{40}", pay_to):
+                payees.add(pay_to.lower())
+    return bills, frozenset(payees)
 
 
 # The rule itself lives in `federation_transport` because the admission assay needs the
@@ -168,6 +204,8 @@ async def _peer_invoke_endpoint(peer: Any, *, now: float | None = None) -> str |
                 rails = doc.get("payment_rails") if isinstance(doc, dict) else None
                 direct = rails.get("seller_direct") if isinstance(rails, dict) else None
                 _peer_seller_direct[key] = bool(isinstance(direct, dict) and direct.get("enabled") is True)
+                if isinstance(doc, dict):
+                    _peer_bills_x402[key], _peer_x402_payees[key] = _declared_x402(doc)
                 # An AIMarket hub is NOT reachable at its own `mcp_endpoint` with this
                 # envelope: that endpoint speaks MCP JSON-RPC over SSE, so posting
                 # `{capability_id, input}` there returns `Method not found` inside a
@@ -221,6 +259,13 @@ async def _peer_invoke_endpoint(peer: Any, *, now: float | None = None) -> str |
 
     _peer_endpoint_cache[key] = (stamp, endpoint)
     return endpoint
+
+
+async def peer_x402_terms(peer: Any) -> tuple[bool, frozenset[str]]:
+    """(the peer bills over x402, the Base payees its well-known declares), from the cached read."""
+    await _peer_invoke_endpoint(peer)
+    key = getattr(peer, "url", "") or ""
+    return _peer_bills_x402.get(key, False), _peer_x402_payees.get(key, frozenset())
 
 
 async def _peer_sells_direct(peer: Any) -> bool:

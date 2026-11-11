@@ -52,6 +52,11 @@ _TERMINAL = (CONFIRMED, ABANDONED)
 #: if that replacement is withdrawn (its own call was never served) it is the window's
 #: claim again — see revive_superseded.
 SUPERSEDED_REASON = "replaced by fresh buyer authorization for the same on-chain nonce"
+#: A SUPERSEDED row whose own call was then withdrawn (failed, refunded, never served). Its
+#: price is still inside the running total that replaced it, so that total over-claims; the
+#: next call in the window signs the total without it (window_call_units) — audit 2026-11-11,
+#: escrow-2. Not SUPERSEDED any more, so it never counts as a ledger-backed part of a total.
+WITHDRAWN_SUPERSEDED_REASON = "withdrawn after a later running total had replaced it"
 # Forward-only transitions. Anything not listed is refused, so a bug cannot walk a
 # confirmed debit back to pending and have it submitted a second time.
 _ALLOWED: dict[str, tuple[str, ...]] = {
@@ -64,7 +69,13 @@ _ALLOWED: dict[str, tuple[str, ...]] = {
     # This is still forward-only; CONFIRMED remains terminal.
     PENDING: (PLANNED, SUBMITTED, CONFIRMED, ABANDONED),
     PLANNED: (PLANNED, SUBMITTED, CONFIRMED, ABANDONED),
-    SUBMITTED: (SUBMITTED, CONFIRMED, ABANDONED),
+    # SUBMITTED → PLANNED only through mark_resubmittable(): a broadcast that provably did not
+    # land (its receipt says reverted, or no node knows the transaction any more) while the
+    # contract still reads the receipt as unused. Sending it again cannot charge twice — the
+    # contract's own usedReceipts guard and mirror guard 0 both stand in the way — and without
+    # this edge such a row stayed SUBMITTED forever and blocked its channel (audit 2026-11-11,
+    # escrow-4).
+    SUBMITTED: (SUBMITTED, PLANNED, CONFIRMED, ABANDONED),
     CONFIRMED: (),
     ABANDONED: (),
 }
@@ -148,6 +159,9 @@ class AuthorizationRow:
     # Defaulted, and therefore last: added after the first stores existed, and a
     # dataclass cannot put a non-default field after a defaulted one.
     submitted_at: str = ""
+    # This call's own price in base units (the running total minus what it carried). 0 on rows
+    # stored before 2026-11-11, which window_call_units treats as unknown.
+    call_units: int = 0
 
     @property
     def is_terminal(self) -> bool:
@@ -179,6 +193,7 @@ def _row(raw: sqlite3.Row) -> AuthorizationRow:
         last_plan=plan if isinstance(plan, dict) else {}, last_error=raw["last_error"],
         tx_hash=raw["tx_hash"], created_at=raw["created_at"], resolved_at=raw["resolved_at"],
         submitted_at=(raw["submitted_at"] if "submitted_at" in raw.keys() else ""),
+        call_units=(int(raw["call_units"] or 0) if "call_units" in raw.keys() else 0),
     )
 
 
@@ -213,6 +228,11 @@ class AuthorizationStore:
                 self._conn.execute(
                     "ALTER TABLE debit_authorizations "
                     "ADD COLUMN submitted_at TEXT NOT NULL DEFAULT ''"
+                )
+            if "call_units" not in have:
+                self._conn.execute(
+                    "ALTER TABLE debit_authorizations "
+                    "ADD COLUMN call_units INTEGER NOT NULL DEFAULT 0"
                 )
             # Migrate legacy unique(channel, nonce) → partial unique on active rows only.
             idx = {
@@ -253,6 +273,7 @@ class AuthorizationStore:
         nonce: int,
         deadline: int,
         signature: str,
+        call_units: int = 0,
     ) -> AuthorizationRow:
         """Persist a verified authorization. Raises StoreError on a duplicate.
 
@@ -266,11 +287,11 @@ class AuthorizationStore:
                 self._conn.execute(
                     "INSERT INTO debit_authorizations (receipt_id, ledger_channel, "
                     "escrow_channel, chain_id, escrow_address, hub, token, depositor, "
-                    "amount_units, nonce, deadline, signature, status, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "amount_units, nonce, deadline, signature, status, created_at, call_units) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (receipt_id, ledger_channel, escrow_channel, int(chain_id),
                      escrow_address, hub, token, depositor, int(amount_units), int(nonce),
-                     int(deadline), signature, PENDING, _now()),
+                     int(deadline), signature, PENDING, _now(), max(0, int(call_units))),
                 )
                 self._conn.commit()
             except sqlite3.IntegrityError as exc:
@@ -369,6 +390,15 @@ class AuthorizationStore:
             tx_hash=str(tx_hash or ""), last_error="", submitted_at=_now(),
         )
 
+    def mark_resubmittable(self, receipt_id: str, reason: str) -> AuthorizationRow:
+        """A SUBMITTED row whose broadcast provably failed goes back to PLANNED for the next pass.
+
+        Call only after reading the receipt as unused on chain. The failed tx hash stays in
+        ``last_error`` for the operator; ``tx_hash`` is cleared so confirm() stops waiting on it.
+        """
+        return self._transition(receipt_id, PLANNED, tx_hash="",
+                                last_error=str(reason or "")[:300])
+
     def mark_confirmed(self, receipt_id: str, tx_hash: str = "") -> AuthorizationRow:
         fields: dict[str, Any] = {"last_error": ""}
         if tx_hash:
@@ -446,6 +476,49 @@ class AuthorizationStore:
             rows = self._conn.execute(query, args).fetchall()
         return [_row(r) for r in rows]
 
+    def queued_units(self, *, except_channel: str = "", except_nonce: int = -1) -> int:
+        """Base units waiting to be sent (PENDING/PLANNED live rows), outside one window.
+
+        With units_collected_since this is what the daily ceiling will have to carry; admission
+        compares the two with the new window so a call is refused rather than served into a
+        debit the ceiling can never let out (audit 2026-11-11, escrow-6).
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(amount_units), 0) AS units FROM debit_authorizations "
+                "WHERE status IN (?, ?) AND NOT (escrow_channel = ? AND nonce = ?)",
+                (PENDING, PLANNED, except_channel, int(except_nonce)),
+            ).fetchone()
+        return int(row["units"] if row else 0)
+
+    def actionable(self, *, limit: int = 500) -> list[AuthorizationRow]:
+        """Rows a submission pass can act on, the most urgent first.
+
+        PENDING and PLANNED only (confirm() owns SUBMITTED), ordered by deadline. ``unresolved``
+        orders by channel id, and with the host sweep's ``--limit 5`` five rows that never
+        progress on low-sorting channel ids filled every pass, so healthy channels' rows
+        expired unsent (audit 2026-11-11, cross-cutting-2). By deadline, a stuck row either
+        resolves or reaches its deadline and is abandoned, and stops taking a slot.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM debit_authorizations WHERE status IN (?, ?) "
+                "ORDER BY deadline, escrow_channel, nonce LIMIT ?",
+                (PENDING, PLANNED, int(limit)),
+            ).fetchall()
+        return [_row(r) for r in rows]
+
+    def submitted(self, *, limit: int = 500) -> list[AuthorizationRow]:
+        """SUBMITTED rows, oldest broadcast first — selected by status BEFORE the limit, so a
+        long queue of unsent rows can never hide a broadcast from confirm()."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM debit_authorizations WHERE status = ? "
+                "ORDER BY submitted_at, created_at LIMIT ?",
+                (SUBMITTED, int(limit)),
+            ).fetchall()
+        return [_row(r) for r in rows]
+
     def get_by_channel_nonce(self, escrow_channel: str, nonce: int) -> AuthorizationRow | None:
         """Lookup one authorization by (escrow channel, nonce), if any."""
         with self._lock:
@@ -483,6 +556,42 @@ class AuthorizationStore:
                 (escrow_channel, int(nonce), ABANDONED, SUPERSEDED_REASON),
             ).fetchall()
         return [_row(r) for r in raws]
+
+    def mark_withdrawn_superseded(self, receipt_id: str, reason: str) -> bool:
+        """A SUPERSEDED row's own call was withdrawn: take it out of the window's live calls.
+
+        Returns True if the row was SUPERSEDED (and now is not). The row stays abandoned; only
+        its reason changes, so it no longer counts as a ledger-backed part of the window
+        (superseded_in_window) and no longer as a call the next running total must carry
+        (window_call_units).
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE debit_authorizations SET last_error = ? "
+                "WHERE receipt_id = ? AND status = ? AND last_error = ?",
+                (f"{WITHDRAWN_SUPERSEDED_REASON}: {reason}"[:300], receipt_id, ABANDONED, SUPERSEDED_REASON),
+            )
+            self._conn.commit()
+        return bool(cur.rowcount)
+
+    def window_call_units(self, escrow_channel: str, nonce: int) -> int | None:
+        """The prices of the calls still standing in a window, summed: what the next running
+        total must carry. None when any of them predates call_units (the caller then falls back
+        to the live row's own total, as before 2026-11-11).
+
+        Standing = the live row and the rows it SUPERSEDED. Withdrawn, refunded, expired and
+        confirmed rows are not calls the buyer still owes for in this window.
+        """
+        with self._lock:
+            raws = self._conn.execute(
+                "SELECT call_units FROM debit_authorizations WHERE escrow_channel = ? AND nonce = ? "
+                "AND (status IN (?, ?) OR (status = ? AND last_error = ?))",
+                (escrow_channel, int(nonce), PENDING, PLANNED, ABANDONED, SUPERSEDED_REASON),
+            ).fetchall()
+        units = [int(r["call_units"] or 0) for r in raws]
+        if any(u <= 0 for u in units):
+            return None
+        return sum(units)
 
     def revive_superseded(self, escrow_channel: str, nonce: int) -> AuthorizationRow | None:
         """Make the window's previous running total its claim again.

@@ -353,6 +353,35 @@ class TopupStore:
         )
         self._conn.commit()
 
+    def overpaid(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Credited quotes paid above their amount whose excess the operator has not settled.
+
+        The credit stops at the quote, so the excess is money in the top-up wallet that is
+        nobody's balance: the operator's to-do in /admin/deposits (deposits-x402-5).
+        """
+        rows = self._conn.execute(
+            "SELECT nonce, account_id, tx_hash, payer, amount_units, paid_units, credited_at "
+            "FROM credit_topup_quotes WHERE status = ? AND paid_units > amount_units "
+            "AND excess_resolved = '' ORDER BY credited_at LIMIT ?",
+            (CREDITED, page_limit(limit, maximum=QUOTES_PAGE_MAX)),
+        ).fetchall()
+        return [{
+            "nonce": r["nonce"], "account_id": r["account_id"], "tx_hash": r["tx_hash"],
+            "payer": r["payer"], "quoted_units": int(r["amount_units"]), "paid_units": int(r["paid_units"]),
+            "excess_units": int(r["paid_units"]) - int(r["amount_units"]),
+            "credited_at": float(r["credited_at"] or 0),
+        } for r in rows]
+
+    def resolve_excess(self, tx_hash: str, note: str) -> bool:
+        """The operator refunded (or otherwise settled) a top-up's excess; it leaves the to-do."""
+        cur = self._conn.execute(
+            "UPDATE credit_topup_quotes SET excess_resolved = ? WHERE tx_hash = ? AND status = ? "
+            "AND paid_units > amount_units AND excess_resolved = ''",
+            (f"resolved by the operator: {note}"[:300], (tx_hash or "").strip().lower(), CREDITED),
+        )
+        self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
     def for_account(self, account_id: str, limit: int = 50) -> list[Quote]:
         rows = self._conn.execute(
             "SELECT * FROM credit_topup_quotes WHERE account_id = ? ORDER BY created_at DESC LIMIT ?",
@@ -492,18 +521,24 @@ def quote(*, store: TopupStore, account_id: str, amount_usd: Any, hub_url: str,
 
 
 def _terms(q: Quote) -> settle.PaymentTerms:
-    """What the chain check requires of the authorization over this quote's nonce.
+    """What the chain check requires of the authorization over this quote's nonce: the QUOTED
+    amount, transferred to ``payTo`` by the authorization itself.
 
-    Any positive amount from its own transfer to ``payTo`` is accepted here, not only the
-    quoted amount: the nonce already binds the payment to one account, and refusing an
-    underpayment would strand money that is unambiguously that account's. What is CREDITED
-    is decided after the check — never more than the quote.
+    Until 2026-11-11 any positive amount was accepted so that an underpayment would be credited.
+    But EIP-3009 nonces are per signer: anyone can sign an authorization of their own over a
+    buyer's quote nonce (it is public once the buyer's payment is mined), and with a 1-unit
+    threshold the FIRST match bound the quote — a 10-unit "payment" closed a $100 quote, the
+    buyer's real payment was then refused as "already credited", and settle's "every match is
+    tried" defence never got past the dust (audit credits-1). With the full amount required,
+    dust is skipped and the buyer's own authorization binds. An underpayment no longer closes
+    the quote; it stays in the top-up wallet, listed for the operator in /admin/deposits.
+    What is CREDITED is still never more than the quote.
     """
     profile = x402.asset_profile() or {}
     decimals = int(profile.get("decimals") or 6)
     return settle.PaymentTerms(
         chain=q.chain, token=x402.asset_symbol(), token_contract=q.token_contract, decimals=decimals,
-        pay_to=q.pay_to, amount_units=1, amount_usd=q.amount_usd(decimals),
+        pay_to=q.pay_to, amount_units=max(1, int(q.amount_units)), amount_usd=q.amount_usd(decimals),
         min_confirmations=min_confirmations(), chain_id=q.chain_id or 8453,
     )
 
@@ -589,11 +624,18 @@ def redeem(*, store: TopupStore, ledger: Any, payments: settle.PaymentStore, non
                          retryable=True)
     try:
         settled = verify(tx_hash=tx_hash, terms=_terms(q), require_nonce=nonce)
+    except settle.PaymentFinal as exc:
+        # Only what the CHAIN says is final: reverted, the wrong payee, not this nonce, too small.
+        raise TopupError(402, "payment_invalid", str(exc)) from None
     except settle.PaymentError as exc:
+        # Everything else is a state that can change — too few confirmations, not mined yet, or
+        # an RPC that answered with an error. Reported as final until 2026-11-11, so the deposit
+        # watcher filed a good payment as "quote refused" on one rate-limited answer and never
+        # redeemed it again (audit deposits-x402-2).
         text = str(exc)
         pending = "confirmation" in text or "not on chain yet" in text
-        raise TopupError(409 if pending else 402, "payment_not_final" if pending else "payment_invalid",
-                         text, retryable=pending) from None
+        raise TopupError(409 if pending else 503, "payment_not_final" if pending else "verifier_unavailable",
+                         text, retryable=True) from None
     except Exception as exc:  # noqa: BLE001 - an RPC that cannot be reached is not a refusal
         logger.error("topup: chain verification of %s failed: %s", tx_hash[:18], exc)
         raise TopupError(503, "verifier_unavailable",
@@ -663,7 +705,8 @@ def redeem(*, store: TopupStore, ledger: Any, payments: settle.PaymentStore, non
     if paid_units > q.amount_units:
         detail = f"overpaid {paid_units - q.amount_units} base units; credited the quote"
         logger.error("topup: %s paid %s base units over its %s-unit quote %s — the excess is not credited; "
-                     "refund it", payer[:12], paid_units - q.amount_units, q.amount_units, nonce[:18])
+                     "refund it (listed in /admin/deposits as overpaid_topups)",
+                     payer[:12], paid_units - q.amount_units, q.amount_units, nonce[:18])
     elif paid_units < q.amount_units:
         detail = f"paid {paid_units} of {q.amount_units} base units; credited what arrived"
     store.credit(nonce, payer=payer, paid_units=paid_units, credited_mc=credited_mc, reference=reference,

@@ -209,6 +209,14 @@ def score_verdict(checks: list[dict[str, Any]]) -> str:
             if item is not None and item.get("ok") is False:
                 return "review"
         return "pass"
+    # The third kind, for a hub with nothing at all to probe (an index): admitted hubs on
+    # enough different sites already list it under the key it advertises. Only when the
+    # sandbox had nothing to try — a hub whose own probe FAILED cannot be vouched past it.
+    witnessed = by.get("index_witnesses")
+    probe = by.get("sandbox_probe")
+    if (witnessed is not None and witnessed.get("ok") is True
+            and (probe is None or probe.get("ok") is None)):
+        return "pass"
     return "review"
 
 
@@ -256,7 +264,10 @@ def assay_blockers(dossier: dict[str, Any] | None) -> list[dict[str, Any]]:
                 put(gate)
     elif probe is not None:
         # No evidence of either kind. Name the step where the probe stopped.
-        if probe.get("ok") is not True:
+        witnessed = by.get("index_witnesses")
+        if probe.get("ok") is None and witnessed is not None and witnessed.get("ok") is not True:
+            put("index_witnesses")
+        elif probe.get("ok") is not True:
             put("sandbox_probe")
         elif receipt is not None and receipt.get("ok") is False:
             put("sandbox_receipt_signed")
@@ -265,6 +276,88 @@ def assay_blockers(dossier: dict[str, Any] | None) -> list[dict[str, Any]]:
         elif receipt is not None:
             put("sandbox_receipt_signed")
     return out
+
+
+# ── Index-only hubs: admission by witnesses (owner, 2026-11-08) ──────────────
+
+#: Platforms whose tenants are different sites under one suffix: two hubs on Railway are two
+#: operators, not one. Without this, every *.up.railway.app hub would count as the same witness.
+_SHARED_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "com.au", "net.au", "co.jp", "com.br", "co.nz", "co.in", "com.cn",
+    "up.railway.app", "railway.app", "onrender.com", "fly.dev", "vercel.app", "netlify.app",
+    "herokuapp.com", "github.io", "pages.dev", "workers.dev", "sslip.io", "nip.io", "deno.dev",
+})
+MAX_WITNESS_FETCHES = 24
+
+
+def index_witnesses_required() -> int:
+    """How many different sites must vouch for an index-only hub; 0 switches the rule off."""
+    try:
+        return max(0, int(os.getenv("AIMARKET_FEDERATION_INDEX_WITNESSES", "2") or 0))
+    except ValueError:
+        return 2
+
+
+def site_of(url: str) -> str:
+    """The registrable site of a URL, near enough: example.com for hub.example.com, the whole
+    tenant host on a shared platform, the address itself for an IP."""
+    host = (urlparse(str(url or "")).hostname or "").lower().rstrip(".")
+    if not host or re.fullmatch(r"[0-9.]+|[0-9a-f:]+", host):
+        return host
+    labels = host.split(".")
+    for n in (3, 2):
+        if len(labels) > n and ".".join(labels[-n:]) in _SHARED_SUFFIXES:
+            return ".".join(labels[-(n + 1):])
+    return ".".join(labels[-2:])
+
+
+def _hard_checks_passed(checks: list[dict[str, Any]]) -> bool:
+    by = {str(c.get("id") or ""): c for c in checks if isinstance(c, dict)}
+    return all((by.get(h) or {}).get("ok") is True for h in HARD_CHECKS)
+
+
+async def gather_index_witnesses(base: str, advertised_key: str, *, db: Any, get: Any
+                                 ) -> tuple[bool, str, list[dict[str, str]]]:
+    """Ask the hubs this one admitted whether they admitted ``base`` under ``advertised_key``.
+
+    A witness is a peer of ours (status active, key pinned) on a different site from ``base``
+    whose public /federation/peers lists ``base`` as active with exactly that public key. Read,
+    never trusted beyond that: one site counts once however many hubs it runs, and the key
+    must match the one ``base`` advertised to us in this very assay.
+    """
+    need = index_witnesses_required()
+    if not advertised_key:
+        return False, "no advertised key to compare", []
+    own_site = site_of(base)
+    seen_sites: dict[str, str] = {}
+    asked = 0
+    for peer in _trusted_peers(db):
+        url = str(getattr(peer, "url", "") or "").rstrip("/")
+        site = site_of(url)
+        if not url or site == own_site or site in seen_sites:
+            continue
+        if asked >= MAX_WITNESS_FETCHES:
+            break
+        asked += 1
+        try:
+            doc = await get(f"{url}/ai-market/v2/federation/peers")
+        except Exception:
+            continue
+        rows = doc.get("peers") if isinstance(doc, dict) else None
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            if (normalize_hub_url(str(row.get("url") or "")) == base
+                    and str(row.get("status") or "") == "active"
+                    and str(row.get("public_key") or "") == advertised_key):
+                seen_sites[site] = url
+                break
+    witnesses = [{"site": k, "hub": v} for k, v in sorted(seen_sites.items())]
+    if len(witnesses) >= need:
+        return True, f"admitted under the same key by {len(witnesses)} sites: " + ", ".join(
+            w["site"] for w in witnesses)[:380], witnesses
+    return False, (f"an index-only hub needs {need} admitted hubs on different sites listing it under "
+                   f"its key; found {len(witnesses)} of {asked} asked"), witnesses
 
 
 def _add(checks: list[dict[str, Any]], check_id: str, ok: bool | None, detail: str = "") -> None:
@@ -1033,6 +1126,15 @@ async def run_assay(
                     "no publicly offered capability to probe, free or priced",
                 )
                 _add(checks, "sandbox_receipt_signed", None, "not attempted")
+                # An index-only hub (a registry, a directory) sells and relays nothing, so the
+                # sandbox has no work to judge and the verdict would be `review` forever. Its
+                # evidence is the federation's: hubs this one already admitted, on at least
+                # INDEX_WITNESSES different sites, list it as admitted under the same key.
+                if index_witnesses_required() and _hard_checks_passed(checks):
+                    w_ok, w_detail, w_list = await gather_index_witnesses(
+                        base, advertised_key, db=db, get=_get)
+                    _add(checks, "index_witnesses", w_ok, w_detail)
+                    sandbox["index_witnesses"] = w_list
             else:
                 # Each candidate is scored on its own checks and only the decisive attempt
                 # is merged into the dossier: appending every attempt would put several

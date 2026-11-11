@@ -265,6 +265,15 @@ class SettlementFinalizingMixin:
             from_status = vs._FINALIZING
         paid = bool(row["channel_id"]) and float(row["price_usd"] or 0) > 0
         refunding = force_refund or verdict == "failed"
+        if paid and not refunding and hold_state(nonce) == "held" and self._escrow_uncollectable(nonce):
+            # The verdict came after the buyer's escrow authorization died (abandoned, or past
+            # its deadline): capturing would book revenue nothing can ever collect on chain,
+            # and the depositor takes the money back at settle. Release instead, so the ledger
+            # says what really happened (audit 2026-11-11, escrow-5 / pay-on-verified-4). Only
+            # while the hold is untouched: a replay keeps the outcome an earlier attempt took.
+            logger.warning("verified-settlement %s: the escrow authorization expired before the "
+                           "verdict; releasing instead of capturing", nonce)
+            refunding = True
 
         settled = False
         ledger_note = None
@@ -274,6 +283,7 @@ class SettlementFinalizingMixin:
             if captured_now:
                 # Only on the attempt that captured: a replay must not accrue twice.
                 self._accrue_acex(row)
+                self._pay_verified_share(row)
             if refunding and ledger_note is None:
                 self._withdraw_escrow_authorization(nonce)
         elif paid:
@@ -292,6 +302,7 @@ class SettlementFinalizingMixin:
                 else:
                     settled = True
                     self._accrue_acex(row)
+                    self._pay_verified_share(row)
         else:
             # Advisory: nothing was held; the invoke settled (freely) at response time.
             settled = not refunding
@@ -308,8 +319,17 @@ class SettlementFinalizingMixin:
             return False
 
         env = json.loads(row["envelope_json"] or "{}")
+        # "refunded" only where money was held and handed back. An advisory verdict (credits,
+        # x402 seller-direct: the call settled at response time) that fails refunds nothing, and
+        # signing it "refunded" told SDKs a refund had happened that never did (audit 2026-11-11,
+        # pay-on-verified-3).
+        if refunding:
+            status = "refunded" if paid else "advisory_failed"
+        else:
+            status = "settled"
         env.update(
-            status="refunded" if refunding else "settled",
+            status=status,
+            refunded=bool(refunding and paid and ledger_note is None),
             performed=performed,
             verified=verified,
             verify_score=round(verify_score, 4),
@@ -415,7 +435,7 @@ class SettlementFinalizingMixin:
                     publisher_id=row["provider_id"],
                     product_id=row["product_id"],
                     capability_id=row["capability_id"],
-                    consumer_id=row["channel_id"] or "",
+                    consumer_id=self._consumer_of(row["channel_id"] or ""),
                     paid=paid,
                     rejection=rejection,
                 )
@@ -432,6 +452,71 @@ class SettlementFinalizingMixin:
             nonce, env["status"], verdict, env["verify_score"] or 0.0, trace_id, env.get("verifier"),
         )
         return True
+
+    @staticmethod
+    def _consumer_of(channel_id: str) -> str:
+        """Who a failed verdict counts as, for the slash ladder's "distinct consumers": the
+        channel's wallet, not the channel. One wallet opens any number of channels, so counting
+        channels let a single buyer pass the two-consumer threshold alone and drive a
+        competitor's stake down (audit 2026-11-11, pay-on-verified-1). A channel with no wallet
+        on record keeps counting as itself."""
+        if not channel_id:
+            return ""
+        try:
+            from aimarket_hub import channels
+
+            wallet = str((channels._ledger.get(channel_id) or {}).get("wallet") or "").strip().lower()
+        except Exception:  # noqa: BLE001
+            wallet = ""
+        return f"wallet:{wallet}" if wallet else channel_id
+
+    @staticmethod
+    def _pay_verified_share(row: Any) -> None:
+        """Pay the seller the share fixed at the call (publisher_share_bps), once the verdict
+        captured. Idempotent on the receipt (pay_publisher dedupes on it), never raises.
+
+        The plain channel path pays this share at capture; a verified sale captured through the
+        verdict paid nothing, so the operator kept 100% of exactly the sales sold as "providers
+        get paid for verified work" (audit 2026-11-11, pay-on-verified-2).
+        """
+        keys = set(row.keys()) if hasattr(row, "keys") else set()
+        account = str(row["publisher_account"] or "") if "publisher_account" in keys else ""
+        amount = float(row["publisher_share_usd"] or 0) if "publisher_share_usd" in keys else 0.0
+        if not account or amount <= 0:
+            return
+        try:
+            result = hub_credits.ledger().pay_publisher(
+                account, amount, receipt_id=str(row["nonce"]), note="verified capability sale")
+        except Exception:  # noqa: BLE001
+            logger.exception("verified-settlement %s: paying the seller's share failed", row["nonce"])
+            return
+        if result.get("error"):
+            logger.error("verified-settlement %s: paying the seller's share failed: %s",
+                         row["nonce"], result["error"])
+
+    @staticmethod
+    def _escrow_uncollectable(receipt_id: str) -> bool:
+        """True when this call's escrow debit can no longer be collected: its authorization row
+        was abandoned (other than by being superseded — a later running total then carries it)
+        or its deadline has passed unsent. False on any doubt, and on hubs without the bridge."""
+        try:
+            from aimarket_hub.escrow_bridge import store as bridge_store
+
+            authorizations = bridge_store.AuthorizationStore(create=False)
+        except Exception:
+            return False
+        try:
+            row = authorizations.get(receipt_id)
+            if row is None or row.status == bridge_store.CONFIRMED:
+                return False
+            if row.status == bridge_store.ABANDONED:
+                return row.last_error != bridge_store.SUPERSEDED_REASON
+            return row.status in (bridge_store.PENDING, bridge_store.PLANNED) and row.expired()
+        except Exception:
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                authorizations.close()
 
     @staticmethod
     def _withdraw_escrow_authorization(receipt_id: str) -> None:

@@ -129,7 +129,30 @@ def parse_authorization(payload: object) -> tuple[DebitAuthorization, str]:
         raise
     except (TypeError, ValueError) as exc:
         raise AuthorizationRejected(f"payment authorization has a malformed field: {exc}") from exc
+    # One spelling per receipt. The contract reads the same 32 bytes whatever the hex case, but
+    # the store, the channel ledger and the idempotency layer key on the string: "0xABAB…" and
+    # "0xabab…" were two receipts there and one call here, so a case variant signed only its own
+    # price and replaced the window's running total (audit 2026-11-11, escrow-1).
+    receipt = canonical_receipt_id(auth.receipt_id)
+    if receipt is None:
+        raise AuthorizationRejected("payment authorization receiptId must be 0x followed by 64 hex digits")
+    if receipt != auth.receipt_id:
+        from dataclasses import replace
+
+        auth = replace(auth, receipt_id=receipt)
     return auth, signature
+
+
+def canonical_receipt_id(value: object) -> str | None:
+    """``0x`` + 64 lower-case hex digits, or None for anything that is not a bytes32."""
+    text = str(value or "").strip().lower()
+    if not text.startswith("0x") or len(text) != 66:
+        return None
+    try:
+        bytes.fromhex(text[2:])
+    except ValueError:
+        return None
+    return text
 
 
 def verify_and_store(
@@ -212,9 +235,22 @@ def verify_and_store(
         live = None
     if live is not None and str(live.receipt_id).lower() == str(auth.receipt_id).lower():
         # The same receipt arriving twice is a replay of ONE call, not a second one. It
-        # owes nothing extra; the replay check below is what answers it.
-        live = None
+        # is never stored again and never replaces the row it repeats (see the StoreError
+        # branch below): answering it is the idempotency layer's job.
+        raise AuthorizationRejected(
+            f"an authorization for receipt {auth.receipt_id} is already stored; repeat the "
+            "original request (same channel secret and body) to get its answer"
+        )
     carried_units = int(live.amount_units) if live is not None else 0
+    if live is not None:
+        # What the calls still standing in this window cost, rather than the live row's
+        # signed total: a call withdrawn after a later total replaced it stays inside that
+        # total, which then claims more than the ledger debited and blocks the whole window
+        # (audit 2026-11-11, escrow-2). The next call signs the corrected total and replaces
+        # the over-claiming row. Rows stored before call_units existed keep the old rule.
+        standing = authorizations.window_call_units(escrow_channel_id, int(auth.nonce))
+        if standing is not None:
+            carried_units = standing
     call_units = escrow_verify.usd_to_base_units(expected_amount_usd)
     expected_units = call_units + carried_units
     cap_usd = config.max_uncollected_usd()
@@ -227,6 +263,30 @@ def verify_and_store(
             f"{expected_units} on credit, over the hub's {cap_usd:.2f} USD limit — retry "
             "once the pending debit lands"
         )
+    per_day = config.max_usd_per_day()
+    if per_day and escrow_verify.base_units_to_usd(expected_units) > per_day:
+        # The mirror sends one debit per window and never more than the daily ceiling in 24h:
+        # a window above it is served and then can never be collected (audit 2026-11-11,
+        # cross-cutting-3). Refused before the provider runs, while it costs nobody anything.
+        raise AuthorizationRejected(
+            f"this call would put ${escrow_verify.base_units_to_usd(expected_units):.2f} in one "
+            f"escrow debit, above the ${per_day:.2f} this hub collects in a day "
+            "(AIMARKET_ESCROW_MAX_USD_PER_DAY); pay it from another rail or a smaller window"
+        )
+    if per_day:
+        # Back-pressure: what the last 24h sent plus what is queued elsewhere plus this window
+        # must fit the daily ceiling, or this call would be served and then expire unsent while
+        # the ceiling holds the queue (audit 2026-11-11, escrow-6). Refusing says "later".
+        committed = (authorizations.units_collected_since(time.time() - 86_400)
+                     + authorizations.queued_units(except_channel=escrow_channel_id,
+                                                   except_nonce=int(auth.nonce))
+                     + expected_units)
+        if escrow_verify.base_units_to_usd(committed) > per_day:
+            raise AuthorizationRejected(
+                f"this hub's escrow collection for the day is full (${per_day:.2f}, "
+                "AIMARKET_ESCROW_MAX_USD_PER_DAY): serving this call now could not be collected "
+                "before its authorization expires — retry later or pay from another rail"
+            )
     if int(auth.amount) != expected_units:
         if carried_units:
             raise AuthorizationRejected(
@@ -295,6 +355,7 @@ def verify_and_store(
             nonce=int(auth.nonce),
             deadline=int(auth.deadline),
             signature=signature,
+            call_units=call_units,
         )
     except store.StoreError as exc:
         # Same (escrow channel, nonce) may already be pending from a prior invoke that
@@ -308,13 +369,19 @@ def verify_and_store(
             # it the third call could read that one, see a terminal status, and refuse a
             # perfectly good cumulative authorization.
             existing = authorizations.active_at(escrow_channel_id, int(auth.nonce))
-            # Only ever supersede a claim the incoming authorization provably COVERS. The
-            # amount check above already guarantees it — this is the second lock on the
-            # door, because the thing on the other side of it is money already earned.
+            # Only ever supersede a claim the incoming authorization provably COVERS — every
+            # call still standing in the window (carried_units), which is the live row's own
+            # total unless a call inside it was withdrawn. The amount check above already
+            # guarantees it; this is the second lock on the door, because the thing on the
+            # other side of it is money already earned. And never the row this very receipt
+            # wrote: a replay that reached here (SQLite reports the (channel, nonce) index
+            # before the primary key) abandoned the hub's own claim to a delivered call
+            # (audit 2026-11-11, channels-1).
             if (
                 existing is not None
                 and existing.status in (store.PENDING, store.PLANNED)
-                and int(auth.amount) >= int(existing.amount_units)
+                and str(existing.receipt_id).lower() != str(auth.receipt_id).lower()
+                and int(auth.amount) >= int(carried_units)
             ):
                 try:
                     authorizations.abandon(existing.receipt_id, store.SUPERSEDED_REASON)
@@ -334,6 +401,7 @@ def verify_and_store(
                         nonce=int(auth.nonce),
                         deadline=int(auth.deadline),
                         signature=signature,
+                        call_units=call_units,
                     )
                 except store.StoreError as retry_exc:
                     raise AuthorizationRejected(str(retry_exc)) from retry_exc
@@ -365,6 +433,15 @@ def withdraw(receipt_id: str, authorizations: store.AuthorizationStore, *, reaso
     window's claim again. Best effort and idempotent.
     """
     row = authorizations.get(receipt_id)
+    if row is not None and row.status == store.ABANDONED and row.last_error == store.SUPERSEDED_REASON:
+        # Replaced while it was still in flight: its price is inside the live running total,
+        # which now claims more than the ledger will debit. Mark it, so the next call in the
+        # window signs the total without it (window_call_units) instead of every later row
+        # being refused as over-collection until the deadline (audit 2026-11-11, escrow-2).
+        if authorizations.mark_withdrawn_superseded(receipt_id, str(reason)[:200]):
+            logger.info("escrow bridge: superseded %s withdrawn (%s); the window's next total "
+                        "leaves it out", receipt_id[:14], reason)
+        return
     if row is None or row.status not in (store.PENDING, store.PLANNED):
         return
     authorizations.abandon(receipt_id, str(reason)[:300])

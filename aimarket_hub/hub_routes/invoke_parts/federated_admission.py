@@ -14,7 +14,7 @@ import secrets
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
-from aimarket_hub import credits, verified_settlement
+from aimarket_hub import credits, peer_routing, settle, verified_settlement, x402_bridge
 from aimarket_hub.sandbox_trials import consume_sandbox_trial, free_tier_covers, model_budget_refusal
 
 
@@ -134,8 +134,26 @@ async def _fed_quote(d: SimpleNamespace, call: _Call, fed: _Fed) -> None:
     # bought through this hub at all — its 402 lands on a buyer with no account there.
     fed_peer_key = config.peer_api_key(body.source_hub)
     fed_resells = bool(fed_peer_key)
+    # ── The x402 bridge (owner, 2026-11-08) ──────────────────────────────────
+    # A buyer paying in credits, a peer that bills over x402 at its own door, and this hub
+    # neither sells for it nor holds a key there. That buyer met the peer's 402 and bought
+    # nothing (see `fed_direct_x402` below): demand never reached an outside seller. With the
+    # bridge on, this hub holds the LISTED price on the buyer's credits, pays the peer's own
+    # 402 from its bridge wallet (never more than that price, only to a payee the peer itself
+    # published) and charges the buyer what it actually paid, once the peer delivered.
+    fed_bridge = False
+    if (not fed_sells and not fed_resells and not sandbox_mode and price_rail_active
+            and credit_account and not x402_raw and fed_cap is not None and fed_list_price > 0
+            and x402_bridge.enabled()):
+        bills, payees = await peer_routing.peer_x402_terms(peer)
+        listed_payee = settle.seller_pay_to(fed_cap)
+        if listed_payee:
+            payees = payees | {listed_payee.lower()}
+        if bills and payees:
+            fed_bridge = True
+            fed.bridge, fed.bridge_payees = True, frozenset(payees)
     fed_price = 0.0 if (
-        sandbox_mode or not price_rail_active or not (fed_sells or fed_resells)
+        sandbox_mode or not price_rail_active or not (fed_sells or fed_resells or fed_bridge)
     ) else fed_list_price
     if (fed_sells or fed_resells) and price_rail_active and not sandbox_mode \
             and fed_cap is None:
@@ -190,11 +208,20 @@ async def _fed_quote(d: SimpleNamespace, call: _Call, fed: _Fed) -> None:
         # sent no payment be brokered for nothing.
         and await _peer_sells_direct(peer)
     )
-    if fed_direct_x402:
+    if fed_direct_x402 or fed_bridge:
+        # The bridge is the same direct x402 sale, made by this hub on the buyer's behalf:
+        # the price goes to the seller and no routing fee is added on top.
         expected_fee = 0.0
     fed.cap, fed.list_price, fed.price = fed_cap, fed_list_price, fed_price
     fed.sells, fed.peer_key, fed.resells = fed_sells, fed_peer_key, fed_resells
     fed.listed, fed.listed_price, fed.expected_fee = listed, listed_price, expected_fee
+
+
+def _escrow_bound(channel_id: str) -> bool:
+    """Is this payment channel backed by an on-chain escrow channel? False when unknown."""
+    with contextlib.suppress(Exception):
+        return bool(invoke.channel_escrow_binding(channel_id))
+    return False
 
 
 def _fed_price_ceiling(d: SimpleNamespace, call: _Call, fed: _Fed):
@@ -224,7 +251,16 @@ def _fed_price_ceiling(d: SimpleNamespace, call: _Call, fed: _Fed):
         ceiling_total = credits.mc_to_usd(credits.usd_to_mc(fed_price) + credits.usd_to_mc(expected_fee))
     elif x402_raw:
         ceiling_total = round(fed_price + expected_fee, 6)
-    if body.max_price_usd is not None and ceiling_total > body.max_price_usd:
+    elif call.x_payment_channel and not _escrow_bound(call.x_payment_channel):
+        # A transfer-funded channel takes the price and the fee as two holds, each rounded UP
+        # to a whole cent: $0.004 + $0.00004 was billed $0.02 against a $0.01 ceiling (audit
+        # 2026-11-11, federation-6). An escrow-bound channel signs the one combined total above.
+        from aimarket_hub.channels import _dollars_to_cents_bill
+
+        cents = _dollars_to_cents_bill(fed_price) if fed_price > 0 else 0
+        cents += _dollars_to_cents_bill(expected_fee) if expected_fee > 0 else 0
+        ceiling_total = cents / 100.0
+    if body.max_price_usd is not None and ceiling_total > body.max_price_usd + 1e-9:
         return JSONResponse(status_code=409, content={
             "success": False,
             "error": "price_limit_exceeded",
@@ -254,7 +290,15 @@ def _fed_escrow_authorization(d: SimpleNamespace, call: _Call, fed: _Fed):
     #
     # The receipt id is the buyer's, not ours: the contract's replay key (`usedReceipts`)
     # and the ledger's receipt then are literally the same string and cannot drift.
-    if crypto_on and not sandbox_mode and x_payment_channel:
+    #
+    # Only when the escrow channel is the rail that pays. A credit key takes the price first
+    # (_fed_trial_or_hold) and an X-Payment pays the seller directly; an authorization stored
+    # for such a call claims money the channel ledger never took, so guard 2 of the mirror
+    # refuses it — and every later call in its nonce window with it — and the routing fee was
+    # skipped as "already inside the authorized hold". The local branch has had this rule
+    # since 75cb486c2 (escrow_pays); this branch had not (audit 2026-11-11, federation-1).
+    escrow_pays = not call.credit_account and not call.x402_raw
+    if crypto_on and not sandbox_mode and x_payment_channel and escrow_pays:
         with contextlib.suppress(Exception):
             fed.escrow_binding = invoke.channel_escrow_binding(x_payment_channel)
 
@@ -588,6 +632,13 @@ def _fed_reserve_routing_fee(d: SimpleNamespace, call: _Call, fed: _Fed):
         # both double-charge the buyer and split the ledger record across two receipts.
         # The fee is recognised out of the captured total; the settlement tail's fee
         # block is a no-op because `fed_fee_nonce` stays empty.
+        pass
+    elif (expected_fee > 0 and price_rail_active and credit_account and credits_ledger is not None
+          and credits.usd_to_mc(expected_fee) <= 0):
+        # A fee below half a millicent rounds to nothing on the credits ledger, whose hold
+        # refuses a zero amount: the buyer got a 402 for every brokered or resold capability
+        # this cheap, so it could not be bought with a credit key at all (audit 2026-11-11,
+        # federation-7). Nothing to reserve — and nothing the ledger could have charged.
         pass
     elif expected_fee > 0 and price_rail_active:
         fee_nonce = f"fee_{secrets.token_hex(8)}"

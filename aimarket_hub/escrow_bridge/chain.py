@@ -334,6 +334,19 @@ def encode_is_receipt_used(channel_id: str, receipt_id: str) -> str:
     ).hex()
 
 
+def has_no_code(address: str) -> bool:
+    """True only when a node answers that ``address`` holds no contract code at all.
+
+    Any failure — an unreachable chain, junk — returns False: "cannot tell" must never read as
+    "nothing is there", because the caller abandons a debit on True.
+    """
+    try:
+        code = _pool().call("eth_getCode", [normalize_address(address), "latest"])
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(code, str) and code.strip().lower() in ("0x", "0x0")
+
+
 def receipt_already_used(receipt_id: str, *, address: str | None = None,
                          channel_id: str | None = None) -> bool:
     """Whether the contract has already collected a debit for ``receipt_id``.

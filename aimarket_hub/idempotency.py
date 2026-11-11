@@ -51,6 +51,30 @@ _SKIP_RESPONSE_HEADERS = frozenset({b"content-length", b"date", b"server", b"set
 _INVOKE_PATH = "/ai-market/v2/invoke"
 
 
+def _paid_subcontracting(body: bytes | None) -> bool:
+    """Does an answer report subcontracted calls that cost money?
+
+    Such an answer is kept whatever its status: a 403 (the root's output blocked) after children
+    were bought used to be dropped, so the client's retry under the same Idempotency-Key ran a
+    fresh job and bought the children again (audit 2026-11-11, credits-3)."""
+    if not body:
+        return False
+    try:
+        doc = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    sub = doc.get("subcontracting") if isinstance(doc, dict) else None
+    if not isinstance(sub, dict):
+        return False
+    for field in ("spent_usd", "spent_from_allowance_usd"):
+        try:
+            if float(sub.get(field) or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -199,7 +223,7 @@ class IdempotencyStore:
 
     def finish(self, scope: str, key: str, status: int, headers: list[tuple[bytes, bytes]], body: bytes | None) -> None:
         try:
-            if status in NOT_KEPT:
+            if status in NOT_KEPT and not _paid_subcontracting(body):
                 self._conn.execute("DELETE FROM invoke_idempotency WHERE scope = ? AND idem_key = ? AND status = 'running'",
                                    (scope, key))
             else:

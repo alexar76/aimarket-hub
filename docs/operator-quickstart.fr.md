@@ -373,4 +373,4 @@ commercialement, fixer vos propres commissions et les garder toutes ; rien ne d�
 où que ce soit. Il n'y a pas de licence de marque : n'appelez donc pas votre déploiement
 « AIMarket » et ne laissez pas entendre une approbation. « Implements the AIMarket Protocol » et
 « interoperates with <peer> » sont exacts et acceptables.
-Le [programme de vérification de conformité](https://github.com/alexar76/aicom/blob/main/aimarket-protocol/conformance/run.py) vérifie les vecteurs couverts et les endpoints en service. Indiquez la portée et les résultats du test. Le programme ne délivre pas de certification.
+Le [programme de vérification de conformité](https://github.com/alexar76/aimarket-protocol/blob/main/conformance/run.py) vérifie les vecteurs couverts et les endpoints en service. Indiquez la portée et les résultats du test. Le programme ne délivre pas de certification.

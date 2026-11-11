@@ -4,10 +4,12 @@ and the channel row itself.
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import logging
 import math
 import secrets
+import time
 import uuid
 from typing import Any
 
@@ -20,6 +22,46 @@ class LedgerOpeningMixin:
     # ── Channel operations ────────────────────────────────────────
 
     def open(
+        self,
+        deposit_usd: float,
+        token: str = "",
+        chain: str = "",
+        wallet: str = "",
+        tx_hash: str = "",
+        with_secret: bool = True,
+        payer_signature: str = "",
+        escrow_channel_id: str = "",
+    ) -> dict[str, Any]:
+        """Open a pre-funded payment channel; the arguments are :meth:`_open_channel_row`'s.
+
+        The wallet's open bucket is looked at first and charged only when the channel is
+        actually opened, i.e. after the deposit and payer proof checked out: a refused
+        open naming someone else's public wallet no longer spends that wallet's 20/h
+        (audit 2026-11-11, channels-5). Junk requests are bounded by the per-IP HTTP cap.
+        """
+        if not self._check_rate(
+            wallet, self._rate_state, channels._MAX_OPENS_PER_WALLET_PER_HOUR,
+            channels._anon_opens_per_hour(), charge=False,
+        ):
+            return {
+                "error": (
+                    f"rate limit exceeded — max {channels._MAX_OPENS_PER_WALLET_PER_HOUR} channel "
+                    "opens per hour per wallet"
+                )
+            }
+        result = self._open_channel_row(
+            deposit_usd, token=token, chain=chain, wallet=wallet, tx_hash=tx_hash,
+            with_secret=with_secret, payer_signature=payer_signature,
+            escrow_channel_id=escrow_channel_id,
+        )
+        if isinstance(result, dict) and result.get("channel"):
+            try:
+                self._charge_rate(wallet, self._rate_state)
+            except Exception:  # noqa: BLE001 — the channel is committed; never 500 it
+                logger.exception("channel open: rate bucket not charged for %s", (wallet or "anonymous")[:10])
+        return result
+
+    def _open_channel_row(
         self,
         deposit_usd: float,
         token: str = "",
@@ -58,17 +100,6 @@ class LedgerOpeningMixin:
             return {"error": "deposit must be a finite number"}
         if deposit_usd <= 0 or deposit_usd > 10_000:
             return {"error": "deposit must be between 0 and 10,000 USD"}
-
-        if not self._check_rate(
-            wallet, self._rate_state, channels._MAX_OPENS_PER_WALLET_PER_HOUR,
-            channels._anon_opens_per_hour(),
-        ):
-            return {
-                "error": (
-                    f"rate limit exceeded — max {channels._MAX_OPENS_PER_WALLET_PER_HOUR} channel "
-                    "opens per hour per wallet"
-                )
-            }
 
         deposit_cents = channels._dollars_to_cents(deposit_usd)
         token = token or channels._DEFAULT_TOKEN
@@ -247,6 +278,7 @@ class LedgerOpeningMixin:
                 # bypass: the channel is bound to the payer, never left anonymous.
                 wallet = payer
                 verified_onchain = True
+                deposit_cents = self._credit_whole_payment(deposit_cents, result, tx_hash)
             elif not channels._allow_demo_credit():
                 # Not production, not stub, not explicitly demo → fail closed. A misconfigured
                 # public hub must never credit an unverified deposit (free channels).
@@ -321,11 +353,23 @@ class LedgerOpeningMixin:
                 # would have to unwind one of them. Nothing local is written yet here, so
                 # a refusal costs nothing; the two failure paths that CAN still fire after
                 # the claim (local race, unexpected error) release it explicitly.
+                #
+                # The intent row is committed first: it is how a later retry knows that a
+                # claim naming a channel this ledger never created was taken HERE by an
+                # open that died before its commit, and may be handed back (channels-4).
+                self._note_deposit_intent(conn, tx=tx, channel_id=channel_id)
                 claim = channels._claim_deposit_shared(
                     chain=chain, tx_hash=tx, channel_id=channel_id,
                     amount_cents=deposit_cents, db_path=self._db_path,
                 )
+                if (not claim.get("ok") and claim.get("error") == "already_claimed"
+                        and self._release_stranded_claim(conn, claim, chain=chain, tx=tx)):
+                    claim = channels._claim_deposit_shared(
+                        chain=chain, tx_hash=tx, channel_id=channel_id,
+                        amount_cents=deposit_cents, db_path=self._db_path,
+                    )
                 if not claim.get("ok"):
+                    self._drop_deposit_intent(conn, channel_id)
                     logger.warning(
                         "Rejected channel open: deposit tx %s on %s not claimable (%s)",
                         tx[:12], chain, claim.get("error"),
@@ -348,6 +392,9 @@ class LedgerOpeningMixin:
                         (chain, tx, channel_id, deposit_cents, now),
                     )
                 except Exception as exc:  # UNIQUE/PK violation → concurrent claim won
+                    conn.rollback()
+                    # The intent row stays: the release is best-effort, and if it did not
+                    # land, the row is what lets a retry recognise the claim as ours.
                     channels._release_deposit_shared(
                         chain=chain, tx_hash=tx, channel_id=channel_id,
                         db_path=self._db_path,
@@ -361,19 +408,36 @@ class LedgerOpeningMixin:
                         return {"error": "deposit transaction already used to fund a channel"}
                     raise
 
-            conn.execute(
-                """INSERT INTO channels
-                   (channel_id, balance_cents, original_deposit_cents, used_cents,
-                    token, chain, wallet, tx_hash, recipient, status,
-                    opened_at, expires_at, secret_hash)
-                   VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
-                (channel_id, deposit_cents, deposit_cents,
-                 token, chain, wallet, tx_hash, channels._RECIPIENT, now, expires,
-                 secret_hash),
-            )
-            if proven_payer:
-                self._record_proven_payer(conn, channel_id, proven_payer)
-            conn.commit()
+            try:
+                conn.execute(
+                    """INSERT INTO channels
+                       (channel_id, balance_cents, original_deposit_cents, used_cents,
+                        token, chain, wallet, tx_hash, recipient, status,
+                        opened_at, expires_at, secret_hash)
+                       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
+                    (channel_id, deposit_cents, deposit_cents,
+                     token, chain, wallet, tx_hash, channels._RECIPIENT, now, expires,
+                     secret_hash),
+                )
+                if proven_payer:
+                    self._record_proven_payer(conn, channel_id, proven_payer)
+                if verified_onchain:
+                    conn.execute("DELETE FROM channel_deposit_intents WHERE channel_id = ?",
+                                 (channel_id,))
+                conn.commit()
+            except BaseException:
+                # The shared claim is already taken: a failed channel write (disk, I/O,
+                # the proven-payer insert) used to keep it, and every retry of this
+                # deposit was refused as "already used" with no channel and no
+                # obligation behind it (audit 2026-11-11, channels-4).
+                # The committed intent row stays (see the consumed_deposits branch above).
+                if verified_onchain:
+                    with contextlib.suppress(Exception):
+                        conn.rollback()
+                    channels._release_deposit_shared(
+                        chain=chain, tx_hash=tx, channel_id=channel_id, db_path=self._db_path,
+                    )
+                raise
 
         balance_usd = channels._cents_to_dollars(deposit_cents)
         channel: dict[str, Any] = {
@@ -413,25 +477,30 @@ class LedgerOpeningMixin:
         proven stays: then the escrow channel is genuinely in use."""
         with self._lock, self._get_conn() as conn:
             self._ensure_proven_opens(conn)
+            # Open, but also settled or expired: a squatter that opened an unproven channel on
+            # someone's escrow channel and CLOSED it at once kept the deposit claim through the
+            # closed row, and the depositor's proven open was refused for good (audit
+            # 2026-11-11, channels-2). A terminal row that never charged anything holds nothing.
             rows = conn.execute(
-                "SELECT channel_id, used_cents, balance_cents, original_deposit_cents "
-                "FROM channels WHERE escrow_channel = ? AND status = 'open'",
+                "SELECT channel_id, used_cents, balance_cents, original_deposit_cents, status "
+                "FROM channels WHERE escrow_channel = ? AND status IN ('open', 'settled', 'expired')",
                 (escrow_channel_id,),
             ).fetchall()
             for row in rows:
-                cid, used, balance, original = row[0], row[1], row[2], row[3]
+                cid, used, balance, original, status = row[0], row[1], row[2], row[3], row[4]
                 proven = conn.execute(
                     "SELECT 1 FROM escrow_proven_opens WHERE channel_id = ?", (cid,)
                 ).fetchone()
                 held = conn.execute(
                     "SELECT 1 FROM channel_holds WHERE channel_id = ? AND status = 'held' LIMIT 1", (cid,)
                 ).fetchone()
-                if proven or used or held or balance != original:
+                if proven or used or held or (status == "open" and balance != original):
                     continue
-                conn.execute(
-                    "UPDATE channels SET status = 'superseded', balance_cents = 0 WHERE channel_id = ?",
-                    (cid,),
-                )
+                if status == "open":
+                    conn.execute(
+                        "UPDATE channels SET status = 'superseded', balance_cents = 0 WHERE channel_id = ?",
+                        (cid,),
+                    )
                 conn.commit()
                 channels._release_deposit_shared(chain=chain, tx_hash=claim_id, channel_id=cid, db_path=self._db_path)
                 logger.warning("escrow channel %s: an unproven, unused ledger channel %s was superseded "
@@ -594,6 +663,94 @@ class LedgerOpeningMixin:
             "(channel_id TEXT PRIMARY KEY, payer TEXT NOT NULL)"
         )
 
+    MAX_DEPOSIT_CENTS = 1_000_000          # the open() cap: 10,000 USD
+
+    def _credit_whole_payment(self, deposit_cents: int, verified: dict[str, Any], tx_hash: str) -> int:
+        """The cents to credit for a verified deposit: everything the payer sent, up to the cap.
+
+        The verifier accepts any payment of at least the asked amount, and the channel was
+        credited only the asked amount: the excess sat in the settlement wallet with no row
+        anywhere, so the depositor got it back only by complaining (audit 2026-11-11,
+        deposits-x402-5). Crediting it puts it in the balance, and so in the remainder the
+        close records as owed. Only the hub's own verifier reports the units and decimals.
+
+        The credit is the RECEIVED units converted to whole cents, rounded down — never the
+        asked cents scaled by paid/asked. The asked amount is rounded to a cent before the
+        check and not after, so the ratio inflated a sub-cent ask: 0.00500001 USD asked
+        (1 cent) and 5,000 USDC paid credited $10,000 (review of 2026-11-11).
+        """
+        paid = int(verified.get("paid_units") or 0)
+        expected = int(verified.get("expected_units") or 0)
+        decimals = int(verified.get("decimals") or 0)
+        if decimals <= 0 or expected <= 0 or paid <= expected + 1:
+            return deposit_cents
+        received_cents = paid * 100 // 10 ** decimals
+        credited = min(received_cents, self.MAX_DEPOSIT_CENTS)
+        if credited <= deposit_cents:
+            return deposit_cents
+        logger.warning("deposit %s paid %d units (%d decimals) for an asked %d: crediting %d cents, not %d",
+                       (tx_hash or "")[:12], paid, decimals, expected, credited, deposit_cents)
+        if received_cents > credited:
+            logger.error("deposit %s: %d cents above the channel cap are not credited; refund them",
+                         (tx_hash or "")[:12], received_cents - credited)
+        return credited
+
+    # A claim older than this, held for a channel this ledger never created, is a dead
+    # open's; a younger one may belong to an open still committing in another worker.
+    STRANDED_CLAIM_AFTER_S = 120
+
+    @staticmethod
+    def _ensure_intents_table(conn) -> None:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS channel_deposit_intents ("
+            "channel_id TEXT PRIMARY KEY, tx_hash TEXT NOT NULL, created_at BIGINT NOT NULL)"
+        )
+
+    def _note_deposit_intent(self, conn, *, tx: str, channel_id: str) -> None:
+        """Commit "this ledger is about to claim ``tx`` for ``channel_id``" (see channels-4)."""
+        self._ensure_intents_table(conn)
+        conn.execute(
+            "INSERT INTO channel_deposit_intents (channel_id, tx_hash, created_at) VALUES (?, ?, ?)",
+            (channel_id, tx, int(time.time())),
+        )
+        conn.commit()
+
+    def _drop_deposit_intent(self, conn, channel_id: str) -> None:
+        self._ensure_intents_table(conn)
+        conn.execute("DELETE FROM channel_deposit_intents WHERE channel_id = ?", (channel_id,))
+        conn.commit()
+
+    def _release_stranded_claim(self, conn, claim: dict[str, Any], *, chain: str, tx: str) -> bool:
+        """Hand back a deposit claim THIS ledger took for a channel it never created.
+
+        Only a claim this ledger's own intent row names: the registry is shared with other
+        doors (and possibly other hubs) under the same stack name, so "no such channel
+        here" alone proves nothing. True when the claim was released.
+        """
+        held = claim.get("claim") or {}
+        old = str(held.get("claim_id") or "")
+        if held.get("stack") != channels._hub_channel_stack() or not old:
+            return False
+        self._ensure_intents_table(conn)
+        intent = conn.execute(
+            "SELECT created_at FROM channel_deposit_intents WHERE channel_id = ? AND tx_hash = ?",
+            (old, tx),
+        ).fetchone()
+        if not intent or time.time() - int(intent[0]) < self.STRANDED_CLAIM_AFTER_S:
+            return False
+        if conn.execute("SELECT 1 FROM channels WHERE channel_id = ?", (old,)).fetchone():
+            self._drop_deposit_intent(conn, old)          # it did open; only the note was left
+            return False
+        if conn.execute("SELECT 1 FROM consumed_deposits WHERE channel_id = ?", (old,)).fetchone():
+            return False
+        channels._release_deposit_shared(chain=chain, tx_hash=tx, channel_id=old, db_path=self._db_path)
+        self._drop_deposit_intent(conn, old)
+        logger.error(
+            "deposit %s: released the claim of an open that died before its commit (%s); "
+            "the depositor's retry now opens the channel", tx[:12], old,
+        )
+        return True
+
     def _record_proven_payer(self, conn, channel_id: str, payer: str) -> None:
         self._ensure_proven_payers(conn)
         conn.execute(
@@ -645,12 +802,15 @@ class LedgerOpeningMixin:
                 on-chain-verified deposit is bound to its payer) has no owner to
                 authenticate by address, so the channel secret is still required.
 
-        Settlement is bookkeeping only: `refund_executed_usd` is always 0.0 here and the
-        remainder is reported as `refund_owed_usd` plus a durable obligation row.
+        Settlement is bookkeeping only: `refund_executed_usd` is always 0.0 here and
+        nothing is sent on-chain. On a transfer-funded channel the remainder is reported
+        as `refund_owed_usd` plus a durable obligation row. On an escrow-funded channel
+        the contract still holds it: `refund_status` is "on_chain" and `refund_how` names
+        the depositor's own requestClose / settleChannel calls.
         """
         if not self._check_rate(
             wallet, self._close_rate, channels._MAX_CLOSES_PER_WALLET_PER_HOUR,
-            channels._anon_closes_per_hour(),
+            channels._anon_closes_per_hour(), charge=False,
         ):
             return {
                 "error": (
@@ -679,6 +839,8 @@ class LedgerOpeningMixin:
             authorized = channels._wallet_matches(owner, claimed) if owner else not claimed
             if not authorized:
                 return {"error": "unauthorized: wallet does not match channel owner"}
+            # Charged only now, with the secret and the owner checked (channels-5).
+            self._charge_rate(wallet, self._close_rate)
 
             # Settle only if still open, in one statement: another hub process may have
             # closed it, or debited it, since the row above was read. The settlement and
@@ -729,23 +891,38 @@ class LedgerOpeningMixin:
             used = channels._cents_to_dollars(row["used_cents"])
             refund = channels._cents_to_dollars(row["balance_cents"])
             original = channels._cents_to_dollars(row["original_deposit_cents"])
+            escrow = str(row["escrow_channel"] or "").strip() if "escrow_channel" in row.keys() else ""
 
-        return {
-            "settlement": {
-                "channel_id": channel_id,
-                "used_usd": used,
-                # Kept for API back-compat: the unspent remainder. It is NOT proof of a
-                # transfer — read refund_executed_usd / refund_owed_usd for that.
-                "refund_usd": refund,
-                "refund_executed_usd": 0.0,
-                "refund_owed_usd": refund,
-                "refund_status": "owed" if refund > 0 else "none",
-                "obligation": obligation,
-                "original_deposit_usd": original,
-                "status": "settled",
-                "settle_tx_hash": settle_tx_hash,
-            }
+        settlement = {
+            "channel_id": channel_id,
+            "used_usd": used,
+            # Kept for API back-compat: the unspent remainder. It is NOT proof of a
+            # transfer — read refund_executed_usd / refund_owed_usd for that.
+            "refund_usd": refund,
+            "refund_executed_usd": 0.0,
+            "refund_owed_usd": refund,
+            "refund_status": "owed" if refund > 0 else "none",
+            "obligation": obligation,
+            "original_deposit_usd": original,
+            "status": "settled",
+            "settle_tx_hash": settle_tx_hash,
         }
+        if escrow:
+            # The remainder never left AIMarketEscrow, so the operator owes nothing and
+            # this close sent nothing on-chain: the depositor takes it back from the
+            # contract. The spec and SDKs used to call close "a refund" (audit
+            # 2026-11-11, cross-cutting-7), so the answer now says how, in place.
+            settlement.update({
+                "refund_owed_usd": 0.0,
+                "refund_status": "on_chain" if refund > 0 else "none",
+                "escrow_channel_id": escrow,
+                "refund_how": (
+                    "AIMarketEscrow still holds the remainder; this close did not submit a "
+                    "transaction. Call requestClose(channelId), then settleChannel(channelId) "
+                    "after SETTLE_WINDOW (1 hour), or expireChannel(channelId) after expiry."
+                ) if refund > 0 else "",
+            })
+        return {"settlement": settlement}
 
 
 # Imported after the class on purpose: methods read aimarket_hub.channels at call time

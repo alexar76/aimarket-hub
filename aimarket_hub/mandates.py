@@ -1637,8 +1637,14 @@ class MandatedCredits:
         except MandateError as exc:
             self._admission.last_refusal = exc
             return {"error": exc.detail}
+        # An allowance goes down as an allowance: through hold() the A2A charge journal underneath
+        # recorded it as an ordinary hold, and crash recovery then released the whole allowance
+        # and gave it back to the mandate although its children had been paid from it (audit
+        # 2026-11-11, mandates-a2a-1).
+        inner_hold = self._inner.hold if per_call else (
+            getattr(self._inner, "hold_allowance", None) or self._inner.hold)
         try:
-            result = self._inner.hold(account_id, amount_usd, receipt_id)
+            result = inner_hold(account_id, amount_usd, receipt_id)
         except Exception:
             # The limit must not stay reserved for money that was never held — and an
             # approval this hold claimed goes back with it (settle() → unclaim_approval).
@@ -1665,7 +1671,15 @@ class MandatedCredits:
     def capture_hold(self, receipt_id: str, **kwargs: Any) -> dict[str, Any]:
         result = self._inner.capture_hold(receipt_id, **kwargs)
         if not result.get("error"):
-            self._admission.store.capture(receipt_id)
+            if (kwargs.get("amount_mc") is not None and "already" not in result
+                    and result.get("captured_usd") is not None):
+                # A partial capture (the x402 bridge charges what the seller took, not the listed
+                # price it held): the mandate keeps what was charged and gives the rest back to its
+                # counters. Capturing the whole reservation counted the listed price against the
+                # mandate however little moved (audit 2026-11-11, x402-bridge-7).
+                self._admission.store.settle(receipt_id, self._micro(float(result["captured_usd"])))
+            else:
+                self._admission.store.capture(receipt_id)
         return result
 
     def release_hold(self, receipt_id: str) -> dict[str, Any]:

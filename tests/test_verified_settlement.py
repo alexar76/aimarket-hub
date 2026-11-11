@@ -839,7 +839,7 @@ def test_structural_pass_from_a_self_disowning_audit_never_captures(tmp_path, mo
     out, hook, db = _classify(tmp_path, env, "c_disown")
     assert out["verdict"] == "indeterminate"
     assert out["reason"] == "delivery_verdict_inconsistent"
-    assert out["status"] == "refunded"
+    assert out["status"] == "advisory_failed"
     # Not the provider's fault either — the verifier is the incoherent party.
     assert _reputation_types(db) == [] and not hook.record_verified_failure.called
 
@@ -1336,7 +1336,7 @@ def test_a_verifier_judging_at_another_bar_is_refused(tmp_path, monkeypatch):
     out, hook, db = _classify(tmp_path, env, "c_bar_mismatch")
     assert out["verdict"] == "indeterminate"
     assert out["reason"] == "threshold_mismatch"
-    assert out["status"] == "refunded"
+    assert out["status"] == "advisory_failed"
     assert _reputation_types(db) == [] and not hook.record_verified_failure.called
 
 
@@ -1422,7 +1422,7 @@ def test_a_bar_off_by_more_than_the_echo_quantum_is_still_a_disagreement(tmp_pat
         "threshold": 0.699, vs_mod._AUDIT_ID_KEY: AID,
     }
     out, hook, db = _classify(tmp_path, env, "c_bar_near_miss")
-    assert out["reason"] == "threshold_mismatch" and out["status"] == "refunded"
+    assert out["reason"] == "threshold_mismatch" and out["status"] == "advisory_failed"
     assert _reputation_types(db) == [] and not hook.record_verified_failure.called
 
 
@@ -1660,7 +1660,7 @@ def test_starving_the_scan_can_never_buy_a_fail_open_payout(tmp_path, monkeypatc
     out, hook, db = _classify(tmp_path, env, "c_scan_starved")
     assert out["verdict"] == "indeterminate"
     assert out["reason"] == "delivery_verdict_unreadable"
-    assert out["status"] == "refunded"          # NOT captured, even fail-open
+    assert out["status"] == "advisory_failed"          # NOT captured, even fail-open
     assert _reputation_types(db) == [] and not hook.record_verified_failure.called
 
 

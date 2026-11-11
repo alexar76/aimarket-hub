@@ -320,12 +320,14 @@ class TestSubmissionAndConfirmation:
                 return None
 
         monkeypatch.setattr(chain, "_pool", lambda: _Pool())
-        report = _mirror(st, _RecordingSigner()).confirm()
+        report = _mirror(st, _RecordingSigner()).confirm(now=_NOW)
         assert report.outcomes == {mirror.OUTCOME_BLOCKED: 1}
         assert st.get(_RECEIPT).status == store.SUBMITTED
 
-    def test_a_reverted_receipt_is_not_terminal(self, st, ledger, sim, monkeypatch):
-        """Usually a nonce the chain moved past — re-simulate, do not discard a valid sig."""
+    def test_a_reverted_receipt_is_queued_again_and_resent(self, st, ledger, sim, monkeypatch):
+        """Usually a nonce the chain moved past — the row goes back to PLANNED (the valid
+        signature is kept) and the next pass simulates and sends it again. Until 2026-11-11 it
+        stayed SUBMITTED forever, because run() skips SUBMITTED rows (audit escrow-4)."""
         ledger(cents=100)
         _row(st)
         _mirror(st, _RecordingSigner()).run(now=_NOW)
@@ -335,9 +337,57 @@ class TestSubmissionAndConfirmation:
                 return {"status": "0x0"}
 
         monkeypatch.setattr(chain, "_pool", lambda: _Pool())
-        _mirror(st, _RecordingSigner()).confirm()
+        monkeypatch.setattr(chain, "receipt_already_used", lambda *a, **k: False)
+        _mirror(st, _RecordingSigner()).confirm(now=_NOW)
         row = st.get(_RECEIPT)
-        assert row.status == store.SUBMITTED and "reverted" in row.last_error
+        assert row.status == store.PLANNED and "reverted" in row.last_error and row.tx_hash == ""
+        again = _RecordingSigner()
+        _mirror(st, again).run(now=_NOW)
+        assert len(again.sent) == 1 and st.get(_RECEIPT).status == store.SUBMITTED
+
+    def test_a_failed_broadcast_already_collected_is_confirmed(self, st, ledger, sim, monkeypatch):
+        ledger(cents=100)
+        _row(st)
+        _mirror(st, _RecordingSigner()).run(now=_NOW)
+
+        class _Pool:
+            def call(self, method, params=None):
+                return {"status": "0x0"}
+
+        monkeypatch.setattr(chain, "_pool", lambda: _Pool())
+        monkeypatch.setattr(chain, "receipt_already_used", lambda *a, **k: True)
+        _mirror(st, _RecordingSigner()).confirm(now=_NOW)
+        assert st.get(_RECEIPT).status == store.CONFIRMED
+
+    def test_an_unmined_transaction_past_its_deadline_is_abandoned(self, st, ledger, sim, monkeypatch):
+        ledger(cents=100)
+        row = _row(st)
+        _mirror(st, _RecordingSigner()).run(now=_NOW)
+
+        class _Pool:
+            def call(self, method, params=None):
+                return None
+
+        monkeypatch.setattr(chain, "_pool", lambda: _Pool())
+        monkeypatch.setattr(chain, "receipt_already_used", lambda *a, **k: False)
+        _mirror(st, _RecordingSigner()).confirm(now=row.deadline + 1)
+        assert st.get(_RECEIPT).status == store.ABANDONED
+
+    def test_a_dropped_transaction_is_queued_again(self, st, ledger, sim, monkeypatch):
+        ledger(cents=100)
+        _row(st)
+        _mirror(st, _RecordingSigner()).run(now=_NOW)
+        st._conn.execute("UPDATE debit_authorizations SET submitted_at = '1970-01-01T00:00:00Z'")
+        st._conn.commit()
+
+        class _Pool:
+            def call(self, method, params=None):
+                return None          # no receipt, and eth_getTransactionByHash: unknown
+
+        monkeypatch.setattr(chain, "_pool", lambda: _Pool())
+        monkeypatch.setattr(chain, "receipt_already_used", lambda *a, **k: False)
+        _mirror(st, _RecordingSigner()).confirm(now=_NOW)
+        assert st.get(_RECEIPT).status == store.PLANNED
 
 
 class TestSignerStrategies:

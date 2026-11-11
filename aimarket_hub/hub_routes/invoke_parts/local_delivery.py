@@ -35,6 +35,19 @@ async def _local_deliver(d: SimpleNamespace, call: _Call, local: _Local):
     if blocked is not None:
         return blocked
 
+    # The answer must be one this hub can send BEFORE anything is captured. Starlette encodes
+    # with allow_nan=False, so a provider result holding NaN or Infinity (Python's json emits
+    # them, and httpx reads them back) raised in JSONResponse after the capture and the
+    # publisher's share: the buyer was charged and got a 500, and paid again on every retry —
+    # a seller could do it on purpose (audit 2026-11-11, invoke-local-1). A provider fault,
+    # refused while the hold is still released by the unwind.
+    try:
+        json.dumps(result, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=(
+            "Provider returned a result that is not valid JSON (NaN, Infinity or an unencodable "
+            f"value): {type(exc).__name__}; nothing was charged")) from exc
+
     prepare = getattr(call.request.state, "prepare_escrow_response", None)
     plan = local.vs_plan
     checkpoint = (prepare is not None and local.accepted_authorization is not None
@@ -480,7 +493,7 @@ def _local_register_verification(d: SimpleNamespace, call: _Call, local: _Local,
         deferred = bool(vs_plan.paid and reserved and hold_rail == "channel")
         local.verification_env = verify_svc.register(
             nonce=nonce,
-            product_id=body.product_id,
+            product_id=_ran_product(call, local),
             capability_id=body.capability_id,
             channel_id=(x_payment_channel or "") if deferred else "",
             provider_id=cap.publisher_id or "",
@@ -490,6 +503,10 @@ def _local_register_verification(d: SimpleNamespace, call: _Call, local: _Local,
             mode=vs_plan.mode,
             receipt=local.receipt,
             advisory=not deferred,
+            input_payload=body.input,
+            # The share the plain channel path pays at capture, fixed now and paid by the
+            # verdict that captures (audit 2026-11-11, pay-on-verified-2).
+            publisher_share=d._publisher_share(cap, price, nonce) if deferred else None,
         )
         # The durable settlement row now owns the hold (and the startup
         # reconciler will finish it after a crash) — stop releasing it here.
@@ -502,7 +519,7 @@ def _local_record(d: SimpleNamespace, call: _Call, local: _Local, result: Any) -
     db, logger, supply_security, _observe_answer = d.db, d.logger, d.supply_security, d._observe_answer
     stat = InvocationStat(
         capability_id=body.capability_id,
-        product_id=body.product_id,
+        product_id=_ran_product(call, local),
         source_hub="local",
         price_usd=price,
         latency_ms=elapsed_ms,
@@ -527,14 +544,23 @@ def _local_record(d: SimpleNamespace, call: _Call, local: _Local, result: Any) -
             publisher_id=cap.publisher_id,
             consumer_id=x_payment_channel or "",
             success=True,
-            product_id=body.product_id,
+            product_id=_ran_product(call, local),
             capability_id=body.capability_id,
         )
+
+
+def _ran_product(call: _Call, local: _Local) -> str:
+    """The product id of the listing that actually ran (falls back to the request's)."""
+    return str(getattr(local.cap, "product_id", "") or call.body.product_id)
 
 
 def _local_accrue_acex(d: SimpleNamespace, call: _Call, local: _Local):
     body, sandbox_mode, logger = call.body, call.sandbox_mode, d.logger
     price, vs_deferred = local.price, local.vs_deferred
+    # The product that RAN, not the product_id the caller typed: the listing is resolved by
+    # capability id, so naming another floated product credited ITS CapShares pool and audit
+    # rewards with this call's revenue (audit 2026-11-11, invoke-local-5).
+    product = _ran_product(call, local)
     # ── ACEX revenue routing (factory → hub → ACEX leg) ──────
     # Feed the listing's CapShares pool only with revenue ACTUALLY earned:
     # gate on the charged `price` (0 when sandbox OR crypto off), not the
@@ -548,7 +574,7 @@ def _local_accrue_acex(d: SimpleNamespace, call: _Call, local: _Local):
     if not sandbox_mode and price > 0 and not vs_deferred:
         try:
             from aimarket_hub import acex_ipo
-            accrued = acex_ipo.accrue_revenue(body.product_id, price)
+            accrued = acex_ipo.accrue_revenue(product, price)
             if accrued.get("ok"):
                 acex_revenue = {
                     "to_pool_usd": accrued["to_pool_usd"],
@@ -557,13 +583,13 @@ def _local_accrue_acex(d: SimpleNamespace, call: _Call, local: _Local):
         except LedgerNotConfigured:
             pass                     # ACEX is off on this hub by configuration (logged once)
         except Exception as exc:
-            logger.warning("ACEX accrue failed for %s: %s", body.product_id, exc)
+            logger.warning("ACEX accrue failed for %s: %s", product, exc)
 
     acex_audit_rewards = None
     if not sandbox_mode and price > 0 and not vs_deferred:
         try:
             from aimarket_hub import acex_audit
-            audit_acc = acex_audit.accrue_audit_rewards(body.product_id, price)
+            audit_acc = acex_audit.accrue_audit_rewards(product, price)
             if audit_acc.get("ok"):
                 acex_audit_rewards = {
                     "to_auditors_usd": audit_acc["to_auditors_usd"],
@@ -573,7 +599,7 @@ def _local_accrue_acex(d: SimpleNamespace, call: _Call, local: _Local):
         except LedgerNotConfigured:
             pass
         except Exception as exc:
-            logger.warning("ACEX audit accrue failed for %s: %s", body.product_id, exc)
+            logger.warning("ACEX audit accrue failed for %s: %s", product, exc)
     return acex_revenue, acex_audit_rewards
 
 
@@ -666,8 +692,10 @@ def _local_provenance(d: SimpleNamespace, call: _Call, local: _Local, result: An
         # Compatibility for an older external provenance plugin that still
         # mutates the result in post_check. New issuers must use the final
         # hook; keeping the read fallback avoids silently dropping receipts
-        # during a rolling hub/plugin upgrade.
-        or result.pop("_provenance_receipt", None)
+        # during a rolling hub/plugin upgrade. Only a dict carries it: a provider whose
+        # result is a string, list, number or null crashed here AFTER its call was captured
+        # (audit 2026-11-11, invoke-local-1).
+        or (result.pop("_provenance_receipt", None) if isinstance(result, dict) else None)
     )
     return provenance_receipt
 

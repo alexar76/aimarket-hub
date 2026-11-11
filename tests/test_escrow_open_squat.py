@@ -47,3 +47,13 @@ def test_a_proven_channel_is_never_superseded(ledger):
     assert "channel" in first
     again = ledger.open(deposit_usd=5.0, wallet=DEPOSITOR, escrow_channel_id=ESCROW, payer_signature="good")
     assert "error" in again
+
+
+def test_an_unproven_open_closed_at_once_does_not_lock_the_depositor_out(ledger):
+    """Audit 2026-11-11, channels-2: the squatter closed its unproven channel straight away, and
+    the closed row kept the escrow channel's deposit claim — the depositor's proven open was
+    refused for good."""
+    squat = ledger.open(deposit_usd=5.0, wallet=DEPOSITOR, escrow_channel_id=ESCROW)["channel"]
+    assert "settlement" in ledger.close(squat["channel_id"], wallet=DEPOSITOR, secret=squat["channel_secret"])
+    mine = ledger.open(deposit_usd=5.0, wallet=DEPOSITOR, escrow_channel_id=ESCROW, payer_signature="good")
+    assert "channel" in mine, mine

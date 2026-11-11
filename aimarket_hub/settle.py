@@ -160,7 +160,7 @@ class PaymentTerms:
             object.__setattr__(self, "offer_to", self.pay_to)
 
     def as_x402_accept(self, resource: str = "") -> dict[str, Any]:
-        return {
+        accept = {
             "scheme": "exact",
             "network": self.chain,
             "maxAmountRequired": str(self.amount_units),
@@ -179,6 +179,33 @@ class PaymentTerms:
                 "verifyingContract": self.token_contract,
             },
         }
+        hint = splitter_hint(self.offer_to, self.pay_to)
+        if hint:
+            accept["extra"]["splitter"] = hint
+        return accept
+
+
+def splitter_hint(offer_to: str, seller: str) -> dict[str, Any] | None:
+    """How to pay an offer whose payTo is a MarketSplitter, or None when payTo is the seller.
+
+    A stock client's transferWithAuthorization to the splitter moves the USDC without
+    splitting it, and the hub cannot accept that payment (it is short of both legs), so the
+    402 has to say how the contract is paid (audit 2026-11-11, contracts-2). A stray is
+    recoverable only through the contract's sweepStray, to the operator, who then owes the
+    buyer a refund.
+    """
+    if not offer_to or not seller or offer_to.lower() == seller.lower():
+        return None
+    return {
+        "contract": offer_to,
+        "seller": seller,
+        "method": ("payWithAuthorization(address,address,uint256,uint256,uint256,"
+                   "bytes32,uint8,bytes32,bytes32,bytes32)"),
+        "authorization": "ReceiveWithAuthorization",
+        "note": ("sign ReceiveWithAuthorization(to=contract) and call the contract's "
+                 "payWithAuthorization; a plain TransferWithAuthorization to payTo is not a "
+                 "payment for this call"),
+    }
 
 
 def terms_for(cap: Any, *, operator_pay_to: str = "") -> PaymentTerms | None:
@@ -273,6 +300,22 @@ def splitter_address() -> str:
     """
     value = (os.getenv("AIMARKET_MARKET_SPLITTER") or "").strip()
     return value if is_address(value) else ""
+
+
+def offer_to_for(pay_to: str) -> str:
+    """Who a 402 for a listing paid to ``pay_to`` names as payTo: the splitter when the market fee
+    applies — by exactly terms_for's rule — otherwise the seller.
+
+    The invoke 402 named the seller while verification (terms_for) required the payment to go
+    through the splitter, so with a fee enabled every x402 buyer paid the seller in full and was
+    refused (audit 2026-11-11, deposits-x402-4).
+    """
+    bps = fee_bps()
+    fee_to = fee_recipient() if bps else ""
+    if not bps or not is_address(fee_to) or fee_to.lower() == str(pay_to or "").lower():
+        return pay_to
+    splitter = splitter_address()
+    return splitter if is_address(splitter) else pay_to
 
 
 def fee_split(gross_units: int, bps: int) -> tuple[int, int]:
@@ -693,6 +736,31 @@ class PaymentStore:
                 return False
             conn.commit()
             return True
+
+    def release_stale_claims(self, *, older_than_s: float = 900.0, limit: int = 50,
+                             now: float | None = None) -> int:
+        """Give back seller-direct claims a dead process left behind. Returns how many.
+
+        A claim is taken at admission and gets its work receipt only when the call is delivered
+        (link_delivery_receipt); a definite refusal releases it in the invoke's own `finally`.
+        A process killed in between (rolling deploy, OOM) left the claim consumed with no
+        receipt for good: the buyer's USDC was with the seller and the retry was refused as
+        "already used" (audit 2026-11-11, invoke-local-4). Past ``older_than_s`` — far beyond
+        any provider timeout — such a claim is released so the same payment can be presented.
+        """
+        cutoff = (time.time() if now is None else now) - float(older_than_s)
+        rows = self._conn.execute(
+            "SELECT i.nonce AS nonce, i.tx_hash AS tx_hash FROM settle_invoices i "
+            "JOIN x402_payments p ON lower(p.nonce) = i.nonce AND lower(p.settle_tx_hash) = lower(i.tx_hash) "
+            "WHERE i.consumed_at > 0 AND i.consumed_at < ? AND COALESCE(p.receipt_id, '') = '' "
+            "LIMIT ?",
+            (cutoff, int(limit)),
+        ).fetchall()
+        released = 0
+        for row in rows:
+            if self.release_invoice(str(row["tx_hash"]), str(row["nonce"])):
+                released += 1
+        return released
 
     def link_delivery_receipt(self, *, nonce: str, tx_hash: str, receipt_id: str) -> bool:
         """Attach an issued work receipt to the exact settled authorization."""

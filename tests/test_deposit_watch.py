@@ -653,3 +653,30 @@ def test_a_scan_that_catches_up_rests_between_windows_and_a_current_one_does_not
         assert rests and set(rests) == {0.25}
         assert len(rests) == 20 - deposit_watch.CATCH_UP_CHUNKS   # none once 4 or fewer were left
         assert w.store.cursor(key) == on.head + 1
+
+
+def test_a_deposit_a_lagging_node_hid_from_one_scan_is_found_by_the_next(monkeypatch, tmp_path, on):
+    """Audit 2026-11-11, deposits-x402-3: eth_blockNumber answered by one node, eth_getLogs by
+    another a few dozen blocks behind — the cursor moved past a deposit nobody had seen, and with
+    a 12-block overlap it was never read again."""
+    with hub(monkeypatch, tmp_path) as (client, db):
+        account, _ = funded_account(client, db, 0.0)
+        _link(client, account, SENDER)
+        w = watcher(db, on)
+        w.scan_once()                                 # at the head
+        on.transfer(tx(77), SENDER, 1_000_000)
+        on.head += 40                                 # the head node is 40 blocks further on
+        hidden = {"lag": True}
+        real = on.__class__.__call__
+
+        def lagging(method, params):
+            if method == "eth_getLogs" and hidden["lag"]:
+                return []                             # the lagging node: nothing there yet
+            return real(on, method, params)
+
+        w.rpc = lagging
+        assert w.scan_once().get("credited", 0) == 0
+        hidden["lag"] = False
+        on.head += 1
+        assert w.scan_once()["credited"] == 1
+        assert balance(db, account) == pytest.approx(1.0)

@@ -58,13 +58,13 @@ class Chain:
             self.asked.append((tx_hash, require_nonce))
         found = self.txs.get(tx_hash, {}).get(require_nonce)
         if found is None:
-            raise settle.PaymentError("payment is not bound to this call: the transaction carries no "
+            raise settle.PaymentFinal("payment is not bound to this call: the transaction carries no "
                                       "EIP-3009 authorization for the nonce this hub issued")
         if isinstance(found, Exception):
             raise found
         units, payer = found
         if units < terms.amount_units:
-            raise settle.PaymentError(f"paid {units} base units, the seller's share is {terms.amount_units}")
+            raise settle.PaymentFinal(f"paid {units} base units, the seller's share is {terms.amount_units}")
         assert terms.pay_to == PAY_TO and terms.token_contract == USDC_BASE.lower()
         return {"tx_hash": tx_hash, "paid_units": units, "authorizer": payer}
 
@@ -231,21 +231,46 @@ class TestRedeem:
         assert r.status_code == 200 and body["credited_usd"] == 1.0 and left == 1.0
         assert body["paid_usd"] == 10_000.0 and body["overpaid_usd"] == 9_999.0
 
-    def test_an_underpayment_is_credited_for_what_arrived(self, monkeypatch, tmp_path, on, chain):
-        """The nonce binds the money to one account whatever the amount: refusing a short
-        payment would strand it. What arrived is credited, rounded down to the millicent."""
+    def test_an_overpayment_is_the_operator_s_to_do_until_resolved(self, monkeypatch, tmp_path, on, chain):
+        """Audit 2026-11-11, deposits-x402-5: the excess was only logged; nothing listed it."""
+        from tests._mandate_kit import ADMIN_TOKEN
+
+        admin = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+        with hub(monkeypatch, tmp_path) as (client, db):
+            _account_id, key = funded_account(client, db, 0.0)
+            nonce = _quote(client, key, 1).json()["nonce"]
+            chain.pays(tx(5), nonce, 10_000_000)
+            assert _redeem(client, nonce, tx(5), key).status_code == 200
+            listed = client.get("/ai-market/v2/admin/deposits", headers=admin).json()["overpaid_topups"]
+            assert [(r["tx_hash"], r["excess_units"]) for r in listed] == [(tx(5).lower(), 9_000_000)]
+            url = f"/ai-market/v2/admin/deposits/{tx(5)}/resolve"
+            assert client.post(url, json={"note": "refunded in 0xabc"}, headers=admin).status_code == 200
+            assert client.get("/ai-market/v2/admin/deposits", headers=admin).json()["overpaid_topups"] == []
+            assert client.post(url, json={"note": "again"}, headers=admin).status_code == 409
+
+    def test_an_underpayment_does_not_close_the_quote(self, monkeypatch, tmp_path, on, chain):
+        """Audit 2026-11-11, credits-1: an underpayment used to close the quote with what
+        arrived, and anyone can sign a dust authorization over a buyer's (public) nonce. A short
+        payment is refused now, the quote stays open, and the full payment is credited."""
         with hub(monkeypatch, tmp_path) as (client, db):
             account, key = funded_account(client, db, 0.0)
             nonce = _quote(client, key, 5).json()["nonce"]
             chain.pays(tx(24), nonce, 4_999_999)
-            r = _redeem(client, nonce, tx(24))
+            short = _redeem(client, nonce, tx(24))
+            still = client.get(f"/ai-market/v2/topups/{nonce}").json()["status"]
+            chain.pays(tx(25), nonce, 5_000_000)
+            full = _redeem(client, nonce, tx(25))
             left = balance(db, account)
-        assert r.status_code == 200 and r.json()["credited_usd"] == pytest.approx(4.99999) and left == pytest.approx(4.99999)
+        assert short.status_code == 402 and short.json()["error"] == "payment_invalid"
+        assert still == "quoted"
+        assert full.status_code == 200 and left == pytest.approx(5.0)
 
     @pytest.mark.parametrize("exc, status, error, retryable", [
         (settle.PaymentError("payment has 1 confirmation(s); 2 required"), 409, "payment_not_final", True),
         (settle.PaymentError("transaction is not on chain yet"), 409, "payment_not_final", True),
-        (settle.PaymentError("transaction reverted"), 402, "payment_invalid", False),
+        (settle.PaymentFinal("transaction reverted"), 402, "payment_invalid", False),
+        # audit 2026-11-11, deposits-x402-2: an RPC error answer is not a refusal of the payment
+        (settle.PaymentError("chain rpc refused eth_blockNumber: rate limit"), 503, "verifier_unavailable", True),
         (RuntimeError("rpc is down"), 503, "verifier_unavailable", True),
     ])
     def test_a_payment_that_does_not_verify_leaves_the_quote_redeemable(

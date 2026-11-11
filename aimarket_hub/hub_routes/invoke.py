@@ -173,6 +173,12 @@ class _Fed:
     sandbox_meta: dict[str, Any] = field(default_factory=dict)
     x402_accepted: dict[str, Any] | None = None
     started: float = 0.0
+    # The x402 bridge (x402_bridge.py): this hub pays the peer's own x402 door from its
+    # bridge wallet for a buyer paying in credits. `bridge_payees` are the addresses the
+    # peer published (well-known + listing); `bridge_payment` is the payment, once made.
+    bridge: bool = False
+    bridge_payees: frozenset = frozenset()
+    bridge_payment: Any = None
 
 
 # api.py's module-level helpers the phases read. Looked up when register runs, not imported

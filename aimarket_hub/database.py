@@ -346,6 +346,28 @@ class HubDatabase:
         """Return capabilities from the hybrid multilingual ranking."""
         return [c for c, _ in self.search_capabilities_ranked(query, limit=limit)]
 
+    def peer_funnel_stats(self) -> dict[str, dict]:
+        """Per routed peer: the first and the number of delivered calls, and of paid ones.
+
+        The last two steps of the onboarding funnel on /hubs (knock, assay, admitted, first
+        routed call, first paid call). Read from ``invocation_stats``, which is never pruned, so
+        "first" is the first this hub ever routed. A paid call is one recorded with a price: what
+        this hub settled, or what a seller paid directly reported.
+        """
+        rows = self._conn.execute(
+            "SELECT source_hub, MIN(timestamp) AS first_routed, COUNT(*) AS routed, "
+            "MIN(CASE WHEN price_usd > 0 THEN timestamp END) AS first_paid, "
+            "SUM(CASE WHEN price_usd > 0 THEN 1 ELSE 0 END) AS paid "
+            "FROM invocation_stats WHERE success = 1 AND source_hub <> 'local' GROUP BY source_hub"
+        ).fetchall()
+        return {
+            str(r["source_hub"]): {
+                "first_routed_at": str(r["first_routed"] or ""), "routed_calls": int(r["routed"] or 0),
+                "first_paid_at": str(r["first_paid"] or ""), "paid_calls": int(r["paid"] or 0),
+            }
+            for r in rows
+        }
+
     def count_capabilities(self, source_hub: str | None = None) -> int:
         if source_hub:
             return self._conn.execute(

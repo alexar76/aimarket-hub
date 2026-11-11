@@ -228,4 +228,4 @@ export AIMARKET_PEER_API_KEYS="https://peer.example=aimk_your_key_there"
 ## 命名
 
 代码采用 Apache-2.0 许可（生态中其他部分为 MIT），你可以商业化运营、自定费率并全部归你所有；没有任何分成会流向别处。这里不授予商标许可，所以不要把你的部署称为“AIMarket”，也不要暗示获得认可。“Implements the AIMarket Protocol”和“interoperates with <peer>”是准确且可以使用的表述。
-[一致性测试程序](https://github.com/alexar76/aicom/blob/main/aimarket-protocol/conformance/run.py)检查所涵盖的测试向量和线上端点。请注明测试范围和运行结果。该程序不颁发认证。
+[一致性测试程序](https://github.com/alexar76/aimarket-protocol/blob/main/conformance/run.py)检查所涵盖的测试向量和线上端点。请注明测试范围和运行结果。该程序不颁发认证。

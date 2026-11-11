@@ -7,6 +7,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 import contextlib
+import json
+import logging
 import os
 import secrets
 import time
@@ -61,6 +63,11 @@ async def _fed_deliver(d: SimpleNamespace, call: _Call, fed: _Fed):
         return short
 
     resp = await _fed_call_peer(d, call, fed, mcp_endpoint, headers)
+    if fed.bridge and resp.status_code == 402:
+        bridged = await _fed_bridge_pay(d, call, fed, mcp_endpoint, headers, resp)
+        if isinstance(bridged, JSONResponse):
+            return bridged
+        resp = bridged
     passed_on = _fed_passthrough_402(d, call, fed, resp)
     if passed_on is not None:
         return passed_on
@@ -145,7 +152,7 @@ def _fed_peer_headers(d: SimpleNamespace, call: _Call, fed: _Fed) -> dict[str, s
         # on its owner's behalf (hestia/hub_billing.py) refuses a call that earned
         # the owner nothing — a free trial — rather than serve it unpaid.
         headers["X-AIMarket-Hub-Charged"] = f"{fed_price:.6f}"
-    elif peer_ch:
+    elif peer_ch and _peer_channel_allowed(getattr(fed.peer, "url", "")):
         headers["X-Payment-Channel"] = peer_ch
         if peer_sec:
             headers["X-Payment-Channel-Secret"] = peer_sec
@@ -157,6 +164,30 @@ def _fed_peer_headers(d: SimpleNamespace, call: _Call, fed: _Fed) -> dict[str, s
         )
         headers["X-AIMarket-Sandbox-Visitor"] = fed_visitor
     return headers
+
+
+def _peer_channel_allowed(peer_url: str) -> bool:
+    """May this hub's own payment channel (and its secret) be sent to ``peer_url``?
+
+    Only to the peers named in AIMARKET_PEER_PAYMENT_CHANNEL_PEERS (comma-separated URLs). The
+    channel is the operator's money: sent to every keyless admitted peer — auto-admitted
+    strangers included — any of them could spend it (audit 2026-11-11, federation-4). Unset, it
+    goes to nobody (no hub set the channel on 2026-11-11), with a warning once.
+    """
+    raw = (os.environ.get("AIMARKET_PEER_PAYMENT_CHANNEL_PEERS") or "").strip()
+    if not raw:
+        global _PEER_CHANNEL_WARNED
+        if not _PEER_CHANNEL_WARNED:
+            _PEER_CHANNEL_WARNED = True
+            logging.getLogger(__name__).warning(
+                "AIMARKET_PEER_PAYMENT_CHANNEL is set but AIMARKET_PEER_PAYMENT_CHANNEL_PEERS names no peer: "
+                "the hub's channel is sent to none; list the peers that may receive it")
+        return False
+    allowed = {u.strip().rstrip("/").lower() for u in raw.split(",") if u.strip()}
+    return str(peer_url or "").strip().rstrip("/").lower() in allowed
+
+
+_PEER_CHANNEL_WARNED = False
 
 
 def _fed_tool_endpoint(fed: _Fed) -> str:
@@ -205,17 +236,43 @@ async def _fed_call_peer(d: SimpleNamespace, call: _Call, fed: _Fed, mcp_endpoin
             # which is a loop, not a purchase; "local" asks it to serve its own
             # capability, which is what was bought.
             to_peer_hub = mcp_endpoint.rstrip("/").endswith("/ai-market/v2/invoke")
-            resp = await safe_post(
-                mcp_endpoint,
-                json={
-                    "capability_id": body.capability_id,
-                    "input": body.input,
-                    "product_id": body.product_id,
-                    "source_hub": "local" if to_peer_hub else config.hub_url,
-                },
-                headers=headers,
-                oracle_paid=oracle_paid,
-            )
+            envelope = {
+                "capability_id": body.capability_id,
+                "input": body.input,
+                "product_id": body.product_id,
+                "source_hub": "local" if to_peer_hub else config.hub_url,
+            }
+            peer_headers = headers
+            if to_peer_hub and fed.resells and fed.price > 0:
+                # This hub pays the peer from its own account there, and the buyer was quoted
+                # fed.price: a peer that re-priced since the last crawl must answer 409, not
+                # charge this hub more than the buyer pays (audit 2026-11-11, federation-2 /
+                # cross-cutting-6). One idempotency key per buyer receipt lets the peer answer a
+                # repeated delivery of the same call from its record instead of charging again
+                # (federation-3).
+                envelope["max_price_usd"] = round(float(fed.price), 6)
+                if fed.nonce:
+                    peer_headers = {**headers, "Idempotency-Key": f"resale:{fed.nonce}"[:128]}
+            try:
+                resp = await safe_post(
+                    mcp_endpoint,
+                    json=envelope,
+                    headers=peer_headers,
+                    oracle_paid=oracle_paid,
+                )
+            except httpx.TimeoutException:
+                if "Idempotency-Key" not in peer_headers:
+                    raise
+                # The peer may have done the work and charged this hub after our read gave up.
+                # Asked again under the same key, it answers from its record instead of running
+                # (or charging) twice; the buyer then gets what this hub paid for, rather than a
+                # refund while the peer keeps the payment (audit 2026-11-11, federation-3).
+                resp = await safe_post(
+                    mcp_endpoint,
+                    json=envelope,
+                    headers=peer_headers,
+                    oracle_paid=oracle_paid,
+                )
         else:
             # product_id / capability_id are interpolated into the upstream path,
             # so they get the same traversal guard the local branch applies.
@@ -233,6 +290,82 @@ async def _fed_call_peer(d: SimpleNamespace, call: _Call, fed: _Fed, mcp_endpoin
     except httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail=f"Provider unreachable: {exc}") from exc
     return resp
+
+
+# Headers that make sense only on the unpaid first call: a seller that sees a sandbox visitor
+# or a channel next to a payment may refuse the combination (this hub's own local branch does).
+_UNPAID_ONLY_HEADERS = frozenset({
+    "x-aimarket-sandbox-visitor", "x-payment-channel", "x-payment-channel-secret",
+})
+
+
+async def _fed_bridge_pay(d: SimpleNamespace, call: _Call, fed: _Fed, mcp_endpoint: Any,
+                          headers: dict[str, str], first: Any):
+    """The x402 bridge: pay the peer's 402 from the bridge wallet and send the call again.
+
+    Returns the peer's answer to the paid call. When the bridge will not pay (an empty wallet, a
+    cap, an offer above the listing or to an unpublished payee, credit that was granted, not paid
+    in) or the peer refuses the payment, the buyer gets what they got before the bridge existed:
+    the peer's own 402, which they can pay from a wallet of their own, with a note saying why this
+    hub did not. Nothing is charged either way: the hold is released by ``_fed_unwind``.
+    """
+    from aimarket_hub import x402_bridge
+
+    peer = fed.peer
+    ledger = x402_bridge.BridgeLedger(d.db._conn)
+    paid_headers = {k: v for k, v in headers.items() if k.lower() not in _UNPAID_ONLY_HEADERS}
+
+    async def resend(extra: dict[str, str]) -> Any:
+        return await _fed_call_peer(d, call, fed, mcp_endpoint, {**paid_headers, **extra})
+
+    def unpaid(resp: Any, detail: str, code: str) -> JSONResponse:
+        passed = _fed_passthrough_402(d, call, fed, resp)
+        note = {"via": "x402-bridge", "paid": False, "refusal": code,
+                "detail": f"{detail} — nothing was charged to you"}
+        try:
+            content = json.loads(bytes(passed.body))
+        except ValueError:
+            content = {}
+        if isinstance(content, dict):
+            content["x402_bridge"] = note
+        headers_out = {k: v for k, v in passed.headers.items() if k.lower() not in ("content-length", "content-type")}
+        return JSONResponse(status_code=402, content=content, headers=headers_out)
+
+    try:
+        resp, payment = await x402_bridge.pay_and_resend(
+            ledger=ledger, first=first, resend=resend, limit_usd=fed.price,
+            expected_pay_to=fed.bridge_payees, buyer_account=call.credit_account,
+            receipt_id=fed.nonce, seller=str(getattr(peer, "url", "") or ""),
+            route=f"{call.body.product_id}/{call.body.capability_id}",
+        )
+    except x402_bridge.BridgeRefused as exc:
+        d.logger.info("x402 bridge: not paying %s for %s: %s", getattr(peer, "url", "?"),
+                      call.body.capability_id, exc.reason)
+        return unpaid(first, f"this hub pays {getattr(peer, 'url', 'the seller')} on your behalf and did not: "
+                      f"{exc.reason}", exc.code)
+    fed.bridge_payment = payment
+    if resp.status_code == 402:
+        x402_bridge.finish(ledger, payment, delivered=False, http_status=402,
+                           detail="the seller answered the paid call with 402")
+        d.logger.warning("x402 bridge: %s refused the bridge's payment for %s",
+                         getattr(peer, "url", "?"), call.body.capability_id)
+        return unpaid(resp, f"{getattr(peer, 'url', 'the seller')} refused this hub's payment", "seller_refused")
+    return resp
+
+
+def _fed_bridge_finish(d: SimpleNamespace, fed: _Fed, *, delivered: bool, http_status: int,
+                       detail: str = "") -> None:
+    """Record how a bridged purchase ended, once. Never raises: it runs on exit paths."""
+    payment = fed.bridge_payment
+    if payment is None or payment.status != "signed":
+        return
+    from aimarket_hub import x402_bridge
+
+    try:
+        x402_bridge.finish(x402_bridge.BridgeLedger(d.db._conn), payment, delivered=delivered,
+                           http_status=http_status, detail=detail)
+    except Exception as exc:  # noqa: BLE001
+        d.logger.error("x402 bridge: could not record the end of payment %s: %s", payment.payment_id, exc)
 
 
 def _fed_passthrough_402(d: SimpleNamespace, call: _Call, fed: _Fed, resp: Any):
@@ -299,27 +432,39 @@ def _fed_passthrough_402(d: SimpleNamespace, call: _Call, fed: _Fed, resp: Any):
 def _fed_read_result(d: SimpleNamespace, call: _Call, fed: _Fed, resp: Any, mcp_endpoint: Any):
     """The peer's answer as an object envelope, priced as this hub charged it."""
     fed_sells, fed_resells, fed_price = fed.sells, fed.resells, fed.price
+    # The x402 bridge already paid this seller: its answer is what the money bought. Throwing a 2xx
+    # body away for its shape answered the buyer 502, the buyer retried, and the bridge paid again
+    # for every retry (audit 2026-11-11, x402-bridge-3). A paid answer is wrapped and delivered the
+    # way /observed/invoke delivers one; only an unpaid answer must be an object envelope.
+    bridge_paid = fed.bridge and fed.bridge_payment is not None
     if resp.status_code >= 400:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Provider returned {resp.status_code}",
-        )
+        detail = f"Provider returned {resp.status_code}"
+        if bridge_paid:
+            detail += (f" after this hub paid it ${fed.bridge_payment.amount_usd:.6f} through the x402 bridge. "
+                       "You were not charged, but the payment counts against your paid-in bridge allowance; "
+                       "retrying pays the seller again")
+        raise HTTPException(status_code=502, detail=detail)
 
     try:
         result_data = resp.json()
     except ValueError as exc:
-        # Provider fault, not caller fault → 502 (see the ValueError note above).
-        raise HTTPException(
-            status_code=502,
-            detail=f"Provider returned a non-JSON body ({resp.status_code})",
-        ) from exc
+        if not bridge_paid:
+            # Provider fault, not caller fault → 502 (see the ValueError note above).
+            raise HTTPException(
+                status_code=502,
+                detail=f"Provider returned a non-JSON body ({resp.status_code})",
+            ) from exc
+        result_data = {"result_text": str(getattr(resp, "text", "") or "")[:200_000],
+                       "content_type": str((getattr(resp, "headers", None) or {}).get("content-type", ""))}
     if not isinstance(result_data, dict):
-        # The accounting below is keyed on an object envelope. Refuse rather than
-        # crash on a bare list/scalar body.
-        raise HTTPException(
-            status_code=502,
-            detail="Provider returned a non-object JSON body",
-        )
+        if not bridge_paid:
+            # The accounting below is keyed on an object envelope. Refuse rather than
+            # crash on a bare list/scalar body.
+            raise HTTPException(
+                status_code=502,
+                detail="Provider returned a non-object JSON body",
+            )
+        result_data = {"result": result_data}
     # A hearth's attestation of whose agent did the work, for this hub only: it is
     # read at capture below and never goes on to the buyer.
     hearth_bill = result_data.pop("hub_billing", None)
@@ -348,6 +493,11 @@ def _fed_read_result(d: SimpleNamespace, call: _Call, fed: _Fed, resp: Any, mcp_
     # overwritten with ours.
     if fed_sells or fed_resells:
         result_data["price_usd"] = fed_price
+    elif fed.bridge:
+        # What the buyer is charged: what the bridge paid the seller, or nothing when the
+        # seller served the call without asking to be paid.
+        payment = fed.bridge_payment
+        result_data["price_usd"] = round(payment.amount_usd, 6) if payment is not None else 0.0
     return result_data, hearth_bill
 
 
@@ -411,6 +561,9 @@ def _fed_record(d: SimpleNamespace, call: _Call, fed: _Fed, result_data: dict[st
     charged_price = 0.0 if refused else (
         _as_float(fed_price, max_value=_MAX_REPORTED_PRICE_USD) if fed_sells else price
     )
+    bridge_payment = fed.bridge_payment if fed.bridge else None
+    if fed.bridge:
+        charged_price = 0.0 if (refused or bridge_payment is None) else round(bridge_payment.amount_usd, 6)
     # Latency has the same shape — those peers report none, and the hub has been
     # timing the round trip since `fed_started`. A number the peer omitted is
     # unknown, not 0 ms.
@@ -435,7 +588,20 @@ def _fed_record(d: SimpleNamespace, call: _Call, fed: _Fed, result_data: dict[st
     # recorded as paid, and the reservation is handed back below.
     # Not on a refusal: `fed_settled` stays false, so the `finally` releases the
     # hold and the buyer pays nothing.
-    if fed_reserved and not refused:
+    if fed.bridge and bridge_payment is None:
+        # The peer served the call without asking to be paid (a free answer or its own trial):
+        # this hub paid nothing, so neither does the buyer — `_fed_unwind` releases the hold.
+        pass
+    elif fed_reserved and not refused and fed.bridge:
+        # Charged what the bridge paid (at most the listed price that was held), rounded UP to
+        # the ledger's millicent so the hub never pays a fraction the buyer did not.
+        fed_capture = credits_ledger.capture_hold(fed_nonce, amount_mc=bridge_payment.amount_mc)
+        if fed_capture.get("error") or fed_capture.get("already") not in (None, "captured"):
+            logger.error("x402 bridge: capture of reservation %s failed: %s", fed_nonce, fed_capture.get("error"))
+            raise HTTPException(status_code=502, detail="settlement failed: reservation could not be captured")
+        fed.settled = True
+        _fed_bridge_finish(d, fed, delivered=True, http_status=200)
+    elif fed_reserved and not refused:
         share = None
         if hearth_bill is not None and (fed_sells or fed_resells) and fed_price > 0:
             share = d._hearth_owner_share(peer, hearth_bill, body.capability_id, fed_price)
@@ -605,6 +771,8 @@ def _fed_answer(d: SimpleNamespace, call: _Call, fed: _Fed, resp: Any, result_da
     fed_price, fed_list_price, fed_nonce, fed_settled = fed.price, fed.list_price, fed.nonce, fed.settled
     result_data["routed_via"] = config.hub_url
     result_data["routing_fee_bps"] = config.routing_fee_bps
+    if fed.bridge_payment is not None:
+        result_data["paid_via"] = fed.bridge_payment.public(config.hub_url)
     if fed_sandbox_meta:
         result_data["sandbox"] = fed_sandbox_meta
     if federated_verify_env is not None:
@@ -637,6 +805,20 @@ def _fed_answer(d: SimpleNamespace, call: _Call, fed: _Fed, resp: Any, result_da
     # can still fail — and left false for a refusal, so the `finally` hands the
     # allowance back the way ATLAS's own gate hands back its own.
     fed.trial_delivered = not refused
+    accepted = fed.x402_accepted
+    if not refused and isinstance(accepted, dict) and accepted.get("rail") == "seller_direct":
+        # The claim is delivered: give it its receipt, as the local branch does. A claim with no
+        # receipt is what the stale-claim sweep gives back after a crash, so a delivered one
+        # must never look like that (audit 2026-11-11, invoke-local-4).
+        try:
+            from aimarket_hub.settle import PaymentStore
+
+            if not PaymentStore(d.db._conn).link_delivery_receipt(
+                    nonce=str(accepted.get("nonce") or ""), tx_hash=str(accepted.get("tx_hash") or ""),
+                    receipt_id=str(fed_nonce or "fed")):
+                d.logger.warning("Seller-direct payment has no linked receipt: %s", accepted.get("tx_hash"))
+        except Exception:  # noqa: BLE001
+            d.logger.exception("Could not link seller-direct receipt: %s", accepted.get("tx_hash"))
     # A seller paid directly over x402 answers with its settlement (PAYMENT-RESPONSE);
     # x402 clients read it to confirm the payment, so it travels back with the result.
     paid_headers = _peer_payment_headers(resp)
@@ -655,6 +837,12 @@ def _fed_unwind(d: SimpleNamespace, call: _Call, fed: _Fed) -> None:
         fed.trial_delivered, fed.x402_accepted, fed.trial_visitor)
     fed_authorization, fed_settled, fed_reserved = fed.authorization, fed.settled, fed.reserved
     fed_nonce, fed_hold_rail, fed_fee_nonce, fed_fee_rail = fed.nonce, fed.hold_rail, fed.fee_nonce, fed.fee_rail
+    if fed.bridge_payment is not None and fed.bridge_payment.status == "signed":
+        # Paid, and the call ended anywhere but a capture: a peer error, a refusal in the
+        # body, a blocked output, a capture failure. The buyer is not charged (the hold goes
+        # back below); the payment is recorded as the bridge's loss.
+        _fed_bridge_finish(d, fed, delivered=False, http_status=0,
+                           detail="paid, but the call was not delivered to the buyer")
     if not fed_trial_delivered:
         # Seller-direct has no hold to release — the money went to the seller — but
         # the CLAIM was burned at settlement. The local branch returns it on every

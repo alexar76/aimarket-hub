@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from aimarket_hub.api_models import ChannelCloseRequest, ChannelOpenRequest
 from aimarket_hub.channels import close_channel, open_channel
@@ -106,7 +107,12 @@ def register(
         # refuses an on-chain-verified deposit without proof the caller controls the
         # paying wallet, so a transport that dropped this field turned every real
         # channel open into "missing or invalid payer proof".
-        result = open_channel(
+        # In a worker thread: verifying the deposit (or reading the escrow channel) is
+        # blocking chain RPC with an 8 s timeout per call, and on the event loop it stalled
+        # every request on this worker, including invokes holding channel funds
+        # (audit 2026-11-11, channels-6).
+        result = await run_in_threadpool(
+            open_channel,
             deposit_usd=body.deposit_usd,
             token=body.token,
             chain=body.chain,
@@ -132,7 +138,8 @@ def register(
             })
         if not _check_channel_ip_rate(_client_address(request, _TRUSTED_PROXIES)):
             return _channel_rate_limited()
-        result = close_channel(
+        result = await run_in_threadpool(
+            close_channel,
             channel_id=body.channel_id,
             settle_tx_hash=body.settle_tx_hash,
             wallet=body.wallet or "",

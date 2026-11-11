@@ -829,6 +829,9 @@ _DOCTOR_HINTS: dict[str, str] = {
     "sandbox_probe": "The sandbox could not run anything of yours. `aimarket quickstart` lists a free "
                      "hub.ping@v1 for exactly this.",
     "sandbox_receipt_signed": "The answer carried no receipt signed by this hub's key.",
+    "index_witnesses": "This hub sells and relays nothing, so it is admitted on the federation's word: "
+                       "admitted hubs on two different sites must list it under its key. Knock on two "
+                       "hubs first, or list a free hub.ping@v1 so the sandbox has something to run.",
     "sandbox_price_matches": "The 402 quotes a different price than your catalogue lists.",
     "sandbox_price_enforced": "A priced capability answered without payment: switch a rail on "
                               "(AIMARKET_CREDITS_ENABLED=1, or --pay-to on the listing).",

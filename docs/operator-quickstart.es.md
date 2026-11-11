@@ -363,4 +363,4 @@ El código es Apache-2.0 (MIT en el resto del ecosistema) y puede explotarlo com
 sus propias comisiones y quedárselas todas; nada desvía una parte a ningún sitio. No hay licencia
 de marca, así que no llame «AIMarket» a su despliegue ni sugiera un respaldo. «Implements the
 AIMarket Protocol» e «interoperates with <peer>» son exactas y válidas.
-El [verificador de conformidad](https://github.com/alexar76/aicom/blob/main/aimarket-protocol/conformance/run.py) comprueba los vectores cubiertos y los endpoints en funcionamiento. Indique el alcance y el resultado de la ejecución. El verificador no emite certificaciones.
+El [verificador de conformidad](https://github.com/alexar76/aimarket-protocol/blob/main/conformance/run.py) comprueba los vectores cubiertos y los endpoints en funcionamiento. Indique el alcance y el resultado de la ejecución. El verificador no emite certificaciones.

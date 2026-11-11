@@ -9,7 +9,7 @@ has been mistaken for a detail more than once.
 |---|---|---|---|---|
 | **Market (seller-direct)** | USDC on Base, to the seller | **none** | the chain, in the buyer's own transaction | live |
 | **Credits** | prepaid balance on this Hub | **yes** — the balance is an operator liability | a ledger entry (`publisher_share_bps`) | live |
-| **Channels / escrow** | a deposit, by default to the operator's wallet | **yes, by default** | not paid by this rail | see [KI-11](https://github.com/alexar76/aicom/blob/main/docs/known-issues.md) |
+| **Channels / escrow** | a deposit, by default to the operator's wallet | **yes, by default** | a credit-ledger entry (`publisher_share_bps`) when the publisher has a credit account here | see [KI-11](https://github.com/alexar76/aicom/blob/main/docs/known-issues.md) |
 
 Live HESTIA listings on `modelmarket.dev` (who is the till, every env key, a mined
 USDC `transferWithAuthorization` with both logs named):
@@ -153,9 +153,19 @@ from the payer into the splitter, then the splitter's payment to the seller, the
 the operator. Legs taken from anywhere in the transaction let N authorizations share
 one fee leg, or pay a seller of the payer's choosing through the splitter while
 another transfer paid this listing's. The contract is the convenience that produces
-both legs from one signature, which is what an off-the-shelf x402 client can do; the
-chain, not the contract's code, says whether the seller and the operator were paid.
-Two plain transfers in one multicall pay nothing: no authorization moved them.
+both legs from one signature; the chain, not the contract's code, says whether the
+seller and the operator were paid. Two plain transfers in one multicall pay nothing: no
+authorization moved them.
+
+**The splitter is paid through its own method, and the 402 says so.** The buyer signs
+`ReceiveWithAuthorization` naming the contract and calls its `payWithAuthorization`;
+each `accepts[].extra.splitter` carries the contract, the seller and that method. A
+stock x402 client that signs `TransferWithAuthorization(to=payTo)` and submits it to
+USDC moves the gross into the contract without a split. The hub refuses that payment
+(no seller or operator leg), and until 2026-11-11 the USDC was stuck in the contract for
+good. `sweepStray(token)` now moves any balance at rest to the immutable operator
+(anyone may call it, nobody can redirect it), and the operator refunds the sender named
+in the `Transfer` log. Every real split leaves zero, so a sweep cannot take a sale.
 
 **Rounding goes to the seller**, because the operator's share is the one computed
 by division and the seller takes the remainder. Written the other way round it
@@ -306,9 +316,12 @@ sequenceDiagram
 ```
 
 This rail **is** custodial: the balance is an operator liability, and the publisher
-is paid by a row in a table, not by the chain. It is a prepaid convenience, and it
-is the only place `publisher_share_bps` applies — a catalogue sale settled on the
-market rail explicitly skips it, because the seller was already paid on-chain.
+is paid by a row in a table, not by the chain. It is a prepaid convenience.
+`publisher_share_bps` applies to every sale the hub itself collects — credits, a
+channel capture (section 3) and an x402 payment made to the operator's own wallet —
+and only when the listing's `publisher_id` is a credit account on this hub. A
+catalogue sale settled on the market rail skips it, because the seller was already
+paid on-chain.
 
 For a fixed-price credit call, the hub reserves before the provider and captures only
 the reserved price on success; supported failures release it. This path has no
@@ -335,8 +348,17 @@ Deposits, holds and `debitChannel`. By default a deposit is a plain transfer to 
 are an operator liability and the contract's non-custodial guarantees describe a
 path the default does not take. A ledger settlement record is not an on-chain transfer.
 
-This rail is **not** how a seller is paid for a catalogue sale, and the market rail
-above does not depend on it. Two switches decide how custodial it actually is:
+This rail is **not** how a seller is paid on-chain, and the market rail above does not
+depend on it. It does pay the publisher in credits: after a channel capture the hub
+credits `publisher_share_bps` (70% by default) of the channel price to the
+listing's `publisher_id`, when that is a credit account on this hub. So every
+channel-paid call to such a listing books a credit liability to the publisher next
+to the channel balance. The share is a second write after the capture; the
+`payout` entry is keyed by the receipt, so a retry does not pay it twice, but a
+process killed between the two writes leaves that one share unpaid, and nothing
+retries it.
+
+Two switches decide how custodial it actually is:
 
 ```mermaid
 flowchart TD

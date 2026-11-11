@@ -216,13 +216,24 @@ def _local_quote(d: SimpleNamespace, call: _Call, local: _Local):
     ):
         # The catalogue sale is live: this listing has a seller to pay.
         call.price_rail_active = True
-    if body.max_price_usd is not None and list_price > body.max_price_usd:
+    # The ceiling is compared with what the paying rail will actually take. A payment channel
+    # bills whole cents rounded UP (channels._dollars_to_cents_bill, BILLING-001), so a $0.004
+    # call costs $0.01 there: checked against the list price, a buyer's max_price_usd of 0.004
+    # was exceeded 2.5x without a word (audit 2026-11-11, invoke-local-6 / cross-cutting-5).
+    charged = list_price
+    if list_price > 0 and call.x_payment_channel and not call.credit_account and not call.x402_raw:
+        from aimarket_hub.channels import _dollars_to_cents_bill
+
+        charged = _dollars_to_cents_bill(list_price) / 100.0
+    if body.max_price_usd is not None and charged > body.max_price_usd + 1e-9:
         return JSONResponse(status_code=409, content={
             "success": False,
             "error": "price_limit_exceeded",
-            "detail": "the capability price changed after selection; search again",
+            "detail": ("the capability price changed after selection; search again" if list_price > body.max_price_usd
+                       else "a payment channel bills whole cents: this call costs "
+                            f"${charged:.2f} there; raise max_price_usd or pay with credits or x402"),
             "maximum_price_usd": body.max_price_usd,
-            "current_price_usd": list_price,
+            "current_price_usd": charged,
             "protocol_version": "v2",
         })
     return None
@@ -302,12 +313,19 @@ def _local_plan_verification(d: SimpleNamespace, call: _Call, local: _Local):
     # — and paying for — the billable capability (free-work griefing).
     vs_plan = None
     if body.verify is not None:
+        # The channel backs the verdict only when it is the rail that pays. A seller-direct
+        # X-Payment has already paid the seller, so the plan is advisory: planned as "paid"
+        # because a channel header was also sent, the call ran the provider and then always
+        # answered 502 "no reservation backs the verified invoke", with the claim released for
+        # another billable run on every retry (audit 2026-11-11, invoke-local-3 /
+        # pay-on-verified-7).
+        x402_paid = isinstance(x402_accepted, dict) and bool(x402_accepted.get("ok"))
         vs_plan = verified_settlement.plan(
             body.verify,
             list_price=cap.price_per_call_usd,
             crypto_on=crypto_on,
             sandbox_mode=sandbox_mode,
-            channel_id=x_payment_channel,
+            channel_id=None if x402_paid else x_payment_channel,
             capability_id=body.capability_id,
         )
         if vs_plan.error:

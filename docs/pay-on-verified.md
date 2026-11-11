@@ -50,15 +50,23 @@ flowchart TB
 
 - `POST /ai-market/v2/invoke` — optional `verify: { requested, intent, mode, wait, wait_timeout_s }`
 - `GET /ai-market/v2/verification/{nonce}` — envelope (+ `rejection_receipt` when refunded)
-- A refund is **HTTP 200** with `verification.status="refunded"` — quality escrow, not
-  censorship; `403` stays safety-only (output withheld)
+- A refund is **HTTP 200** with `verification.status="refunded"` and `refunded: true` — quality
+  escrow, not censorship; `403` stays safety-only (output withheld). A failed verdict on an
+  **advisory** call (credits or x402: nothing was held) is `status="advisory_failed"`,
+  `refunded: false` — the call settled at response time and nothing is handed back.
+- The verifier judges the delivery against the buyer's `intent` **and the request input the
+  seller received** (stored with the settlement). An intent that does not describe the input
+  cannot be held against the seller.
 
 ## Operations
 
 - `AIMARKET_VERIFY_ENABLED=1` by default; per-invoke opt-in still required
 - Metis endpoint via `AIMARKET_VERIFY_METIS_URL` (falls back to `METIS_URL`)
-- No verdict deadline by default — an unresolved hold never pays the provider and never
-  captures buyer funds; settlements survive hub restarts (startup reconciliation)
+- Verdict deadline `AIMARKET_VERIFY_MAX_WAIT_S` = 24 h by default (0 = none), measured from
+  registration across restarts; past it the indeterminate policy applies. A verifier answering
+  3xx/403/404/405/422 is a configuration error and applies the policy at once; transport
+  failures are logged on every retry. Settlements survive hub restarts (startup reconciliation)
+- A passing verdict pays the seller the same `publisher_share_bps` share as a plain channel sale
 - Indeterminate verdicts follow `AIMARKET_VERIFY_FAIL_CLOSED` (prod defaults to fail-closed)
 - Crypto off → advisory mode: verdicts + reputation real, money never moves
 
@@ -154,11 +162,16 @@ Only the losing party, only once, and only before the deadline in the provisiona
 `appeal.deadline`. A seller paid on-chain through its `payout_address` with no credits
 account on this hub has nothing the hub can hold a bond from, so its appeal is **refused**
 (`409 seller_appeal_unavailable`) rather than heard unbonded. A legacy channel with no debit
-secret cannot authenticate its owner and cannot appeal either.
+secret cannot authenticate its owner and cannot appeal either. An escrow-funded channel is
+refused too (`409 buyer_appeal_unavailable`): the hub collects from AIMarketEscrow only what
+the depositor signed a DebitAuthorization for, and no authorization covers a bond, so a
+forfeited bond could never be collected. A publisher account with `require_mandate` on cannot
+bond an appeal with its API key alone (`403 mandate_required`), as with stake.
 
 Answers: `202` filed · `401` bad credential · `403 wrong_party` · `402 bond_unavailable` ·
-`409` `already_appealed` / `appeal_window_closed` / `not_appealable` / `verdict_pending` /
-`seller_appeal_unavailable` · `503 appeals_unavailable` (no court configured).
+`403 mandate_required` · `409` `already_appealed` / `appeal_window_closed` / `not_appealable` /
+`verdict_pending` / `seller_appeal_unavailable` / `buyer_appeal_unavailable` ·
+`503 appeals_unavailable` (no court configured).
 
 ### The bond
 

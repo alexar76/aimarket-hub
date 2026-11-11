@@ -56,6 +56,20 @@ OUTCOME_BLOCKED = "blocked"
 OUTCOME_REFUSED = "refused"
 OUTCOME_REJECTED = "rejected"
 
+#: A broadcast no node has heard of after this long was dropped (evicted, replaced, or sent to a
+#: node that never relayed it). Generous: Base includes a valid transaction within seconds.
+DROPPED_AFTER_S = 900
+
+
+def _age_s(stamp: str, now: float) -> float:
+    """Seconds since a store timestamp ("%Y-%m-%dT%H:%M:%SZ"); 0 when it is empty or unreadable."""
+    import calendar
+
+    try:
+        return max(0.0, now - calendar.timegm(time.strptime(str(stamp), "%Y-%m-%dT%H:%M:%SZ")))
+    except (TypeError, ValueError):
+        return 0.0
+
 
 @dataclass
 class MirrorReport:
@@ -166,7 +180,12 @@ class Mirror:
 
         if per_pass:
             pass_usd = escrow_verify.base_units_to_usd(self._pass_units + row.amount_units)
-            if pass_usd > per_pass:
+            # A row bigger than the per-pass ceiling goes out ALONE, as the first submission of
+            # a pass: refused on every pass, a $6 call on a $5 ceiling was served and then never
+            # collectable, expiring into an abandoned debit (audit 2026-11-11, escrow-6 /
+            # cross-cutting-3). The daily ceiling below still bounds it, and admission refuses a
+            # window that could never fit even that.
+            if pass_usd > per_pass and not (self._pass_units == 0 and row_usd > per_pass):
                 # "Nothing further is sent this pass" was wrong: the loop keeps going, and a
                 # CHEAPER row further down can still fit under the ceiling. Saying the pass is
                 # over when it is not sends an operator looking for a stalled queue that is
@@ -213,6 +232,19 @@ class Mirror:
         except Exception as exc:  # ChainUnavailable and anything the pool surfaces
             # Cannot read the flag → cannot know. Refuse rather than send a debit that the
             # contract may already have collected; a later pass will retry.
+            #
+            # Except where nothing can ever be collected: past its deadline, against an address
+            # that holds no contract at all (a superseded escrow on a chain that was reset, a
+            # wrong address). Such a row was blocked here on every pass, before the deadline
+            # guard could abandon it, and stayed pending forever — two rows on the UNI hub since
+            # 2026-08-28 (audit 2026-11-11, L-1).
+            if row.expired(now=now) and chain.has_no_code(row.escrow_address):
+                self.store.abandon(row.receipt_id, "the escrow address holds no contract and the "
+                                                   "authorization has expired: nothing can be collected")
+                report.note(row.receipt_id, OUTCOME_REJECTED,
+                            "no contract at the escrow address and the deadline has passed — abandoned",
+                            nonce=row.nonce)
+                return False
             report.note(
                 row.receipt_id, OUTCOME_BLOCKED,
                 f"cannot read the contract's replay flag, so cannot tell whether this "
@@ -342,13 +374,12 @@ class Mirror:
         clock = time.time() if now is None else now
         self._pass_units = 0
         report = MirrorReport(dry_run=self._dry_run, strategy=self.signer.name)
-        rows = self.store.unresolved(limit=limit)
+        # Actionable rows only, most urgent deadline first: SUBMITTED rows belong to confirm(),
+        # and ordering by channel id let a few rows that never progress fill every pass's
+        # limit (audit 2026-11-11, cross-cutting-2).
+        rows = self.store.actionable(limit=limit)
         report.scanned = len(rows)
         for row in rows:
-            if row.status == store.SUBMITTED:
-                # Already broadcast — the confirm pass owns it, and re-submitting would
-                # only spend gas to hit the contract's own usedReceipts guard.
-                continue
             try:
                 self.process(row, report, now=clock)
             except Exception as exc:  # one bad row must not stall the queue
@@ -356,20 +387,60 @@ class Mirror:
                 report.note(row.receipt_id, OUTCOME_BLOCKED, f"{type(exc).__name__}: {exc}")
         return report
 
-    def confirm(self, *, limit: int = 200) -> MirrorReport:
+    def _failed_broadcast(self, row: store.AuthorizationRow, report: MirrorReport, *, reason: str,
+                          now: float) -> None:
+        """A SUBMITTED row whose transaction provably did not collect: collected anyway (by
+        another transaction), dead (deadline passed), or back to PLANNED for the next pass.
+
+        Until 2026-11-11 a reverted or dropped broadcast stayed SUBMITTED forever: run() skips
+        SUBMITTED rows, so the promised re-simulation never happened and the channel's later
+        rows queued behind it until their deadlines (audit escrow-4 / cross-cutting-1).
+        """
+        try:
+            already = chain.receipt_already_used(row.receipt_id, address=row.escrow_address,
+                                                 channel_id=row.escrow_channel)
+        except Exception as exc:  # noqa: BLE001 - cannot tell yet; a later pass retries
+            report.note(row.receipt_id, OUTCOME_BLOCKED,
+                        f"{reason}; cannot read the replay flag to decide what next: {exc}",
+                        tx_hash=row.tx_hash)
+            return
+        if already:
+            self.store.mark_collected_externally(
+                row.receipt_id, note=f"{reason}; the contract counts the receipt as used")
+            report.note(row.receipt_id, OUTCOME_CONFIRMED,
+                        f"{reason}, but the contract already counts this receipt as used",
+                        amount_usd=escrow_verify.base_units_to_usd(row.amount_units))
+            return
+        if row.expired(now=now):
+            self.store.abandon(row.receipt_id, f"{reason}; the deadline passed before it landed")
+            report.note(row.receipt_id, OUTCOME_REJECTED,
+                        f"{reason}; the deadline has passed, so it can no longer be collected",
+                        tx_hash=row.tx_hash)
+            return
+        self.store.mark_resubmittable(row.receipt_id, f"{reason} (tx {row.tx_hash or 'none'})")
+        report.note(row.receipt_id, OUTCOME_BLOCKED,
+                    f"{reason}; back in the queue, the next pass simulates and sends it again",
+                    tx_hash=row.tx_hash)
+
+    def confirm(self, *, limit: int = 200, now: float | None = None) -> MirrorReport:
         """Resolve broadcast rows by READING the chain, never by trusting the signer.
 
         A signer (or a node) that claims success proves nothing; a receipt does. A reverted
-        receipt is left non-terminal on purpose: the usual cause is a nonce the chain moved
-        past, and the next pass re-simulates against current state instead of abandoning a
-        buyer's still-valid signature.
+        receipt, a transaction no node knows any more after DROPPED_AFTER_S, or one still
+        unmined past its deadline goes to _failed_broadcast: collected after all, abandoned
+        as expired, or queued again for the next pass.
         """
+        clock = time.time() if now is None else now
         report = MirrorReport(dry_run=self._dry_run, strategy=self.signer.name)
-        rows = [r for r in self.store.unresolved(limit=limit) if r.status == store.SUBMITTED]
+        rows = self.store.submitted(limit=limit)
         report.scanned = len(rows)
         for row in rows:
+            age = _age_s(row.submitted_at, clock)
             if not row.tx_hash:
-                report.note(row.receipt_id, OUTCOME_BLOCKED, "submitted without a tx hash")
+                if age > DROPPED_AFTER_S or row.expired(now=clock):
+                    self._failed_broadcast(row, report, reason="submitted without a tx hash", now=clock)
+                else:
+                    report.note(row.receipt_id, OUTCOME_BLOCKED, "submitted without a tx hash")
                 continue
             try:
                 receipt = chain._pool().call("eth_getTransactionReceipt", [row.tx_hash])
@@ -377,6 +448,19 @@ class Mirror:
                 report.note(row.receipt_id, OUTCOME_BLOCKED, f"receipt unreadable: {exc}")
                 continue
             if not receipt:
+                if row.expired(now=clock):
+                    # Past the deadline the contract refuses it even if it is mined later.
+                    self._failed_broadcast(row, report, reason="not mined by its deadline", now=clock)
+                    continue
+                if age > DROPPED_AFTER_S:
+                    try:
+                        known = chain._pool().call("eth_getTransactionByHash", [row.tx_hash])
+                    except Exception:  # noqa: BLE001
+                        known = True        # cannot tell: keep waiting
+                    if not known:
+                        self._failed_broadcast(row, report, reason="no node knows the transaction "
+                                                                   "any more (dropped)", now=clock)
+                        continue
                 report.note(row.receipt_id, OUTCOME_BLOCKED, "not mined yet")
                 continue
             status = str((receipt or {}).get("status", "")).lower()
@@ -392,11 +476,8 @@ class Mirror:
                     row.receipt_id,
                     {"ok": False, "error": f"transaction reverted on chain (status {status})"},
                 )
-                report.note(
-                    row.receipt_id, OUTCOME_BLOCKED,
-                    "the transaction reverted; it will be re-simulated against current state",
-                    tx_hash=row.tx_hash,
-                )
+                self._failed_broadcast(row, report, reason=f"the transaction reverted (status {status})",
+                                       now=clock)
         return report
 
     def status(self) -> dict[str, Any]:

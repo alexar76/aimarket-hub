@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 logger = logging.getLogger("aimarket_hub.channels")
+
+
+#: The per-wallet rate buckets are plain dicts, and /channel/open and /channel/close now run
+#: the ledger in worker threads: an eviction sorting a bucket table while another thread
+#: charged it could raise after an open had committed (review of 2026-11-11).
+_RATE_LOCK = threading.RLock()
 
 
 class LedgerStorageMixin:
@@ -66,8 +73,16 @@ class LedgerStorageMixin:
     # ── Rate limiting ─────────────────────────────────────────────
 
     def _check_rate(self, wallet: str, rate_store: dict[str, list[float]],
-                    max_per_hour: int, anon_max_per_hour: int | None = None) -> bool:
+                    max_per_hour: int, anon_max_per_hour: int | None = None,
+                    *, charge: bool = True) -> bool:
         """Return True if within rate limit, False if exceeded.
+
+        ``charge=False`` only looks: open() and close() look first and charge the
+        wallet's bucket with :meth:`_charge_rate` once the caller has proven it owns
+        that wallet (a funded open, a close carrying the channel secret). The wallet
+        is caller-supplied and public, so charging before that proof let anyone spend
+        a victim's bucket with junk requests naming the victim's address and lock
+        their close (60/h) or open (20/h) for an hour (audit 2026-11-11, channels-5).
 
         Wallet-less callers are NOT exempt (they used to be, which made a public hub
         unlimited to anyone who simply omitted the wallet field): they share one bucket
@@ -94,15 +109,29 @@ class LedgerStorageMixin:
             return False  # explicitly disabled → refuse rather than allow
         now = time.time()
         window = now - 3600
-        hits = [t for t in rate_store.get(key, ()) if t > window]
-        if len(hits) >= limit:
+        with _RATE_LOCK:
+            hits = [t for t in rate_store.get(key, ()) if t > window]
+            if len(hits) >= limit:
+                if key in rate_store:
+                    rate_store[key] = hits
+                return False
+            if not charge:
+                return True
+            self._charge_rate(wallet, rate_store, now=now)
+            return True
+
+    def _charge_rate(self, wallet: str, rate_store: dict[str, list[float]],
+                     *, now: float | None = None) -> None:
+        """Count one open/close against the wallet's bucket (see :meth:`_check_rate`)."""
+        key = (wallet or "").strip() or channels._ANON_RATE_KEY
+        now = time.time() if now is None else now
+        window = now - 3600
+        with _RATE_LOCK:
+            hits = [t for t in rate_store.get(key, ()) if t > window]
+            hits.append(now)
             rate_store[key] = hits
-            return False
-        hits.append(now)
-        rate_store[key] = hits
-        if len(rate_store) > channels._MAX_RATE_TRACKED_KEYS:
-            self._evict_rate_store(rate_store, window, keep=key)
-        return True
+            if len(rate_store) > channels._MAX_RATE_TRACKED_KEYS:
+                self._evict_rate_store(rate_store, window, keep=key)
 
     @staticmethod
     def _prune_rate_store(rate_store: dict[str, list[float]], window: float) -> None:

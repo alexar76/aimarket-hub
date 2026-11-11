@@ -188,10 +188,18 @@ def register(
         expired = time.time() > float(invoice["expires_at"])
         if str(invoice.get("pay_to") or "").lower() != terms.pay_to.lower():
             return {"error": "payment is addressed to somebody else"}
-        if int(invoice["amount_units"]) > terms.amount_units:
-            terms = settle.PaymentTerms(
-                **{**terms.__dict__, "amount_units": int(invoice["amount_units"])}
-            )
+        quoted_units = int(invoice["amount_units"])
+        if quoted_units != terms.amount_units:
+            # The 402 quoted this amount and the buyer paid exactly it: the invoice's terms
+            # hold while it is redeemable, in BOTH directions. Only a quote BELOW the current
+            # listing was honoured, so a seller that re-priced up inside the 300 s window
+            # received the buyer's exact payment while the hub refused the call as underpaid
+            # (audit 2026-11-11, invoke-local-2). Seller and fee legs are re-split from the
+            # quoted gross with the same arithmetic as the contract.
+            bps = settle.fee_bps() if terms.fee_units else 0
+            seller_units, fee_units = settle.fee_split(quoted_units, bps) if bps else (quoted_units, 0)
+            terms = settle.PaymentTerms(**{**terms.__dict__, "amount_units": quoted_units,
+                                           "seller_units": seller_units, "fee_units": fee_units})
         try:
             settled = settle.verify_transfer(
                 tx_hash=tx_hash,

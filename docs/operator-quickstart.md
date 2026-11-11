@@ -354,4 +354,4 @@ The code is Apache-2.0 (MIT elsewhere in the ecosystem) and you may run it comme
 set your own fees and keep all of them; nothing routes a cut anywhere. There is no
 trademark licence, so do not call your deployment "AIMarket" or imply endorsement.
 "Implements the AIMarket Protocol" and "interoperates with <peer>" are accurate and fine.
-The [conformance runner](https://github.com/alexar76/aicom/blob/main/aimarket-protocol/conformance/run.py) checks the covered vectors and live endpoints. Report the scope and results of your run. The runner does not issue certifications.
+The [conformance runner](https://github.com/alexar76/aimarket-protocol/blob/main/conformance/run.py) checks the covered vectors and live endpoints. Report the scope and results of your run. The runner does not issue certifications.

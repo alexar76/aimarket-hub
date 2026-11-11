@@ -1666,6 +1666,74 @@ _register(66, "066_peer_catalogue_watermarks", """
     DROP TABLE IF EXISTS peer_catalogue_watermarks;
 """)
 
+# 067: payments the x402 bridge made for credit buyers (x402_bridge.py). A row is written
+# BEFORE the payment is signed and every cap is a sum over this table, so a crash between
+# signing and recording cannot hide money that left the wallet. The one-row state table is
+# the lock every reservation updates first: on PostgreSQL that row lock queues concurrent
+# reservations the way the backend lock already does on SQLite.
+_register(67, "067_x402_bridge_payments", """
+    CREATE TABLE IF NOT EXISTS x402_bridge_payments (
+        id TEXT PRIMARY KEY,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        buyer_account TEXT NOT NULL DEFAULT '',
+        receipt_id TEXT NOT NULL DEFAULT '',
+        seller TEXT NOT NULL DEFAULT '',
+        route TEXT NOT NULL DEFAULT '',
+        pay_to TEXT NOT NULL,
+        network TEXT NOT NULL,
+        asset TEXT NOT NULL,
+        amount_atomic TEXT NOT NULL,
+        amount_usd REAL NOT NULL,
+        status TEXT NOT NULL,
+        nonce TEXT NOT NULL DEFAULT '',
+        valid_before INTEGER NOT NULL DEFAULT 0,
+        tx_hash TEXT NOT NULL DEFAULT '',
+        http_status INTEGER NOT NULL DEFAULT 0,
+        detail TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_x402_bridge_created ON x402_bridge_payments (created_at);
+    CREATE INDEX IF NOT EXISTS idx_x402_bridge_receipt ON x402_bridge_payments (receipt_id);
+    CREATE TABLE IF NOT EXISTS x402_bridge_state (
+        id INTEGER PRIMARY KEY,
+        version INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO x402_bridge_state (id, version) SELECT 1, 0
+        WHERE NOT EXISTS (SELECT 1 FROM x402_bridge_state WHERE id = 1);
+""", """
+    DROP TABLE IF EXISTS x402_bridge_state;
+    DROP TABLE IF EXISTS x402_bridge_payments;
+""")
+
+# Money-flow audit of 2026-11-11, Pay-on-Verified:
+#   * input_json          — the request the seller was actually given. The jury judged a buyer-
+#                           chosen intent against the output alone, so any buyer could state an
+#                           unrelated task, have the verdict fail, keep the work and drive the
+#                           seller towards a slash (pay-on-verified-1).
+#   * publisher_account / publisher_share_usd — the seller's share, fixed at the call like the
+#                           plain channel path computes it, paid by the verdict that captures.
+#                           A verified sale paid the seller nothing (pay-on-verified-2).
+_register(68, "068_verified_settlement_input_and_share", """
+    ALTER TABLE verified_settlements ADD COLUMN input_json TEXT NOT NULL DEFAULT '';
+    ALTER TABLE verified_settlements ADD COLUMN publisher_account TEXT NOT NULL DEFAULT '';
+    ALTER TABLE verified_settlements ADD COLUMN publisher_share_usd REAL NOT NULL DEFAULT 0;
+""", """
+    ALTER TABLE verified_settlements DROP COLUMN publisher_share_usd;
+    ALTER TABLE verified_settlements DROP COLUMN publisher_account;
+    ALTER TABLE verified_settlements DROP COLUMN input_json;
+""")
+
+
+# 069 — the operator's note on a top-up overpayment (audit 2026-11-11, deposits-x402-5). A
+# payment above its quote is credited up to the quote; the excess was only logged, so nothing
+# listed it for a refund. /admin/deposits now lists credited quotes paid over their amount until
+# the operator records how the excess was settled here.
+_register(69, "069_topup_excess_resolved", """
+    ALTER TABLE credit_topup_quotes ADD COLUMN excess_resolved TEXT NOT NULL DEFAULT '';
+""", """
+    ALTER TABLE credit_topup_quotes DROP COLUMN excess_resolved;
+""")
+
 
 def channel_ledger_versions() -> list[int]:
     """Migration versions whose DDL touches a channel-ledger table.

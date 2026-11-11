@@ -298,14 +298,22 @@ def register(
         from aimarket_hub.theme import BRAND
 
         name = (config.hub_name or "").strip() or "This hub"
+        from aimarket_hub import federation_funnel as _funnel
+
+        peers = db.list_peers()
+        pending = _publishable_pending_peers(db)
         page = _hubs.render(
             hub_name=name,
             hub_url=config.hub_url,
             source_url=str(BRAND.get("source_url") or ""),
-            peers=db.list_peers(),
-            pending=_publishable_pending_peers(db),
+            peers=peers,
+            pending=pending,
             own_count=lambda url: db.count_capabilities(source_hub=url),
             assay=db.get_peer_assay,
+            funnel=_funnel.build(
+                peers=peers, pending=pending, assay=db.get_peer_assay, stats=db.peer_funnel_stats(),
+                pinned=_funnel.operators_own(config),
+            ),
         )
         return HTMLResponse(
             apply_shell(

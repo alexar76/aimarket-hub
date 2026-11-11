@@ -222,26 +222,41 @@ def register(
                     amount_units=terms_units, ttl_s=settle.invoice_ttl_s(),
                     secret=payment_secret,
                 )
+                # With a market fee the buyer pays the splitter, which pays the seller and the
+                # operator in the same transaction; the invoice keeps the seller, which is what
+                # verification checks (audit 2026-11-11, deposits-x402-4).
+                offer_to = settle.offer_to_for(pay_to)
+                hint = settle.splitter_hint(offer_to, pay_to)
                 for entry in v2.get("accepts") or []:
                     extra = dict(entry.get("extra") or {})
                     extra["nonce"] = nonce
+                    if hint:
+                        extra["splitter"] = hint
                     entry["extra"] = extra
+                    if offer_to != pay_to:
+                        entry["payTo"] = offer_to
                 v2["nonce"] = nonce
                 payload["nonce"] = nonce
                 payload["binding"] = "eip3009"
                 # In this JSON body only — never in PAYMENT-REQUIRED, accepts[].extra or a
                 # header, which proxies log and the A2A bridge persists with the task.
                 payload["payment_secret"] = payment_secret
-                payload["pay_to"] = pay_to
+                payload["pay_to"] = offer_to
+                if offer_to != pay_to:
+                    payload["seller_pay_to"] = pay_to
+                    payee_arg = offer_to
                 payload["expires_at"] = invoice["expires_at"]
 
             payload.update(x402.v1_body_fields(
                 price or 0, resource_url, description, pay_to=payee_arg,
             ))
             if payload.get("accepts") and pay_to and payload.get("nonce"):
+                hint = settle.splitter_hint(settle.offer_to_for(pay_to), pay_to)
                 for entry in payload["accepts"]:
                     extra = dict(entry.get("extra") or {})
                     extra["nonce"] = payload["nonce"]
+                    if hint:
+                        extra["splitter"] = hint
                     entry["extra"] = extra
             # x402 Offer and Receipt extension: a signed statement of these terms, so the buyer
             # (and anyone it shows the offer to later) can prove what was asked. Signed after the

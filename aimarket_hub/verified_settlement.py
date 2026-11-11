@@ -75,7 +75,7 @@ Env knobs are read dynamically (monkeypatchable, hub convention for prod gates):
     AIMARKET_VERIFY_ATTEMPT_TIMEOUT_S     330      per-attempt HTTP timeout (> Metis 300s cap)
     AIMARKET_VERIFY_RETRY_BACKOFF_S       5        initial transport backoff (exp, cap 300)
     AIMARKET_VERIFY_ENGINE_RETRIES        2        re-runs after an engine-error envelope
-    AIMARKET_VERIFY_MAX_WAIT_S            0        0 = no overall deadline (retry until verdict)
+    AIMARKET_VERIFY_MAX_WAIT_S            86400    overall deadline from registration (0 = none)
     AIMARKET_VERIFY_FAIL_CLOSED           1        indeterminate policy; ONLY an explicit
                                                    0/false/no/off opts into fail-open
     AIMARKET_VERIFY_METIS_URL             http://127.0.0.1:8080   (falls back to METIS_URL)
@@ -219,6 +219,14 @@ def _intent_close(audit_id: str) -> str:
     return f"<<</BUYER-INTENT-{audit_id}>>>"
 
 
+def _request_open(audit_id: str) -> str:
+    return f"<<<REQUEST-INPUT-{audit_id}>>>"
+
+
+def _request_close(audit_id: str) -> str:
+    return f"<<</REQUEST-INPUT-{audit_id}>>>"
+
+
 def _statement_open(audit_id: str) -> str:
     return f"<<<PARTY-STATEMENT-{audit_id}>>>"
 
@@ -242,6 +250,7 @@ def _redact_markers(text: str, audit_id: str) -> str:
     for mark in (
         _fence_open(audit_id), _fence_close(audit_id),
         _intent_open(audit_id), _intent_close(audit_id),
+        _request_open(audit_id), _request_close(audit_id),
         _statement_open(audit_id), _statement_close(audit_id),
         *_RESERVED_VERIFY_MARKERS,
     ):
@@ -377,8 +386,13 @@ def engine_retries() -> int:
 
 
 def max_wait_s() -> float:
-    """Overall verdict deadline. 0 (default) = none: retry until a verdict lands."""
-    return _env_float("AIMARKET_VERIFY_MAX_WAIT_S", 0.0)
+    """Overall verdict deadline, from the row's registration; the indeterminate policy then
+    applies (fail-closed by default: the buyer is refunded). 24 h by default; 0 = none.
+
+    It was "none" until 2026-11-11: a verifier that never answers kept the buyer's whole
+    channel frozen (an unresolved hold postpones close and expiry) for as long as nobody
+    noticed (audit pay-on-verified-5)."""
+    return _env_float("AIMARKET_VERIFY_MAX_WAIT_S", 86_400.0)
 
 
 def fail_closed() -> bool:

@@ -521,21 +521,45 @@ class CreditsLedger:
             return {"error": f"no hold for receipt {receipt_id}"}
         return {key: 0.0, "already": str(row["status"])}
 
-    def capture_hold(self, receipt_id: str, *, publisher_share: PublisherShare | None = None) -> dict[str, Any]:
+    def capture_hold(self, receipt_id: str, *, publisher_share: PublisherShare | None = None,
+                     amount_mc: int | None = None) -> dict[str, Any]:
         """Turn a reservation into a recorded debit. A no-op on an already-resolved hold,
-        so a late exception on a settled invoke cannot double-charge."""
+        so a late exception on a settled invoke cannot double-charge.
+
+        ``amount_mc`` captures less than was held — the x402 bridge holds the listed price
+        and charges what the seller actually took — and hands the rest back in the same
+        transaction: to the allowance the hold was carved from while it is open, otherwise
+        to the balance. It never captures more than the hold.
+        """
         with atomic(self._conn):
             won = self._claim_resolution(receipt_id, "captured")
             if won is None:
                 return self._unresolved_answer(receipt_id, "captured_usd")
-            amount_mc = int(won["amount_mc"])
+            held_mc = int(won["amount_mc"])
             account_id = str(won["account_id"])
+            captured_mc = held_mc if amount_mc is None else max(0, min(int(amount_mc), held_mc))
+            rest_mc = held_mc - captured_mc
+            to_parent = None
+            parent = str(won["parent_receipt_id"] or "")
+            if rest_mc and parent:
+                to_parent = returning_one(
+                    self._conn,
+                    "UPDATE credit_holds SET amount_mc = amount_mc + ? "
+                    "WHERE receipt_id = ? AND status = 'held' RETURNING receipt_id",
+                    (rest_mc, parent),
+                )
+            back_to_balance = rest_mc if to_parent is None else 0
             self._conn.execute(
-                "UPDATE credit_accounts SET held_mc = held_mc - ?, spent_mc = spent_mc + ? "
-                "WHERE account_id = ?",
-                (amount_mc, amount_mc, account_id),
+                "UPDATE credit_accounts SET held_mc = held_mc - ?, spent_mc = spent_mc + ?, "
+                "balance_mc = balance_mc + ? WHERE account_id = ?",
+                (captured_mc + back_to_balance, captured_mc, back_to_balance, account_id),
             )
-            self._log(account_id, "capture", amount_mc, receipt_id=receipt_id)
+            self._log(account_id, "capture", captured_mc, receipt_id=receipt_id)
+            if rest_mc:
+                self._log(account_id, "release", rest_mc, receipt_id=receipt_id,
+                          note=(f"uncharged part, back to allowance {parent}" if to_parent is not None
+                                else "uncharged part of the hold")[:200])
+            amount_mc = captured_mc
             if publisher_share is not None:
                 result = self._pay_publisher(*publisher_share)
                 if result.get("error"):

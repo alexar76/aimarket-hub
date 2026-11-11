@@ -39,8 +39,14 @@ class SettlementSchedulingMixin:
         mode: str,
         receipt: dict[str, Any],
         advisory: bool,
+        input_payload: Any = None,
+        publisher_share: Any = None,
     ) -> dict[str, Any]:
         """Persist a pending settlement and schedule its background verification.
+
+        ``input_payload`` is the request the seller was given: the jury judges the delivery
+        against it as well as the buyer's intent. ``publisher_share`` (a PublisherShare, or
+        None) is the seller's share of a paid call, paid by the verdict that captures it.
 
         Returns the pending envelope (already attached to the receipt by the caller).
         """
@@ -57,11 +63,22 @@ class SettlementSchedulingMixin:
         # bloat the DB or per-task resident memory.
         if len(output_json) > vs._MAX_OUTPUT_CHARS:
             output_json = output_json[:vs._MAX_OUTPUT_CHARS] + "…[truncated]"
+        input_json = ""
+        if input_payload is not None:
+            try:
+                input_json = json.dumps(input_payload, ensure_ascii=False, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                input_json = json.dumps(str(input_payload), ensure_ascii=False)
+            if len(input_json) > vs._MAX_OUTPUT_CHARS:
+                input_json = input_json[:vs._MAX_OUTPUT_CHARS] + "…[truncated]"
+        share_account = str(getattr(publisher_share, "account_id", "") or "") if not advisory else ""
+        share_usd = float(getattr(publisher_share, "amount_usd", 0) or 0) if share_account else 0.0
         self._db._conn.execute(
             "INSERT INTO verified_settlements "
             "(nonce, product_id, capability_id, channel_id, provider_id, price_usd, "
-            " intent, output_json, mode, status, envelope_json, receipt_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+            " intent, output_json, mode, status, envelope_json, receipt_json, created_at, "
+            " input_json, publisher_account, publisher_share_usd) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
             (
                 nonce, product_id, capability_id,
                 channel_id if not advisory else "",
@@ -69,6 +86,7 @@ class SettlementSchedulingMixin:
                 json.dumps(env, ensure_ascii=False),
                 json.dumps(receipt, ensure_ascii=False),
                 vs._now_iso(),
+                input_json, share_account, share_usd,
             ),
         )
         self._db._conn.commit()
@@ -380,10 +398,17 @@ class SettlementSchedulingMixin:
                     )
                     self._resolve_policy(row, last_env, judge=last_judge)
                     return
-            # kind in ("transport", "engine"): retry. No overall deadline by default —
-            # an unresolved hold is buyer-safe (debit never recorded until a verdict).
+            # kind in ("transport", "engine"): retry, until the overall deadline.
+            if kind == "transport":
+                # Said out loud: a verifier that answers 502 or a proxy page for days used to
+                # leave rows 'verifying' without one log line (audit 2026-11-11, pay-on-verified-5).
+                logger.warning("verified-settlement %s: verifier unavailable (%s), attempt %d; retrying",
+                               nonce, payload, attempts)
             deadline = vs.max_wait_s()
-            if deadline > 0 and (time.monotonic() - started) > deadline:
+            # Measured from when the row was registered, not from this process: a restart
+            # restarted the clock, so hubs that redeploy often never reached the deadline.
+            waited = max(time.monotonic() - started, _age_s(row["created_at"]))
+            if deadline > 0 and waited > deadline:
                 logger.warning("verified-settlement %s: max wait %.0fs elapsed — applying policy", nonce, deadline)
                 self._resolve_policy(row, last_env, judge=last_judge)
                 return
@@ -391,6 +416,16 @@ class SettlementSchedulingMixin:
             # they don't all retry Metis on the same tick.
             await asyncio.sleep(backoff * random.uniform(0.5, 1.5))
             backoff = min(backoff * 2, 300.0)
+
+
+def _age_s(created_at: Any) -> float:
+    """Seconds since a row's ISO created_at; 0 when unreadable."""
+    import calendar
+
+    try:
+        return max(0.0, time.time() - calendar.timegm(time.strptime(str(created_at), "%Y-%m-%dT%H:%M:%SZ")))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 # Imported after the class on purpose: methods read aimarket_hub.verified_settlement at call time

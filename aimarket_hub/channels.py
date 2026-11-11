@@ -391,7 +391,9 @@ def _verify_tx_onchain(
             "(%d confirmations)",
             tx[:12], check.sender[:10], check.paid_units, token, check.confirmations,
         )
-        return {"ok": True, "sender": check.sender}
+        return {"ok": True, "sender": check.sender, "paid_units": int(check.paid_units or 0),
+                "expected_units": int(check.expected_units or 0),
+                "decimals": int((check.details or {}).get("decimals") or 0)}
 
     try:
         verified, sender = verify_tx_payment_details(

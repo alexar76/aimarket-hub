@@ -483,6 +483,24 @@ class TestLimitsCannotBeDodged:
             proxy.release_hold("r1")          # the handler's `finally` then runs
             assert store.usage(m["digest"])["spent_today_usd"] == pytest.approx(0.004)
 
+    def test_a_partial_capture_counts_only_what_was_charged(self, monkeypatch, tmp_path):
+        """Audit 2026-11-11, x402-bridge-7: the bridge holds the listed price and charges what the
+        seller took. The mandate counted the whole hold however little moved."""
+        from aimarket_hub import credits
+
+        with hub(monkeypatch, tmp_path) as (client, db):
+            m = setup_mandate(client, db)
+            store = mandates.MandateStore(db._conn, HUB)
+            adm = mandates.Admission(chain=store.chain(m["digest"]), account_id=m["account"],
+                                     product_id="p", store=store)
+            proxy = mandates.MandatedCredits(credits.CreditsLedger(db._conn), adm)
+            assert not proxy.hold(m["account"], 0.004, "r1").get("error")
+            captured = proxy.capture_hold("r1", amount_mc=100)        # $0.001 of the $0.004 held
+            assert captured["captured_usd"] == pytest.approx(0.001)
+            assert store.usage(m["digest"])["spent_today_usd"] == pytest.approx(0.001)
+            proxy.capture_hold("r1", amount_mc=400)                    # a replay changes nothing
+            assert store.usage(m["digest"])["spent_today_usd"] == pytest.approx(0.001)
+
     def test_a_hold_that_raises_does_not_strand_the_limit(self, monkeypatch, tmp_path):
         with hub(monkeypatch, tmp_path) as (client, db):
             m = setup_mandate(client, db)

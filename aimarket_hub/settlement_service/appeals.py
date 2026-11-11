@@ -15,9 +15,23 @@ from typing import TYPE_CHECKING, Any
 
 from aimarket_hub import credits as hub_credits
 from aimarket_hub.channels import APPEAL_BOND_PREFIX
+from aimarket_hub.channels import channel_escrow_binding
 from aimarket_hub.channels import channel_secret_error
 from aimarket_hub.channels import hold_channel
 from aimarket_hub.channels import hold_state
+
+def _requires_mandate(ledger: Any, account_id: str) -> bool:
+    """Whether ``account_id`` turned on require_mandate (read from the hub DB the ledger uses)."""
+    try:
+        row = ledger._conn.execute(
+            "SELECT 1 FROM mandate_owners WHERE account_id = ? AND require_mandate = 1 LIMIT 1",
+            (account_id,),
+        ).fetchone()
+    except Exception as exc:  # noqa: BLE001 — no mandate table: fail closed
+        logger.error("appeal: could not read the mandate policy of %s: %s", account_id, exc)
+        return True
+    return row is not None
+
 
 if TYPE_CHECKING:  # annotations only; the classes live in the facade module
     from aimarket_hub.verified_settlement import _Reading
@@ -172,6 +186,18 @@ class SettlementAppealsMixin:
         problem = channel_secret_error(channel_id, channel_secret)
         if problem:
             raise vs.AppealRefused(401, "unauthorized", problem)
+        if channel_escrow_binding(channel_id):
+            # The hub collects from an escrow channel only what the depositor signed a
+            # DebitAuthorization for, and nothing signs the bond: a forfeited bond was booked
+            # in the ledger and never moved on chain, so losing an appeal cost the buyer
+            # nothing while it delayed the seller's payout (audit 2026-11-11,
+            # pay-on-verified-6). Refused, like a seller with no account to bond.
+            raise vs.AppealRefused(
+                409, "buyer_appeal_unavailable",
+                "this payment channel is escrow-funded, and the hub can collect from it only "
+                "what the depositor signed for; nothing signs an appeal bond, so a passed "
+                "verdict on an escrow channel cannot be appealed with a bond held there",
+            )
         res = hold_channel(channel_id, bond, receipt_id=receipt_id, secret=channel_secret)
         if res.get("error"):
             if "replay" in res["error"] and hold_state(receipt_id) == "held":
@@ -207,6 +233,17 @@ class SettlementAppealsMixin:
         if account != publisher:
             raise vs.AppealRefused(403, "wrong_party",
                                 "only the publisher of the delivery may appeal its failure")
+        if _requires_mandate(ledger, publisher):
+            # require_mandate promises that a leaked API key cannot move this balance. A bond
+            # held on the key alone, and forfeited when the first verdict stands, is balance
+            # moved by the bare key (audit 2026-11-11, mandates-a2a-3) — the stake route
+            # refuses the same thing for the same reason.
+            raise vs.AppealRefused(
+                403, "mandate_required",
+                "this publisher account spends only under a mandate (require_mandate): its API "
+                "key alone cannot hold an appeal bond on the balance; an owner can lift the "
+                "policy with a signed change (mandates.md §4)",
+            )
         res = ledger.hold(publisher, bond, receipt_id)
         if res.get("error"):
             existing = ledger.hold_status(receipt_id)

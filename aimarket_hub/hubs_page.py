@@ -54,6 +54,50 @@ def _verdict(verdict: str | None) -> str:
     return f'<span class="{cls}">{_e(v or "—")}</span>'
 
 
+def _when(stamp: str) -> str:
+    return _e(str(stamp or "")[:10]) if stamp else "—"
+
+
+def _funnel_section(funnel: dict[str, Any]) -> str:
+    """Knock → assay → admitted → first routed call → first paid call, per hub."""
+    totals = funnel.get("totals") or {}
+    steps = (("knocked", "came to this hub"), ("assay_passed", "passed the assay"),
+             ("admitted", "admitted"), ("routed", "got a routed call"), ("paid", "got a paid call"))
+    summary = " → ".join(f'<b>{_e(totals.get(k, 0))}</b> {label}' for k, label in steps)
+    rows = []
+    for h in funnel.get("hubs") or []:
+        verdict = h.get("assay_verdict") or ("—" if not h.get("admitted") else "")
+        rows.append(
+            "<tr>"
+            f'<td class="mono">{_link(h.get("url", ""))}'
+            f'{" <span class=small>(this operator)</span>" if h.get("pinned_by_operator") else ""}</td>'
+            f'<td class="mono">{_when(h.get("knocked_at", ""))}</td>'
+            f"<td>{_verdict(verdict) if verdict else '<span class=ok>—</span>'}</td>"
+            f'<td>{"<span class=ok>yes</span>" if h.get("admitted") else "no"}</td>'
+            f'<td class="mono">{_when(h.get("first_routed_at", ""))}'
+            f'{" · " + _e(h.get("routed_calls")) if h.get("routed_calls") else ""}</td>'
+            f'<td class="mono">{_when(h.get("first_paid_at", ""))}'
+            f'{" · " + _e(h.get("paid_calls")) if h.get("paid_calls") else ""}</td>'
+            f"<td>{_e(h.get('next_step', ''))}</td>"
+            "</tr>"
+        )
+    table = (
+        '<div class="scroll"><table><thead><tr><th>Hub</th><th>Knocked</th><th>Assay</th>'
+        "<th>Admitted</th><th>First routed call · calls</th><th>First paid call · calls</th>"
+        f"<th>Next</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
+        if rows else "<p>No hub has come yet.</p>"
+    )
+    return f"""
+  <section class="card" id="funnel">
+    <h3>Onboarding funnel</h3>
+    <p>Hubs that are not this operator's own: {summary}.</p>
+    {table}
+    <p class="small">Every step is what this hub recorded, never a hub's own claim. Machine-readable:
+    <a class="mono" href="/ai-market/v2/federation/funnel">/ai-market/v2/federation/funnel</a></p>
+  </section>
+"""
+
+
 def render(
     *,
     hub_name: str,
@@ -63,20 +107,29 @@ def render(
     pending: Iterable[Any],
     own_count: Callable[[str], int],
     assay: Callable[[str], dict | None],
+    funnel: dict[str, Any] | None = None,
 ) -> str:
     """The page body, with the shell markers `apply_shell` fills in."""
+    from aimarket_hub.peer_liveness import liveness, silent_days
+
     rows = []
+    silent_count = 0
     for p in peers:
         status = str(getattr(p, "status", "") or "")
         key = ('<span class="bad">key changed — refused</span>' if status == "key_mismatch"
                else '<span class="ok">pinned</span>')
+        crawl = (getattr(p, "last_crawl", "") or "")[:16].replace("T", " ") or "—"
+        alive = liveness(getattr(p, "last_crawl", ""))
+        if alive["liveness"] == "silent":
+            silent_count += 1
+            crawl += f' <span class="mid">silent {_e(alive["silent_days"])} days</span>'
         rows.append(
             "<tr>"
             f"<td>{_e(getattr(p, 'name', '') or getattr(p, 'url', ''))}</td>"
             f'<td class="mono">{_link(getattr(p, "url", ""))}</td>'
             f'<td class="mono">{_e(getattr(p, "hub_version", "") or "—")}</td>'
             f'<td class="mono">{_e(own_count(getattr(p, "url", "")))}</td>'
-            f'<td class="mono">{_e((getattr(p, "last_crawl", "") or "")[:16].replace("T", " ") or "—")}</td>'
+            f'<td class="mono">{crawl}</td>'
             f"<td>{key}</td>"
             "</tr>"
         )
@@ -101,6 +154,12 @@ def render(
         "<th>Version</th><th>Indexed here</th><th>Last crawl (UTC)</th><th>Key</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table></div>"
         if rows else "<p>No admitted peers yet.</p>"
+    )
+    funnel_section = _funnel_section(funnel) if funnel else ""
+    silent_note = (
+        f'<p class="small"><span class="mid">silent</span> = no crawl has reached the hub for more than '
+        f"{silent_days()} days. It stays listed, and is live again on the next crawl that reaches it."
+        f"{' Silent now: ' + str(silent_count) + '.' if silent_count else ''}</p>"
     )
     knocking_table = (
         '<div class="scroll"><table><thead><tr><th>Address</th><th>First seen</th>'
@@ -135,12 +194,14 @@ def render(
     {admitted_table}
     <p class="small">“Indexed here” counts only what each peer sells itself; re-exports are not
     indexed twice. Machine-readable: <a class="mono" href="/ai-market/v2/federation/peers">/ai-market/v2/federation/peers</a></p>
+    {silent_note}
   </section>
 
   <section class="card">
     <h3>Knocking</h3>
     {knocking_table}
   </section>
+{funnel_section}
 
   <section class="card" id="run-your-own">
     <h3>Run your own hub</h3>

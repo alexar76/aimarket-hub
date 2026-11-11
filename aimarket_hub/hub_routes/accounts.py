@@ -428,6 +428,9 @@ def register(
         return {"success": True, "deposit_watch": deposit_watch.well_known(hub_deposits, config.hub_url),
                 "unattributed": [r for r in rows if r["status"] == deposit_watch.UNATTRIBUTED],
                 "pending": [r for r in rows if r["status"] == deposit_watch.PENDING],
+                # Paid above the quote: credited up to it, the excess is the operator's to
+                # refund (deposits-x402-5); resolve it by its tx_hash like any other row.
+                "overpaid_topups": hub_topups.overpaid(limit=page_limit(limit, maximum=DEPOSITS_PAGE_MAX)),
                 "protocol_version": "v2"}
 
     @router.post("/admin/deposits/{tx_hash}/resolve")
@@ -439,9 +442,11 @@ def register(
         if not note:
             raise HTTPException(status_code=400, detail="say how it was settled: {\"note\": \"refunded in 0x…\"}")
         tx = tx_hash.strip().lower()
-        if not hub_deposits.resolve(tx, note):
-            raise HTTPException(status_code=409, detail="no pending or unattributed deposit with that tx_hash")
-        return {"success": True, "deposit": hub_deposits.deposit(tx), "protocol_version": "v2"}
+        if hub_deposits.resolve(tx, note):
+            return {"success": True, "deposit": hub_deposits.deposit(tx), "protocol_version": "v2"}
+        if hub_topups.resolve_excess(tx, note):
+            return {"success": True, "overpaid_topup_resolved": tx, "protocol_version": "v2"}
+        raise HTTPException(status_code=409, detail="no pending, unattributed or overpaid deposit with that tx_hash")
 
     @router.get("/account/topups")
     async def list_topups(limit: int = 50, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
@@ -692,6 +697,17 @@ def register(
         if account is None:
             raise HTTPException(status_code=404, detail=f"unknown account {account_id}")
         posted = float(account.get("collateral_usd") or 0.0)
+        # A slash reduces the publisher's stake but never touched collateral_mc, so slashed
+        # money stayed "returnable" here: an operator unstaking a publisher credited back the
+        # very amount the slash had taken (audit 2026-11-11, credits-2). What can come back is
+        # at most what the stake still holds.
+        with contextlib.suppress(Exception):
+            row = db._conn.execute(
+                "SELECT amount_usd, slashed_usd FROM supply_stakes WHERE publisher_id = ?", (account_id,),
+            ).fetchone()
+            if row is not None:   # no stake row: collateral posted some other way, nothing slashed
+                left = max(0.0, float(row["amount_usd"] or 0) - float(row["slashed_usd"] or 0))
+                posted = min(posted, left)
         if amount > posted + 1e-9:
             # `return_collateral` floors collateral at zero and would credit the whole
             # amount to spendable balance anyway, inventing money out of a typo.

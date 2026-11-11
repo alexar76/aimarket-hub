@@ -179,18 +179,32 @@ def register(
 
                 from aimarket_hub.assay_limits import schedule_background_assay
                 knock_assay = schedule_background_assay(assay_url, _assay_knock)
+            from aimarket_hub.federation_assay import assay_blockers
+
+            base = config.hub_url.rstrip("/")
+            known_row = db.get_peer(url)
+            dossier = db.get_peer_assay(url) or {}
             return {
                 "acknowledged": True,
                 "peer_added": outcome == "added",
-                "status": "known" if outcome == "known" else "pending",
+                "status": ("admitted" if known_row is not None
+                           and str(getattr(known_row, "status", "") or "") not in ("pending", "")
+                           else "known" if outcome == "known" else "pending"),
                 "trusted": False,
                 "assay_scheduled": bool(knock_assay and config.federation_assay),
                 # Where the knocking operator reads the verdict. The dossier was always public;
                 # nothing told them it existed, so a `review` was silent (2026-10-12).
-                "assay_url": (
-                    f"{config.hub_url.rstrip('/')}/ai-market/v2/federation/assay?"
-                    + urlencode({"url": url})
-                ),
+                "assay_url": f"{base}/ai-market/v2/federation/assay?" + urlencode({"url": url}),
+                # The last verdict, in the reply itself (owner, 2026-11-08): an operator who knocks
+                # again after a failed assay sees at once what still blocks it, without having to
+                # find and read the dossier. Empty on a first knock: the assay runs after this reply.
+                "assay": {
+                    "verdict": dossier.get("verdict") or None,
+                    "ran_at": dossier.get("ran_at") or "",
+                    "blockers": assay_blockers(dossier),
+                },
+                # Where the knock stands among the other hubs, for a person.
+                "funnel_url": f"{base}/hubs#funnel",
                 "note": _knock_promise(),
             }
         _require_admin(authorization)
@@ -312,6 +326,7 @@ def register(
             else _publishable_pending_peers(db)
         )
         from aimarket_hub.peer_identity import identity_for
+        from aimarket_hub.peer_liveness import liveness, silent_days
 
         return {
             "peers": [
@@ -320,6 +335,9 @@ def register(
                     "name": p.name,
                     "capabilities_count": p.capabilities_count,
                     "last_crawl": p.last_crawl,
+                    # "silent": no crawl has reached it for more than silent_after_days. A label,
+                    # never a removal: it is live again on the next crawl that reaches it.
+                    **liveness(p.last_crawl),
                     "trust_score": p.trust_score,
                     "depth": p.depth,
                     "categories": p.categories,
@@ -374,9 +392,32 @@ def register(
                 for assay in (db.get_peer_assay(p.url) or {},)
             ],
             "pending_count": len(pending_rows),
+            "silent_after_days": silent_days(),
             "open_federation": bool(config.federation_open),
             "observation_gossip": True,
         }
+
+    _funnel_cache: dict[str, Any] = {}
+
+    @router.get("/federation/funnel")
+    async def federation_funnel():
+        """Public. Where each hub that came here stands: knock → assay → admitted → first routed
+        call → first paid call (aimarket_hub/federation_funnel.py). Built at most once a minute:
+        it aggregates the whole invocation table, and anyone may ask for it."""
+        from aimarket_hub import federation_funnel as _funnel
+        hit = _funnel_cache.get("doc")
+        if hit and time.time() - hit[0] < 60:
+            return hit[1]
+        doc = {
+            **_funnel.build(
+                peers=db.list_peers(), pending=_publishable_pending_peers(db), assay=db.get_peer_assay,
+                stats=db.peer_funnel_stats(), pinned=_funnel.operators_own(config),
+            ),
+            "hub": config.hub_url,
+            "protocol_version": "v2",
+        }
+        _funnel_cache["doc"] = (time.time(), doc)
+        return doc
 
     @router.get("/federation/preview")
     async def federation_preview(url: str = "", limit: int = 200):

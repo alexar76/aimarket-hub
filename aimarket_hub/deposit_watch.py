@@ -61,8 +61,15 @@ PENDING, IGNORED, RESOLVED = "pending", "ignored", "resolved"
 FINAL = (CREDITED, ELSEWHERE, IGNORED, RESOLVED)
 #: Blocks re-read behind the cursor on every scan. A public node behind a load balancer can
 #: answer eth_blockNumber from one backend and eth_getLogs from another a block or two behind;
-#: re-reading is free, because every decision is idempotent.
-OVERLAP_BLOCKS = 12
+#: re-reading is free, because every decision is idempotent. 12 blocks (~24 s on Base) was not
+#: enough: a lagging node answered eth_getLogs with [] for blocks the head node already had, the
+#: cursor moved past them, and the deposit was never seen again (audit 2026-11-11,
+#: deposits-x402-3). 150 blocks is ~5 minutes; the log filter is by recipient, so it stays cheap.
+OVERLAP_BLOCKS = 150
+#: Once an hour (and on the first scan after a start) the watcher re-reads this many blocks behind
+#: its cursor, for a node that lagged longer than the overlap.
+DEEP_RESCAN_BLOCKS = 1_800
+DEEP_RESCAN_EVERY_S = 3_600.0
 #: Open deposits (pending, unattributed) re-examined per scan, least recently looked at first.
 REVISIT_BATCH = 25
 SEVERAL_SENDERS = "several senders in one transaction"
@@ -608,6 +615,11 @@ class Watcher:
         key = f"{ctx['chain']}:{ctx['wallet']}"
         cursor = self.store.cursor(key)
         start = max(0, safe - lookback_blocks()) if cursor is None else max(0, cursor - OVERLAP_BLOCKS)
+        if cursor is None:
+            self._last_deep_rescan = time.time()     # the first scan reads the whole lookback anyway
+        elif time.time() - getattr(self, "_last_deep_rescan", 0.0) > DEEP_RESCAN_EVERY_S:
+            start = max(0, min(start, cursor - DEEP_RESCAN_BLOCKS))
+            self._last_deep_rescan = time.time()
         revisited = self.revisit_open()
         outcomes: dict[str, int] = defaultdict(int)
         while start <= safe:

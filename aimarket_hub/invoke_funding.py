@@ -476,6 +476,21 @@ def sweep_stale_credit_holds(*, credits_ledger: Any, store: mandates.MandateStor
     ).fetchall()
     for row in [r for r in orphaned if (age := _age_s(r["created_at"], now)) is not None and age > max_age_s][:limit]:
         store.settle(row["receipt_id"], int(row["amount_mc"] or 0) * 10 if row["credit_status"] == "captured" else 0)
+    # The same gap for an ALLOWANCE: its credit hold was released (children paid from it,
+    # the rest handed back) but the mandate settle failed or the process died first, and the
+    # whole allowance stayed reserved against the mandate for good — no sweep covered it
+    # (audit 2026-11-11, mandates-a2a-2). What the children spent is what did not come back.
+    allowances = conn.execute(
+        "SELECT DISTINCT m.receipt_id, m.created_at, m.amount_micro, h.status AS credit_status, h.amount_mc "
+        "FROM mandate_holds m JOIN credit_holds h ON h.receipt_id = m.receipt_id "
+        "WHERE m.status = 'held' AND h.status IN ('captured', 'released') "
+        "AND EXISTS (SELECT 1 FROM job_grants g WHERE g.allowance_receipt = m.receipt_id) LIMIT ?",
+        (max(limit * 20, 500),),
+    ).fetchall()
+    for row in [r for r in allowances if (age := _age_s(r["created_at"], now)) is not None and age > max_age_s][:limit]:
+        held = int(row["amount_micro"] or 0)
+        keep = held if row["credit_status"] == "captured" else max(0, held - int(row["amount_mc"] or 0) * 10)
+        store.settle(row["receipt_id"], keep)
     return released
 
 

@@ -60,6 +60,7 @@ def make_lifespan(
         collect_task: asyncio.Task | None = None
         sweep_task: asyncio.Task | None = None
         a2a_sweep_task: asyncio.Task | None = None
+        claim_task: asyncio.Task | None = None
         openapi_task: asyncio.Task | None = None
         deposit_task: asyncio.Task | None = None
         observe_task: asyncio.Task | None = None
@@ -192,6 +193,32 @@ def make_lifespan(
             # then on the timer.
             _sweep_allowances_once()
             sweep_task = asyncio.create_task(_periodic_allowance_sweep(max(10.0, sweep_interval)))
+        # Seller-direct x402 claims a killed process left consumed with no receipt: the buyer
+        # paid the seller and could never present the payment again (audit 2026-11-11,
+        # invoke-local-4). Released once they are far older than any provider timeout.
+        try:
+            claim_every = float(os.getenv("AIMARKET_X402_CLAIM_SWEEP_S", "300"))
+            claim_age = float(os.getenv("AIMARKET_X402_CLAIM_STALE_S", "900"))
+        except ValueError:
+            claim_every, claim_age = 300.0, 900.0
+        if claim_every > 0 and db is not None:
+            from aimarket_hub import settle as _settle
+
+            def _sweep_claims_once() -> None:
+                try:
+                    n = _settle.PaymentStore(db._conn).release_stale_claims(older_than_s=max(300.0, claim_age))
+                    if n:
+                        logger.warning("x402: released %d seller-direct claim(s) a dead call left behind", n)
+                except Exception as exc:  # noqa: BLE001 - never kill the loop
+                    logger.warning("x402: stale-claim sweep failed: %s", exc)
+
+            async def _periodic_claim_sweep(interval: float) -> None:
+                while True:
+                    await asyncio.sleep(interval)
+                    _sweep_claims_once()
+
+            _sweep_claims_once()
+            claim_task = asyncio.create_task(_periodic_claim_sweep(max(30.0, claim_every)))
         # A2A tasks whose process died mid-call (a2a_tasks leases): recovered within a minute of
         # their lease lapsing, from the ledger — not left WORKING until somebody calls /a2a.
         a2a_sweep = getattr(fastapi_app.state, "a2a_sweep", None)
@@ -255,13 +282,36 @@ def make_lifespan(
             observe_task = asyncio.create_task(_periodic_observe())
         # Pay-on-Verified: re-queue verifications left pending by a previous process
         # so a hub restart never strands an escrow hold.
-        with contextlib.suppress(Exception):
+        # The safety-net sweeper is started at the END of reconcile(), so a reconcile that raised
+        # (a locked SQLite during a multi-worker restart) left it never started, and silently:
+        # rows stuck in 'finalizing' or 'verifying' waited for the next restart (audit
+        # 2026-11-11, pay-on-verified-8). Logged, and retried in the background until it runs.
+        reconcile_task = None
+        try:
             await verify_svc.reconcile()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("verified-settlement: startup reconcile failed, retrying: %s", exc)
+
+            async def _retry_reconcile() -> None:
+                delay = 15.0
+                while True:
+                    await asyncio.sleep(delay)
+                    try:
+                        await verify_svc.reconcile()
+                        logger.warning("verified-settlement: reconcile succeeded on retry")
+                        return
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as retry_exc:  # noqa: BLE001
+                        logger.error("verified-settlement: reconcile retry failed: %s", retry_exc)
+                        delay = min(delay * 2, 600.0)
+
+            reconcile_task = asyncio.create_task(_retry_reconcile())
         try:
             yield
         finally:
             for task in (crawl_task, collect_task, sweep_task, openapi_task, deposit_task,
-                         a2a_sweep_task, observe_task):
+                         a2a_sweep_task, observe_task, claim_task, reconcile_task):
                 if task is None:
                     continue
                 task.cancel()

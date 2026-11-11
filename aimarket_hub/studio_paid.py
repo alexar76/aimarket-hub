@@ -9,6 +9,7 @@ never an automatic second purchase. All money is counted in token base units.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import hmac
@@ -117,6 +118,20 @@ def blocker_code(detail: str) -> str:
     if "one chain" in detail:
         return "mixed_assets_unsupported"
     return "invalid_graph_or_terms"
+
+
+def _refused_before_running(status: int, answer: Any) -> bool:
+    """Did the inner /invoke refuse before the provider ran (so the X-Payment claim is free)?
+
+    429 is the invoke rate limit; 503 "payment verifier unavailable" is the payment check that
+    could not complete. Both answer before any execution — and an answer that carries a work
+    receipt did run, whatever its status."""
+    if not isinstance(answer, dict) or answer.get("receipt"):
+        return False
+    if status == 429:
+        return True
+    text = f"{answer.get('detail', '')} {answer.get('error', '')}".lower()
+    return status == 503 and "payment verifier unavailable" in text
 
 
 class PaidStudio:
@@ -247,6 +262,27 @@ class PaidStudio:
             raise HTTPException(404, "run not found")
         return json.loads(row["state_json"]), bool(row["busy"])
 
+    #: A run left busy this long by a step that never reached the provider is reclaimable.
+    STALE_BUSY_S = 300.0
+    _UNDISPATCHED = ("payment_pending", "relay_pending", "awaiting_payment")
+
+    def _reclaim_stale(self, run_id: str, state: dict) -> bool:
+        """Unlock a run a dead request left busy before any dispatch. True if it was unlocked.
+
+        The step was saved as payment_pending (or relay_pending) with busy=1 before the chain
+        lookup; a process killed there left the run busy forever — every advance answered
+        busy, and the refund route refused a run that was neither completed nor failed, with
+        the buyer's USDC at the seller (audit 2026-11-11, satellites-2). Nothing was
+        dispatched, and verification is idempotent, so the next advance may simply redo it.
+        """
+        pending = next((s for s in state.get("steps", []) if s.get("status") != "succeeded"), None)
+        if pending is None or pending.get("status") not in self._UNDISPATCHED:
+            return False
+        return returning_one(
+            self.conn,
+            "UPDATE studio_paid_runs SET busy = 0 WHERE run_id = ? AND busy = 1 AND updated_at < ? RETURNING run_id",
+            (run_id, time.time() - self.STALE_BUSY_S), commit=True) is not None
+
     def save(self, state: dict, *, unlock: bool = False) -> None:
         from aimarket_hub.pipeline_leases import current, LeaseLost
         lease = current.get()
@@ -348,6 +384,8 @@ class PaidStudio:
         state, busy = self.load(run_id, token)
         if state.get("executor") == "pipeline.run@v1" and not managed:
             raise HTTPException(409, "this run is managed by pipeline.run@v1")
+        if busy and state["status"] not in ("completed", "failed"):
+            busy = not self._reclaim_stale(run_id, state)
         # Repeated requests, including a retry after response loss, observe durable state.
         if busy or state["status"] in ("completed", "failed"):
             return self.view(state, busy)
@@ -494,6 +532,18 @@ class PaidStudio:
                         receipt_digest=digest, work_receipt_id='urn:aimarket:seller-operation:' + receipt['operation_id'])
             else:
                 status, answer = await self.invoke(payload, headers, caller)
+                if terms and _refused_before_running(status, answer):
+                    # Nothing ran and the invoke left the payment claim redeemable: keep the
+                    # step on its payment and let the next advance send it again. Failing the
+                    # run kept the buyer's USDC at the seller with no step to retry (audit
+                    # 2026-11-11, satellites-1).
+                    step["status"] = "payment_pending"
+                    step.pop("started_at", None)
+                    state["detail"] = (f"the call was not run ({status}: "
+                                       f"{str(answer.get('detail') or answer.get('error') or '')[:160]}); "
+                                       "advance again — the same payment is used")
+                    self.save(state, unlock=True)
+                    return self.view(state)
             success = 200 <= status < 300 and answer.get("success", answer.get("ok", False)) is True
             step.update(status="succeeded" if success else "failed", success=success,
                         status_code=status, finished_at=time.time(), receipt=answer.get("receipt"))
@@ -531,6 +581,13 @@ class PaidStudio:
             step.update(status="failed", success=False, error=str(exc)[:500])
             state["status"], state["completed_at"] = "failed", time.time()
         except BaseException:
+            if step.get("status") in self._UNDISPATCHED:
+                # Cancelled (or killed) before anything was dispatched — typically while the
+                # payment was being verified. Nothing can have executed, so the run stays
+                # active and unlocked for the next advance (audit 2026-11-11, satellites-2).
+                with contextlib.suppress(Exception):
+                    self.save(state, unlock=True)
+                raise
             # Keep the claim: the upstream may have executed. Operators reconcile this
             # state using the stored transaction and invoice; retries must not dispatch.
             state["status"] = "reconciliation_required"
