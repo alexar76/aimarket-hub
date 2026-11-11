@@ -185,6 +185,10 @@ class TestTheHomePageAndTheWidget:
             assert 'content="https://hub.example.org/"' in body
             # Nor its link to the reference deployment's free check pages.
             assert "modelmarket.dev/tools/" not in body
+            # Nor the reference deployment's line about HISTOR and WARDEN, links or text.
+            assert '<p class="apex-tools">' not in body
+            assert "histor.modelmarket.dev" not in body
+            assert "warden.modelmarket.dev" not in body
 
     def test_the_home_page_is_untouched_on_the_reference_hub(self, monkeypatch, tmp_path):
         with _hub(
@@ -192,7 +196,13 @@ class TestTheHomePageAndTheWidget:
             AIMARKET_HUB_URL="https://modelmarket.dev",
             AIMARKET_HUB_NAME="modelmarket.dev",
         ) as client:
-            assert "<title>modelmarket.dev — AI Economy Protocol</title>" in client.get("/").text
+            body = client.get("/").text
+            assert "<title>modelmarket.dev — AI Economy Protocol</title>" in body
+            # The line for people who came for the checks, above the terminal.
+            assert '<p class="apex-tools">' in body
+            for link in ("https://histor.modelmarket.dev/", "https://warden.modelmarket.dev/",
+                         "https://modelmarket.dev/tools/"):
+                assert f'href="{link}"' in body
 
     def test_the_widget_allowlists_this_hub_not_a_stranger(self, monkeypatch, tmp_path):
         with _hub(

@@ -161,6 +161,16 @@
     -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
   }
   .hero .tagline { color: var(--muted); font-size: clamp(16px, 2.2vw, 20px); max-width: 680px; margin: 0 auto 18px; }
+  /* modelmarket.dev only (pages.py drops the block on every other hub): the line for people
+     who came for the checks, not the terminal. */
+  .hero .apex-tools {
+    display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 4px 12px;
+    max-width: 760px; margin: 0 auto 20px; font-size: 16px; color: var(--ink);
+  }
+  .hero .apex-tools a { color: var(--cyan); font-weight: 600; white-space: nowrap; text-underline-offset: 3px; }
+  .hero .apex-tools a:hover { color: var(--ink); }
+  .hero .apex-tools a:focus-visible { outline: 2px solid var(--cyan); outline-offset: 4px; border-radius: 2px; }
+  .hero .apex-tools .sep { color: var(--faint); }
   .hero .trust-line { font-size: clamp(16px, 2.2vw, 20px); max-width: 680px; margin: 0 auto 8px; }
   .hero .trust-note { color: var(--muted); font-size: 14px; max-width: 680px; margin: 0 auto 26px; }
   .hero .trust-note a {
@@ -1022,6 +1032,10 @@
 
 <div class="shell">
   <header class="hero">
+    <!-- apex-only -->
+    <p class="apex-tools"><span data-i18n="apex_tools_line">Checks and a witnessed public record for the tools AI agents use:</span>
+      <a href="https://histor.modelmarket.dev/">HISTOR</a><span class="sep" aria-hidden="true">·</span><a href="https://warden.modelmarket.dev/">WARDEN</a><span class="sep" aria-hidden="true">·</span><a href="https://modelmarket.dev/tools/" data-i18n="apex_tools_free">Free checks</a></p>
+    <!-- /apex-only -->
     <div class="eyebrow"><span class="pip"></span> <span data-i18n="eyebrow">AIMarket Protocol v2 · Federated · HTTP 402</span></div>
     <h1 id="hero-brand"><span class="grad">model</span>market<span class="grad">.dev</span></h1>
     <p class="tagline" data-i18n="tagline">The live terminal for AI-to-AI commerce — discovery, micropayments, safety-gated invoke. Watch agents trade capabilities in real time.</p>

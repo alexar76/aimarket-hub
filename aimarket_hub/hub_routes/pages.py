@@ -119,6 +119,9 @@ def register(
             )
         name = config.hub_name.strip() or "AIMarket Hub"
         if name != "modelmarket.dev":
+            # The reference deployment's own pointer to HISTOR / WARDEN / free checks. On a
+            # stranger's hub it would advertise us above their name, ecosystem_links or not.
+            html = re.sub(r"\s*<!-- apex-only -->.*?<!-- /apex-only -->", "", html, flags=re.DOTALL)
             html = html.replace(
                 "<title>modelmarket.dev — AI Economy Protocol</title>",
                 f"<title>{name} — AI Economy Protocol</title>",

@@ -141,6 +141,31 @@ def test_resource_objects_shape():
     assert routes[1]["url"] == f"{SELLER}/bare"
 
 
+def test_bazaar_items_listed_under_resources():
+    # PriorSeal's /.well-known/x402.json on 2026-11-10: Bazaar items under `resources`, the
+    # route in `resource`; offers on Base, HyperEVM and Hyperliquid, Base USDC first.
+    def offer(network, asset, amount):
+        return {"scheme": "exact", "network": network, "amount": amount, "asset": asset,
+                "payTo": "0x5FBbbCbF0000000000000000000000000000dEaD"}
+    doc = {"x402Version": 2, "resources": [
+        {"resource": f"{SELLER}/v1/integration-readiness", "method": "GET",
+         "description": "Issue a signed readiness report", "mimeType": "application/json",
+         "accepts": [offer("eip155:999", "0xb88339CB7199b77E23DB6E890353E22632Ba630f", "20000"),
+                     offer("eip155:8453", USDC_BASE, "20000"),
+                     offer("hyperliquid:mainnet", "USDC", "0.02")],
+         "extensions": {"bazaar": {}}},
+        {"resource": {"url": f"{SELLER}/v1/receipts/bundle", "description": "Export a bundle"}},
+        {"resource": "https://elsewhere.example/v1/x", "method": "GET"},
+    ]}
+    routes = obs.parse_discovery(doc, SELLER)
+    assert routes == [
+        {"url": f"{SELLER}/v1/integration-readiness", "method": "GET",
+         "description": "Issue a signed readiness report", "listed_price_usd": pytest.approx(0.02)},
+        {"url": f"{SELLER}/v1/receipts/bundle", "method": "POST",
+         "description": "Export a bundle", "listed_price_usd": None},
+    ]
+
+
 def test_a_route_on_another_origin_or_plain_http_is_ignored():
     doc = {"resources": ["https://elsewhere.example/a", f"http://seller.example/b",
                          f"{SELLER}.evil.example/c", f"{SELLER}/ok"]}

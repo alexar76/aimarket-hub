@@ -175,13 +175,15 @@ def _first_description(*values: Any) -> str:
 def parse_discovery(doc: Any, origin: str) -> list[dict[str, Any]]:
     """Routes a discovery document lists on the seller's own origin, in document order.
 
-    Five shapes are read, all seen on live sellers on 2026-10-30:
+    Six shapes are read, all seen on live sellers (the first five on 2026-10-30):
 
     - ``endpoints[]`` with ``url`` / ``method`` / ``description`` / ``priceUsdCents`` (SWARM);
     - ``items[]``, Bazaar style, with ``resource`` as a string or ``{url, description}`` and
       ``accepts[]`` (textokit, TensorFeed);
     - a top-level ``accepts[]`` whose entries name their ``resource`` (agent-exec);
     - ``resources[]`` as objects with ``url`` / ``method`` / ``description`` (our own gateway);
+    - ``resources[]`` holding Bazaar-style items, ``resource`` instead of ``url`` (PriorSeal,
+      2026-11-10);
     - ``resources[]``, bare URLs: the minimum the convention asks for.
 
     A listed price is what the document says; the hub lists what the ``402`` says.
@@ -209,9 +211,7 @@ def parse_discovery(doc: Any, origin: str) -> list[dict[str, Any]]:
         if isinstance(entry, dict):
             add(entry.get("url"), entry.get("method"),
                 _first_description(entry.get("description")), _price_from_endpoint(entry))
-    for item in doc.get("items") or []:
-        if not isinstance(item, dict):
-            continue
+    def add_item(item: dict[str, Any]) -> None:
         resource = item.get("resource")
         url = resource.get("url") if isinstance(resource, dict) else resource
         desc = _first_description(
@@ -220,12 +220,18 @@ def parse_discovery(doc: Any, origin: str) -> list[dict[str, Any]]:
             *[a.get("description") for a in (item.get("accepts") or []) if isinstance(a, dict)],
         )
         add(url, item.get("method"), desc, _price_from_accepts(item.get("accepts")))
+
+    for item in doc.get("items") or []:
+        if isinstance(item, dict):
+            add_item(item)
     for accept in doc.get("accepts") or []:
         if isinstance(accept, dict):
             add(accept.get("resource"), accept.get("method"),
                 _first_description(accept.get("description")), _price_from_accepts([accept]))
     for entry in doc.get("resources") or []:
-        if isinstance(entry, dict):
+        if isinstance(entry, dict) and entry.get("url") is None and entry.get("resource") is not None:
+            add_item(entry)
+        elif isinstance(entry, dict):
             add(entry.get("url"), entry.get("method"),
                 _first_description(entry.get("description")), _price_from_endpoint(entry))
         else:
