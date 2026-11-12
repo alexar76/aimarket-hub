@@ -136,6 +136,7 @@ from aimarket_hub.hub_routes import channels as _channels_routes
 from aimarket_hub.hub_routes import plugins as _plugins_routes
 from aimarket_hub.hub_routes import agents as _agents_routes
 from aimarket_hub.hub_routes import ard as _ard_routes
+from aimarket_hub.hub_routes import ai_catalog as _ai_catalog_routes
 from aimarket_hub.hub_routes import pages as _pages_routes
 from aimarket_hub.hub_routes import middleware as _middleware_routes
 from aimarket_hub.hub_routes import payments as _payments_routes
@@ -796,13 +797,22 @@ def create_app(
         wellknown_router=wellknown_router,
     )
     # Agent Resource Discovery (IETF DAWN drafts): the catalogue in ARD formats, read-only.
-    _ard_routes.register(
+    ard_entries = _ard_routes.register(
         app=app,
         config=config,
         db=db,
         search=search,
         signer=signer,
         wellknown_router=wellknown_router,
+    )
+    # AI Catalog (ai-catalog.io; MCP Server Cards point at it for domain-level discovery): the
+    # same catalogue as application/ai-catalog+json, and the MCP Server Card. Read-only.
+    _ai_catalog_routes.register(
+        app=app,
+        config=config,
+        signer=signer,
+        wellknown_router=wellknown_router,
+        ard_entries=ard_entries,
     )
     app.include_router(wellknown_router)
     app.include_router(router)

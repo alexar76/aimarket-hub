@@ -60,6 +60,7 @@ PROBLEM_MEDIA_TYPE = "application/problem+json"
 ARD_CONTEXT = "https://agenticresourcediscovery.org/context/v1"
 PROBLEM_BASE = "https://agenticresourcediscovery.org/problems/"
 KEY_FRAGMENT = "hub-ed25519"
+PQ_KEY_FRAGMENT = "hub-ml-dsa-65"
 
 PAGE_SIZE_DEFAULT = 10
 PAGE_SIZE_MAX = 100
@@ -158,6 +159,10 @@ def key_id(did: str) -> str:
     return f"{did}#{KEY_FRAGMENT}"
 
 
+def pq_key_id(did: str) -> str:
+    return f"{did}#{PQ_KEY_FRAGMENT}"
+
+
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
@@ -166,25 +171,34 @@ def b64url_decode(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def did_document(did: str, public_key_b64: str) -> dict[str, Any]:
+def did_document(did: str, public_key_b64: str, pq_public_key_b64: str = "") -> dict[str, Any]:
     """The DID document a ``did:web`` resolver fetches from ``/.well-known/did.json``.
 
-    One verification method: the hub's Ed25519 key, the same key its AIMarket discovery
-    document publishes as ``signer_public_key``. It is an assertion method only — this
-    DID signs statements about the hub's catalogue and authenticates nothing else.
+    The hub's Ed25519 key, the same key its AIMarket discovery document publishes as
+    ``signer_public_key``; and, when the hub signs hybrid, its ML-DSA-65 key as an RFC 9964
+    ``AKP`` JWK, the same key that document publishes as its post-quantum key. Both are
+    assertion methods only: this DID signs statements about the hub's catalogue and
+    authenticates nothing else.
     """
     raw = base64.b64decode(public_key_b64)
-    vm = key_id(did)
+    methods = [{
+        "id": key_id(did),
+        "type": "JsonWebKey2020",
+        "controller": did,
+        "publicKeyJwk": {"kty": "OKP", "crv": "Ed25519", "x": b64url(raw)},
+    }]
+    if pq_public_key_b64:
+        methods.append({
+            "id": pq_key_id(did),
+            "type": "JsonWebKey2020",
+            "controller": did,
+            "publicKeyJwk": {"kty": "AKP", "alg": "ML-DSA-65", "pub": b64url(base64.b64decode(pq_public_key_b64))},
+        })
     return {
         "@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/suites/jws-2020/v1"],
         "id": did,
-        "verificationMethod": [{
-            "id": vm,
-            "type": "JsonWebKey2020",
-            "controller": did,
-            "publicKeyJwk": {"kty": "OKP", "crv": "Ed25519", "x": b64url(raw)},
-        }],
-        "assertionMethod": [vm],
+        "verificationMethod": methods,
+        "assertionMethod": [m["id"] for m in methods],
     }
 
 

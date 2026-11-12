@@ -61,6 +61,22 @@ class ArdLinkHeader:
         await self.app(scope, receive, with_link)
 
 
+async def served_bytes(app: FastAPI, path: str) -> bytes | None:
+    """The exact bytes ``app`` answers at ``path``, fetched through the app itself so a digest
+    covers what a client receives, not a re-serialisation of it. None when the app does not
+    answer 200 there. Shared by the ARD and AI Catalog doors."""
+    import logging
+
+    try:
+        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 0), raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://hub.internal", timeout=10) as client:
+            response = await client.get(path)
+        return response.content if response.status_code == 200 else None
+    except Exception:  # noqa: BLE001 - a card that cannot be read is left out, not guessed
+        logging.getLogger("aimarket_hub.api").warning("could not read %s for its digest", path, exc_info=True)
+        return None
+
+
 def register(
     *,
     app: FastAPI,
@@ -69,10 +85,14 @@ def register(
     search: Callable[..., Awaitable[Any]],
     signer: Signer,
     wellknown_router: APIRouter,
-) -> None:
-    """Attach the ARD routes to ``wellknown_router`` and the root Link header to ``app``."""
+) -> Callable[[], Awaitable[list[tuple[dict[str, Any], str]]]]:
+    """Attach the ARD routes to ``wellknown_router`` and the root Link header to ``app``.
+
+    Returns ``visible_entries``: every offer the hub's own search shows, as ``(ARD entry,
+    publishing hub)`` in browse order. The AI Catalog door reads it, so both doors publish the
+    same offers, descriptors and digests, and neither lists what the catalogue hides."""
     # api.py's module-level helpers; imported here because api.py imports this module.
-    from aimarket_hub.api import _catalogue_snapshot, logger
+    from aimarket_hub.api import _catalogue_snapshot
 
     base = config.hub_url.rstrip("/")
     did = ard.did_web(base)
@@ -95,18 +115,6 @@ def register(
     state: dict[str, Any] = {"manifest": None}
     manifest_lock = asyncio.Lock()
 
-    async def _served_bytes(path: str) -> bytes | None:
-        """The exact bytes this app answers at ``path``, fetched through the app itself so
-        the digest covers what a client receives, not a re-serialisation of it."""
-        try:
-            transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 0), raise_app_exceptions=False)
-            async with httpx.AsyncClient(transport=transport, base_url="http://hub.internal", timeout=10) as client:
-                response = await client.get(path)
-            return response.content if response.status_code == 200 else None
-        except Exception:  # noqa: BLE001 - a card that cannot be read is left out, not guessed
-            logger.warning("ARD: could not read %s for its digest", path, exc_info=True)
-            return None
-
     async def _manifest() -> tuple[bytes, str]:
         """The manifest's bytes and ETag, built once per process: every entry in it is a
         document whose bytes do not change while the process runs."""
@@ -117,7 +125,7 @@ def register(
                 return state["manifest"]
             documents: dict[str, bytes] = {}
             for path in _PINNED_DOCUMENTS:
-                data = await _served_bytes(path)
+                data = await served_bytes(app, path)
                 if data is not None:
                     documents[path] = data
             entries = ard.own_entries(base, config.hub_name, documents)
@@ -146,7 +154,7 @@ def register(
             return _problem(ard.ArdError(404, "this hub is not served at an https origin root, "
                                               "so it has no did:web identity"))
         return Response(
-            content=ard.stable_bytes(ard.did_document(did, signer.public_key_b64)),
+            content=ard.stable_bytes(ard.did_document(did, signer.public_key_b64, signer.pq_public_key_b64)),
             media_type=ard.DID_MEDIA_TYPE,
             headers={"Cache-Control": f"public, max-age={_MANIFEST_MAX_AGE_S}",
                      "Access-Control-Allow-Origin": "*"},
@@ -326,3 +334,8 @@ def register(
                      "ETag": '"' + made.entry["digest"].split(":", 1)[1] + '"',
                      "Access-Control-Allow-Origin": "*"},
         )
+
+    async def visible_entries() -> list[tuple[dict[str, Any], str]]:
+        return [(entry, source) for entry, _score, source in await _ranked("")]
+
+    return visible_entries

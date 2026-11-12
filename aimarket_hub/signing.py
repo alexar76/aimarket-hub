@@ -360,6 +360,27 @@ class Signer:
             "pq_value": base64.b64encode(_MLDSA.sign(sk, canonical.encode())).decode(),
         }
 
+    def sign_pq(self, payload: bytes) -> bytes | None:
+        """An ML-DSA-65 signature over ``payload`` (FIPS 204 Algorithm 2, empty context: the form
+        RFC 9964 registers for JOSE as ``ML-DSA-65``), or None when PQ signing is off."""
+        if self._pq is None:
+            return None
+        return _MLDSA.sign(self._pq[1], payload)
+
+    @staticmethod
+    def verify_pq(pq_public_key_b64: str, payload: bytes, signature: bytes) -> bool:
+        """True when ``signature`` is a valid ML-DSA-65 signature over ``payload`` (empty
+        context) by ``pq_public_key_b64``. False, never an exception, on anything else,
+        including a hub without the verifier library (fail closed)."""
+        if not _PQ_LIB:
+            _note_pq_unverifiable()
+            return False
+        try:
+            pk = decode_b64(pq_public_key_b64)
+            return pk is not None and bool(_MLDSA.verify(pk, payload, signature))
+        except Exception:  # noqa: BLE001 - a malformed key or signature is simply not valid
+            return False
+
     @property
     def public_key_b64(self) -> str:
         return self._public_key_b64

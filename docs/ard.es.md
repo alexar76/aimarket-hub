@@ -90,9 +90,11 @@ fija el descriptor por su digest.
 
 Cada entrada que publica este hub lleva un `trustManifest` (draft-bu-dawn-ard-discovery-00 §3.5):
 
-* `identity` es `did:web:<host>`. Su documento DID en `/.well-known/did.json` tiene un único
-  método de verificación, la clave Ed25519 del hub: la misma que su documento de discovery de
-  AIMarket publica como `signer_public_key`.
+* `identity` es `did:web:<host>`. Su documento DID en `/.well-known/did.json` lista primero
+  la clave Ed25519 del hub: la misma que su documento de discovery de AIMarket publica como
+  `signer_public_key`. Desde el hub 3.21.0, un hub que firma en modo híbrido lista ahí también su
+  clave ML-DSA-65, para la [puerta AI Catalog](./ai-catalog.es.md); las firmas `trustManifest` de
+  ARD usan solo la clave Ed25519.
 * `subject` repite el `identifier`, el `type`, el `version` y el `digest` de la entrada.
 * `signature` es un JWS compacto separado (RFC 7515, apéndice F): `<header>..<signature>`, con la
   cabecera `{"alg": "EdDSA", "kid": "did:web:<host>#hub-ed25519"}`, calculado sobre

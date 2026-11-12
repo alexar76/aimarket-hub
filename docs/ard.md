@@ -89,9 +89,11 @@ pins the descriptor by digest.
 
 Every entry this hub publishes carries a `trustManifest` (draft-bu-dawn-ard-discovery-00 §3.5):
 
-* `identity` is `did:web:<host>`. Its DID document at `/.well-known/did.json` has one
-  verification method, the hub's Ed25519 key: the same key its AIMarket discovery document
-  publishes as `signer_public_key`.
+* `identity` is `did:web:<host>`. Its DID document at `/.well-known/did.json` lists the
+  hub's Ed25519 key first: the same key its AIMarket discovery document publishes as
+  `signer_public_key`. Since hub 3.21.0 a hub that signs hybrid also lists its ML-DSA-65 key
+  there, for the [AI Catalog door](./ai-catalog.md); ARD `trustManifest` signatures use the
+  Ed25519 key only.
 * `subject` repeats the entry's `identifier`, `type`, `version` and `digest`.
 * `signature` is a detached compact JWS (RFC 7515, Appendix F): `<header>..<signature>`,
   header `{"alg": "EdDSA", "kid": "did:web:<host>#hub-ed25519"}`, computed over

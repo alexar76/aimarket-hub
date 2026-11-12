@@ -86,9 +86,11 @@ IETF DAWN авторами из Google, Ericsson и других организ�
 
 У каждой записи, которую публикует этот хаб, есть `trustManifest` (draft-bu-dawn-ard-discovery-00 §3.5):
 
-* `identity` — `did:web:<host>`. В его DID-документе `/.well-known/did.json` один метод
-  проверки — ключ Ed25519 хаба, тот же, что discovery-документ AIMarket публикует как
-  `signer_public_key`.
+* `identity` — `did:web:<host>`. В его DID-документе `/.well-known/did.json` первым идёт
+  ключ Ed25519 хаба, тот же, что discovery-документ AIMarket публикует как
+  `signer_public_key`. С версии 3.21.0 хаб с гибридной подписью перечисляет там и свой ключ
+  ML-DSA-65 — для [двери AI Catalog](./ai-catalog.ru.md); подписи `trustManifest` в ARD делаются
+  только ключом Ed25519.
 * `subject` повторяет `identifier`, `type`, `version` и `digest` записи.
 * `signature` — отделённый компактный JWS (RFC 7515, приложение F): `<header>..<signature>`,
   заголовок `{"alg": "EdDSA", "kid": "did:web:<host>#hub-ed25519"}`, подпись вычислена над

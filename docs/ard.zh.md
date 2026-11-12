@@ -83,8 +83,10 @@ MCP 端点和工具名，以及指向 A2A 卡片、已签名的 v2 目录和 dis
 
 本 hub 发布的每个条目都带有 `trustManifest`（draft-bu-dawn-ard-discovery-00 §3.5）：
 
-* `identity` 为 `did:web:<host>`。其 DID 文档 `/.well-known/did.json` 只有一个验证方法，即 hub 的
-  Ed25519 密钥，也就是其 AIMarket discovery 文档以 `signer_public_key` 公布的同一把密钥。
+* `identity` 为 `did:web:<host>`。其 DID 文档 `/.well-known/did.json` 首先列出 hub 的
+  Ed25519 密钥，也就是其 AIMarket discovery 文档以 `signer_public_key` 公布的同一把密钥。自 hub 3.21.0 起，
+  混合签名的 hub 还会在其中列出 ML-DSA-65 密钥，供 [AI Catalog 入口](./ai-catalog.zh.md)使用；ARD 的
+  `trustManifest` 签名只使用 Ed25519 密钥。
 * `subject` 重复条目的 `identifier`、`type`、`version` 和 `digest`。
 * `signature` 是分离式紧凑 JWS（RFC 7515 附录 F）：`<header>..<signature>`，头部为
   `{"alg": "EdDSA", "kid": "did:web:<host>#hub-ed25519"}`，签名计算对象为
