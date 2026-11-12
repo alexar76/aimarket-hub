@@ -356,28 +356,46 @@ class _Store:
         self.row = {**self.row, **observation}
 
 
-def test_reads_never_extend_an_offer_and_a_failed_refresh_never_freshens_it(monkeypatch):
-    """Asked on DEV.to (2026-11-02): can a popular listing keep an observed offer alive, and can a
-    refresh that fails just before expiry turn the last good quote into a fresh one? Neither."""
+def _observed_once(monkeypatch, t0):
+    """One successful observation of SELLER at t0, held in a store the hub would write to."""
     monkeypatch.setattr(obs, "enabled", lambda: True)
-    t0 = 1_800_000_000
     seen = run(obs.observe_seller({"origin": SELLER}, request=FakeSeller(SWARM_SHAPE, {}), now=t0))
-    store = _Store({"origin": SELLER, **seen})
+    return _Store({"origin": SELLER, **seen})
+
+
+class _Unreachable:
+    async def __call__(self, *args, **kwargs):
+        raise OSError("seller unreachable")
+
+
+# Asked on DEV.to (2026-11-02, Emily Woods): can a popular listing keep an observed offer alive, and can
+# a refresh that fails just before expiry turn the last good quote into a fresh one? Neither. Split into
+# three named cases on 2026-11-12, as she suggested, so a failure says which behaviour changed.
+
+def test_reads_never_extend_an_observed_offer(monkeypatch):
+    t0 = 1_800_000_000
+    store = _observed_once(monkeypatch, t0)
     for minute in range(1, 200):  # read as often as you like: nothing is written, the stamp stays
         assert obs.served_routes([store.row], now=t0 + 60 * minute)
-    assert store.row["observed_at"] == obs._now_iso(t0)
-    just_before = t0 + obs.ttl_s() - 60
+    assert store.saved == 0 and store.row["observed_at"] == obs._now_iso(t0)
 
-    class Down:
-        async def __call__(self, *args, **kwargs):
-            raise OSError("seller unreachable")
 
-    # A refresh that fails outright writes nothing: the quote keeps its first stamp and expires on it.
-    run(obs.observe_due(store, request=Down(), now=just_before))
+def test_a_probe_that_cannot_establish_a_new_observation_keeps_the_old_timestamp(monkeypatch):
+    t0 = 1_800_000_000
+    store = _observed_once(monkeypatch, t0)
+    just_before = t0 + obs.ttl_s() - 60  # one minute before the offer expires
+    run(obs.observe_due(store, request=_Unreachable(), now=just_before))
+    # Nothing is written: the quote keeps its first stamp, is still served, and expires on that stamp.
     assert store.saved == 0 and store.row["observed_at"] == obs._now_iso(t0)
     assert obs.served_routes([store.row], now=just_before)
     assert obs.served_routes([store.row], now=t0 + obs.ttl_s() + 1) == []
-    # A refresh that reaches the seller but gets no discovery document replaces the quote with nothing.
+
+
+def test_a_probe_that_disproves_the_route_withdraws_the_offer(monkeypatch):
+    t0 = 1_800_000_000
+    store = _observed_once(monkeypatch, t0)
+    just_before = t0 + obs.ttl_s() - 60  # one minute before the offer expires
+    # The refresh reaches the seller but gets no discovery document: the quote is replaced by nothing.
     run(obs.observe_due(store, request=FakeSeller(None, {}), now=just_before))
     assert store.saved == 1 and obs.served_routes([store.row], now=just_before) == []
 
