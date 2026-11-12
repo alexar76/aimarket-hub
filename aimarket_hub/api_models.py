@@ -98,9 +98,18 @@ class ReceiptVerifyRequest(BaseModel):
     would turn verification into a self-signed assertion. The bounded HTTP body and
     the additional serialized-size check in the handler keep the public verifier from
     becoming a JSON amplification surface.
+
+    A receipt signed by a federation peer is checked against the key this Hub pinned for
+    that peer, never one taken from the request. `receipt_binding` (spec §7.3.9) is
+    checked against the key of the Hub that answered — this one or a pinned peer — and,
+    when `response`, `input` or `client_nonce` are sent, against them as well.
     """
 
     receipt: dict[str, Any]
+    receipt_binding: dict[str, Any] | None = None
+    response: dict[str, Any] | None = None
+    input: Any = None
+    client_nonce: str | None = Field(default=None, max_length=128)
 
 
 class LotteryEntitlementRequest(BaseModel):

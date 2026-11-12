@@ -285,7 +285,12 @@ def test_federated_success_runs_final_receipt_hook_with_real_context(tmp_path, m
     assert response.json()["provenance_receipt"]["receipt_id"] == "urn:uuid:fed-proof"
     assert len(calls) == 1
     output, context = calls[0]
-    assert output["output"]["reading"]["device_id"] == "nws-01"
+    # The hook digests the member that carries the work and is told which one it is;
+    # the peer's receipt rides in the context, not inside the digested value.
+    assert output["reading"]["device_id"] == "nws-01"
+    assert context["output_digest_of"] == "output"
+    assert context["routed"] is True
+    assert context["gateway_receipt"]["nonce"] == "gaia-7"
     assert context["input"] == {"q": "hi"}
     assert context["provider_hub"] == ORACLE_PEER
     assert context["price_usd"] == 0.0  # crypto disabled: list price was not charged

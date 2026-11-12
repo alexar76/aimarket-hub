@@ -1429,9 +1429,12 @@ class TestReceiptVerificationEndpoint:
             receipt = self._receipt(signer)
             verified = client.post("/ai-market/v2/receipts/verify", json={"receipt": receipt})
             assert verified.status_code == 200
-            assert verified.json() == {
+            answer = verified.json()
+            # Which pinned identity signed it: this hub here, a peer's URL for a routed answer.
+            assert answer.pop("signer")
+            assert answer == {
                 "valid": True, "classical_valid": True, "pq_present": False,
-                "pq_valid": None, "algorithm": "ed25519", "signature_version": 1,
+                "pq_valid": None, "pq_pinned": None, "algorithm": "ed25519", "signature_version": 1,
                 "signer_matches_live_key": True, "policy_requires_pq": False,
                 "protocol_version": "v2",
             }
@@ -1450,6 +1453,7 @@ class TestReceiptVerificationEndpoint:
             assert verified.json()["classical_valid"] is True
             assert verified.json()["pq_present"] is True
             assert verified.json()["pq_valid"] is True
+            assert verified.json()["pq_pinned"] is True   # this hub's own ML-DSA key
             assert verified.json()["algorithm"] == "ed25519+ml-dsa-65"
 
             # Browser JSON.stringify changes a Python 0.0 into JSON 0. The verifier

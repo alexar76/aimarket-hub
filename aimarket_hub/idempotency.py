@@ -283,6 +283,21 @@ class InvokeIdempotency:
         if not owner:
             await self.app(scope, receive, _marking(send, b"not-applicable"))
             return
+        # The buyer's receipt-binding nonce (spec §7.3.9) is part of the request: a malformed one
+        # is refused by the route before any money moves, so that refusal must not be kept as the
+        # key's answer (it would replay for 24 h, and on the escrow rail lock the signed
+        # authorization); and a retry under the same key with another nonce is another request,
+        # not a replay that hands back the first call's binding (review of 2026-11-11).
+        from starlette.datastructures import Headers
+
+        from aimarket_hub.receipt_binding import read_client_nonce
+
+        # Starlette's Headers, as the route reads them: the same value, and the same refusal of a
+        # repeated nonce header.
+        client_nonce, nonce_error = read_client_nonce(Headers(scope=scope))
+        if nonce_error:
+            await self.app(scope, receive, _marking(send, b"not-applicable"))
+            return
 
         chunks: list[bytes] = []
         size = 0
@@ -329,8 +344,14 @@ class InvokeIdempotency:
             await self.app(scope, replay_body, send)
             return
 
-        request_hash = _sha256(body)
+        request_hash = _sha256(body if client_nonce is None else body + b"\n" + client_nonce.encode())
         held = self.store.claim(owner, key, request_hash)
+        if held is not None and held.get("request_sha256") != request_hash and client_nonce is not None \
+                and held.get("request_sha256") == _sha256(body) and _kept_nonce_allows(held, client_nonce):
+            # A row fingerprinted before the nonce was part of it (hubs before 3.20.0 hashed the
+            # body alone): the same body, and nothing kept that says another nonce was sent. An
+            # escrow checkpoint left by the deploy restart resumes instead of answering 422.
+            request_hash = held["request_sha256"]
         if held is not None:
             if held.get("status") == "prepared" and held.get("request_sha256") == request_hash:
                 try:
@@ -399,7 +420,8 @@ class InvokeIdempotency:
     async def _answer_held(self, send: Any, held: dict[str, Any], request_sha256: str) -> None:
         if held.get("request_sha256") != request_sha256:
             await _send_json(send, 422, {"success": False, "error": "idempotency_key_reused",
-                                         "detail": "this Idempotency-Key was used with a different request body"},
+                                         "detail": "this Idempotency-Key was used with a different request body "
+                                                   "or X-Client-Nonce; retry with the original ones"},
                              b"rejected")
             return
         if held.get("status") == "running":
@@ -425,6 +447,17 @@ class InvokeIdempotency:
         await send({"type": "http.response.start", "status": int(held.get("http_status") or 200),
                     "headers": [*headers, (b"content-length", str(len(stored)).encode()), (STATUS_HEADER, b"replayed")]})
         await send({"type": "http.response.body", "body": stored})
+
+
+def _kept_nonce_allows(held: dict[str, Any], client_nonce: str) -> bool:
+    """False when the kept answer's receipt binding names a different buyer nonce."""
+    try:
+        kept = json.loads(base64.b64decode(held.get("response_body") or "") or b"null")
+    except (ValueError, TypeError):
+        return True
+    binding = kept.get("receipt_binding") if isinstance(kept, dict) else None
+    bound = binding.get("client_nonce") if isinstance(binding, dict) else None
+    return bound is None or bound == client_nonce
 
 
 def _marking(send: Any, marker: bytes) -> Any:

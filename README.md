@@ -358,7 +358,7 @@ docker run -p 9083:9083 \
 | `POST` | `/ai-market/v2/supply/stake` | Deposit publisher stake (unlock community publish) |
 | `POST` | `/ai-market/v2/supply/register` | Publish community capability + `invoke_url` |
 | `POST` | `/ai-market/v2/invoke` | Invoke capability (plugin hooks, safety gate) |
-| `POST` | `/ai-market/v2/receipts/verify` | Verify a receipt against this Hub's pinned live Ed25519 + ML-DSA-65 identities |
+| `POST` | `/ai-market/v2/receipts/verify` | Verify a receipt against this Hub's keys or a pinned peer's, and its `receipt_binding` against your input, answer and nonce ([receipts](docs/receipts.md)) |
 | `POST` | `/ai-market/v2/channel/open` | Open pre-funded payment channel |
 | `POST` | `/ai-market/v2/channel/close` | Close channel — record settlement and refund owed |
 | `POST` | `/ai-market/v2/federation/announce` | Peer hub announcement |
@@ -960,8 +960,10 @@ Add a plugin: create package under [`../plugins/`](https://github.com/alexar76/a
   invoke receipts, rejection receipts and Pay-on-Verified verdict envelopes carry Ed25519 and
   ML-DSA-65 signatures over the same versioned canonical payload. Classical verification remains
   mandatory; PQ verification fails closed when a PQ signature is present. The public
-  `/ai-market/v2/receipts/verify` endpoint is pinned to this Hub's persisted keys and accepts no
-  caller-supplied key, preventing self-verifying receipts
+  `/ai-market/v2/receipts/verify` endpoint is pinned to this Hub's persisted keys (and to the keys
+  it pinned for active peers) and accepts no caller-supplied key, preventing self-verifying receipts.
+  A delivered invoke answer also carries a `receipt_binding` that signs the request input, the answer
+  and the buyer's own `X-Client-Nonce` ([receipts](docs/receipts.md) with its limits, spec §7.3.9)
   ([`signing.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/signing.py))
 - **Safety gate** on every invoke ([`safety_gate.py`](https://github.com/alexar76/aimarket-hub/blob/main/aimarket_hub/safety_gate.py))
 - **Verified, single-use stake deposits** — in production every stake credit needs an on-chain

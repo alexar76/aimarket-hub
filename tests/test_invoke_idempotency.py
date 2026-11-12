@@ -150,3 +150,65 @@ def test_a_lost_connection_cannot_discard_the_completed_answer(market):
     assert len(executions) == 1
     assert (b"x-aimarket-idempotency", b"replayed") in response[0]["headers"]
     assert response[1]["body"] == b'{"result":"paid work"}'
+
+
+# ── the receipt-binding nonce (spec §7.3.9), review of 2026-11-11 ──────────────
+
+
+def test_a_malformed_client_nonce_is_not_kept_as_the_keys_answer(market):
+    client, db, account, api_key = market
+    headers = {"X-API-Key": api_key, "Idempotency-Key": "order-nonce-1"}
+    bad = client.post(INVOKE, json=BODY, headers={**headers, "X-Client-Nonce": "short"})
+    assert bad.status_code == 400 and bad.json()["error"] == "client_nonce_invalid"
+    assert bad.headers["x-aimarket-idempotency"] == "not-applicable"
+    assert balance(db, account) == pytest.approx(1.0)
+    # Fixing the header and retrying under the same key runs the call, once.
+    good = client.post(INVOKE, json=BODY, headers={**headers, "X-Client-Nonce": "buyer-nonce-0001"})
+    assert good.status_code == 200, good.text
+    assert good.headers["x-aimarket-idempotency"] == "stored"
+    assert good.json()["receipt_binding"]["client_nonce"] == "buyer-nonce-0001"
+    assert balance(db, account) == pytest.approx(0.996)
+
+
+def test_a_retry_with_another_nonce_is_another_request_not_a_replay(market):
+    client, db, account, api_key = market
+    headers = {"X-API-Key": api_key, "Idempotency-Key": "order-nonce-2"}
+    first = client.post(INVOKE, json=BODY, headers={**headers, "X-Client-Nonce": "nonce-AAAA-0001"})
+    assert first.status_code == 200, first.text
+    other = client.post(INVOKE, json=BODY, headers={**headers, "X-Client-Nonce": "nonce-BBBB-0002"})
+    assert other.status_code == 422 and other.json()["error"] == "idempotency_key_reused"
+    same = client.post(INVOKE, json=BODY, headers={**headers, "X-Client-Nonce": "nonce-AAAA-0001"})
+    assert same.status_code == 200 and same.headers["x-aimarket-idempotency"] == "replayed"
+    assert same.json()["receipt_binding"]["client_nonce"] == "nonce-AAAA-0001"
+    assert same.headers["x-client-nonce-echo"] == "nonce-AAAA-0001"
+    assert balance(db, account) == pytest.approx(0.996)   # charged once
+
+
+def test_a_nonce_sent_twice_is_refused_by_both_layers(market):
+    client, db, account, api_key = market
+    for pair in (("short", "buyer-nonce-0001"), ("buyer-nonce-0001", "short")):
+        r = client.post(INVOKE, json=BODY, headers=[
+            ("X-API-Key", api_key), ("Idempotency-Key", "dup-" + pair[0]),
+            ("X-Client-Nonce", pair[0]), ("X-Client-Nonce", pair[1])])
+        assert r.status_code == 400 and r.json()["error"] == "client_nonce_invalid"
+        assert r.headers["x-aimarket-idempotency"] == "not-applicable"
+    assert balance(db, account) == pytest.approx(1.0)
+
+
+def test_a_row_kept_before_the_nonce_was_fingerprinted_still_replays(market):
+    import hashlib
+    import json
+
+    client, db, account, api_key = market
+    raw = json.dumps(BODY, separators=(",", ":")).encode()
+    headers = {"X-API-Key": api_key, "Idempotency-Key": "legacy-1", "Content-Type": "application/json"}
+    first = client.post(INVOKE, content=raw, headers={**headers, "X-Client-Nonce": "nonce-AAAA-0001"})
+    assert first.status_code == 200, first.text
+    # How a hub before 3.20.0 kept it: the body alone.
+    db._conn.execute("UPDATE invoke_idempotency SET request_sha256=?", (hashlib.sha256(raw).hexdigest(),))
+    db._conn.commit()
+    again = client.post(INVOKE, content=raw, headers={**headers, "X-Client-Nonce": "nonce-AAAA-0001"})
+    assert again.status_code == 200 and again.headers["x-aimarket-idempotency"] == "replayed"
+    other = client.post(INVOKE, content=raw, headers={**headers, "X-Client-Nonce": "nonce-BBBB-0002"})
+    assert other.status_code == 422 and other.json()["error"] == "idempotency_key_reused"
+    assert balance(db, account) == pytest.approx(0.996)

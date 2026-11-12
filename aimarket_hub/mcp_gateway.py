@@ -554,7 +554,7 @@ _ENVELOPE_KEYS = frozenset({
     "receipt", "success", "latency_ms", "price_usd", "list_price_usd", "routed_via",
     "routing_fee_bps", "sandbox", "remaining", "used", "max_trials", "provenance_receipt",
     "protocol_version", "remaining_balance", "verification", "rejection_receipt",
-    "plugins_checked", "trial_exhausted",
+    "plugins_checked", "trial_exhausted", "receipt_binding",
 })
 _MAX_OUTPUT_CHARS = 40_000
 
@@ -724,6 +724,14 @@ def _render_success(payload: dict[str, Any], *, capability_id: str, source_hub: 
                 "the provider's receipt for its sale; on a free trial this hub paid it, not you"
             )
         rendered["receipt"] = summary
+    binding = payload.get("receipt_binding")
+    if isinstance(binding, dict):
+        # What was asked, what was answered and the buyer's nonce, signed by the hub that
+        # answered (spec §7.3.9). Its output_sha256 is over the full answer, not the
+        # possibly truncated `output` above.
+        signature = binding.get("signature")
+        rendered["receipt_binding"] = {**binding, "signature": _strip_pq(signature)} \
+            if isinstance(signature, dict) else binding
     provenance = payload.get("provenance_receipt")
     if isinstance(provenance, dict):
         rendered["provenance_receipt"] = {k: provenance[k] for k in (

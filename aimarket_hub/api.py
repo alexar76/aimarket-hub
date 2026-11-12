@@ -445,7 +445,11 @@ def create_app(
             "X-AIMarket-Sandbox-Visitor", "X-Market-Signature", "X-AIMarket-Routing-Hub",
             "X-AIMarket-Routing-Fee", "X-AIMarket-Buyer", "X-AIMarket-Crawler", "X-Provider-Signature",
             "A2A-Version", "A2A-Extensions", "Idempotency-Key",
+            # The buyer's receipt-binding nonce (spec §7.3.9), and its echo readable by the page.
+            "X-Client-Nonce", "X-Agent-Nonce",
         ],
+        # No global expose_headers: Starlette would overwrite the per-response list the x402
+        # paths set (PAYMENT-REQUIRED, PAYMENT-RESPONSE). The invoke route adds its echo there.
     )
 
     # Middleware and /metrics.
@@ -640,6 +644,7 @@ def create_app(
         router=router,
         signer=signer,
         verify_svc=verify_svc,
+        db=db,
     )
 
     # Mandates and subcontract job trees.

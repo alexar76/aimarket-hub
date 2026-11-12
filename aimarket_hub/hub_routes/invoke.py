@@ -25,6 +25,7 @@ read as `invoke.<name>` from this module's globals, which is where tests patch t
 from __future__ import annotations
 
 import contextlib
+import logging
 import time
 from dataclasses import dataclass, field
 from collections.abc import Callable
@@ -32,9 +33,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
-from aimarket_hub import credits, invoke_funding, settle, x402
+from aimarket_hub import credits, invoke_funding, receipt_binding, settle, x402
 from aimarket_hub.api_models import InvokeRequest
 # Not called here: the phases in invoke_parts/ read these as invoke.<name> at call time, so
 # this module is the one place to patch the channel ledger for the whole invoke path.
@@ -63,6 +65,8 @@ from aimarket_hub.signing import Signer
 from aimarket_hub.subcontract import JobStore
 from aimarket_hub.supply_security import SupplySecurity
 from aimarket_hub.verified_settlement import VerifiedSettlementService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -279,6 +283,10 @@ def register(
         funding account and ledger it is handed; `invoke_funding.finish` settles what
         prepare opened — on every exit, including an exception — and completes the answer.
         """
+        client_nonce, nonce_error = receipt_binding.read_client_nonce(request.headers)
+        if nonce_error:
+            return JSONResponse(status_code=400, content={
+                "success": False, "error": "client_nonce_invalid", "detail": nonce_error})
         if (body.product_id, body.capability_id, body.source_hub or "local") == ("hephaestus", "pipeline.run@v1", "local"):
             # This zero-price built-in owns an immutable wallet-funded graph. No
             # credit/trial credential can be mistaken for authority to pay its children.
@@ -353,7 +361,57 @@ def register(
             finished = invoke_funding.finish(
                 funding, result, credits_ledger=ledger, store=hub_mandates, jobs=hub_jobs,
             )
-        return finished
+        return _bind_receipt(finished, body, client_nonce)
+
+    def _receipt_signer(body: InvokeRequest) -> str | None:
+        """Who signed the receipt of this answer, when the receipt does not name a key: this hub
+        for a local call, the pinned key of the active peer that was called for a routed one,
+        otherwise unknown (None) — never this hub's key standing in for another's."""
+        source = str(body.source_hub or "").strip().rstrip("/")
+        if not source or source == "local" or source == str(config.hub_url or "").rstrip("/"):
+            return signer.public_key_b64
+        try:
+            # Admission looks the peer up by the source_hub exactly as sent; a row stored with a
+            # trailing slash is found that way, the normalised form covers the rest.
+            peer = db.get_peer(str(body.source_hub).strip()) or db.get_peer(source)
+        except Exception:  # noqa: BLE001
+            return None
+        if peer is not None and peer.status == "active" and peer.public_key:
+            return peer.public_key
+        return None
+
+    def _bind_receipt(result: Any, body: InvokeRequest, client_nonce: str | None) -> Any:
+        """Sign what was asked and what was answered next to the receipt (receipt_binding.py).
+
+        Last, after finish(), so the digest covers the answer exactly as the buyer gets it.
+        Never fails the call: a delivered answer without a binding is what every hub sent
+        before this existed."""
+        status, content = invoke_funding._body_of(result)
+        if status != 200 or not isinstance(content, dict) or not content.get("success"):
+            return result
+        try:
+            content = jsonable_encoder(content)
+            binding = receipt_binding.build(
+                content, input_payload=jsonable_encoder(body.input), client_nonce=client_nonce,
+                hub_url=config.hub_url, signer=signer, receipt_signer=_receipt_signer(body))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("receipt binding failed: %s", exc)
+            return result
+        if binding is None:
+            return result
+        content["receipt_binding"] = binding
+        headers = {} if isinstance(result, dict) else {
+            k: v for k, v in result.headers.items() if k.lower() not in ("content-length", "content-type")}
+        if client_nonce:
+            headers[receipt_binding.CLIENT_NONCE_ECHO_HEADER] = client_nonce
+            # Readable by a browser buyer, next to whatever this answer already exposes.
+            exposed = [h.strip() for k, v in list(headers.items())
+                       if k.lower() == "access-control-expose-headers" for h in v.split(",") if h.strip()]
+            for k in [k for k in headers if k.lower() == "access-control-expose-headers"]:
+                del headers[k]
+            headers["Access-Control-Expose-Headers"] = ", ".join(
+                dict.fromkeys([*exposed, receipt_binding.CLIENT_NONCE_ECHO_HEADER]))
+        return JSONResponse(status_code=status, content=content, headers=headers)
 
     async def _invoke_core(
         body: InvokeRequest,

@@ -662,6 +662,8 @@ def _local_provenance(d: SimpleNamespace, call: _Call, local: _Local, result: An
         )
 
     receipt_context = {
+        # The answer carries this value as `result`; the signed subject says so.
+        "output_digest_of": "result",
         "product_id": body.product_id,
         "capability_id": body.capability_id,
         "input": body.input,

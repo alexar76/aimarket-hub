@@ -779,12 +779,26 @@ def _fed_answer(d: SimpleNamespace, call: _Call, fed: _Fed, resp: Any, result_da
         result_data["verification"] = federated_verify_env
 
     # The routing hub now issues the same portable AWR class for peer work as
-    # for local work.  It signs the peer envelope (including its own gateway
-    # receipt/attestation) while naming the actual provider hub.  Charged price
-    # is the amount THIS hub settled, never the peer's self-reported list price.
+    # for local work, naming the actual provider hub. Charged price is the amount
+    # THIS hub settled, never the peer's self-reported list price.
+    #
+    # outputDigest covers the member of this answer that carries the work, named in
+    # the signed subject as `outputDigestOf`; the peer's own receipt is committed to
+    # separately (`gatewayReceiptDigest`). It used to digest the whole envelope at this
+    # point — which then grew (provenance_receipt, mandate, subcontracting), so no
+    # buyer could recompute it from the answer they received.
     if bool(result_data.get("success", False)):
         fed_elapsed_ms = int((time.time() - fed_started) * 1000)
-        receipt_artifacts = plugins.run_receipt_hooks(result_data, {
+        # The same member the receipt binding digests (receipt_binding.output_member). A peer
+        # answer with neither member (a bare `{ok, data}`, a bridge-paid text body) is committed
+        # to whole, as before, and no `outputDigestOf` is claimed for a member it lacks.
+        from aimarket_hub.receipt_binding import output_member as _output_member
+
+        output_member = _output_member(result_data)
+        receipt_artifacts = plugins.run_receipt_hooks(
+            result_data.get(output_member) if output_member else result_data, {
+            "output_digest_of": output_member,
+            "routed": True,
             "product_id": body.product_id,
             "capability_id": body.capability_id,
             "input": body.input,

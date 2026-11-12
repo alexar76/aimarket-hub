@@ -39,7 +39,7 @@ jobs:
         # escrow pulls eth-account; pipeline/x402 tests import it at collection time.
         # The provenance plugin (receipts, parents) and the agent SDK (A2A subcontract tests) are
         # monorepo siblings; here they come from PyPI at the versions published with this hub.
-        run: pip install -e ".[dev,escrow]" "aimarket-provenance==2.3.0" "aimarket-agent==2.5.1"
+        run: pip install -e ".[dev,escrow]" ./plugins/aimarket-provenance "aimarket-agent==2.5.1"
 
       - name: Ruff — the code that moves or authorizes money
         # Bug-finding rules only ([tool.ruff] in pyproject.toml): undefined names, unused or
@@ -92,7 +92,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install hub (dev + escrow + postgres)
-        run: pip install -e ".[dev,escrow,postgres]" "aimarket-provenance==2.3.0" "aimarket-agent==2.5.1"
+        run: pip install -e ".[dev,escrow,postgres]" ./plugins/aimarket-provenance "aimarket-agent==2.5.1"
 
       - name: Money races and crash recovery on PostgreSQL
         run: |

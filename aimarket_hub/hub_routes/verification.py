@@ -11,11 +11,11 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from aimarket_hub import verified_settlement
+from aimarket_hub import receipt_binding, verified_settlement
 from aimarket_hub.api_models import AppealRequest, LotteryEntitlementRequest, ReceiptVerifyRequest
 from aimarket_hub.config import HubConfig
 from aimarket_hub.sandbox_trials import sandbox_quota
-from aimarket_hub.signing import pqc_required, receipt_signature_version, Signer
+from aimarket_hub.signing import pqc_required, receipt_signature_version, same_key, Signer
 from aimarket_hub.verified_settlement import VerifiedSettlementService
 
 
@@ -31,6 +31,7 @@ def register(
     router: APIRouter,
     signer: Signer,
     verify_svc: VerifiedSettlementService,
+    db: Any = None,
 ) -> None:
     """Attach the sandbox, verification, receipt and lottery routes to ``router``."""
     # api.py's module-level helpers; imported here because api.py imports this module.
@@ -107,56 +108,131 @@ def register(
             "success": True, **filed, "protocol_version": "v2",
         })
 
+    def _pinned_signer(public_key: str) -> tuple[str, str, str] | None:
+        """(key, pq_key, who) for a key this Hub trusts: its own, or one pinned for an active peer.
+
+        The key named inside a receipt is only a lookup handle. It is accepted when it
+        equals a key this Hub already holds for itself or for an active federation peer,
+        so a self-signed object never verifies just because it names its own key. `pq_key` is
+        the ML-DSA-65 key pinned with it ("" when none is pinned yet)."""
+        if not public_key or same_key(public_key, signer.public_key_b64):
+            return signer.public_key_b64, str(getattr(signer, "pq_public_key_b64", "") or ""), \
+                config.hub_url or "self"
+        if db is None:
+            return None
+        try:
+            peers = db.list_peers()
+        except Exception:  # noqa: BLE001
+            return None
+        for peer in peers:
+            if peer.status == "active" and peer.public_key and same_key(peer.public_key, public_key):
+                return peer.public_key, str(getattr(peer, "pq_public_key", "") or ""), peer.url
+        return None
+
     @router.post("/receipts/verify")
     async def receipt_verify(body: ReceiptVerifyRequest):
-        """Verify one receipt against this Hub's live Ed25519 + ML-DSA-65 keys.
+        """Verify one receipt, and optionally its binding, against keys this Hub pinned.
 
-        This is deliberately a *self* verifier: the public key is never accepted from
-        the request, so a caller cannot make an arbitrary self-signed object appear
-        trusted. Browser clients still verify Ed25519 locally; this endpoint evaluates
-        ML-DSA-65 until WebCrypto exposes a post-quantum primitive.
+        The public key is never accepted from the request, so a caller cannot make an
+        arbitrary self-signed object appear trusted: a receipt verifies against this Hub's
+        own Ed25519 + ML-DSA-65 identity or against the key pinned for an active federation
+        peer (a routed answer carries the providing hub's receipt). Browser clients still
+        verify Ed25519 locally; this endpoint evaluates ML-DSA-65 until WebCrypto exposes a
+        post-quantum primitive.
         """
         receipt = body.receipt
         # Nginx caps the production request body, but direct ASGI deployments and test
         # clients may not. Keep verification CPU and response size predictably bounded.
-        try:
-            encoded_size = len(json.dumps(
-                receipt, ensure_ascii=False, separators=(",", ":"), default=str
-            ).encode())
-        except (TypeError, ValueError, RecursionError):
-            encoded_size = 131_073
-        if encoded_size > 131_072:
+        def _size(value: Any, over: int) -> int:
+            try:
+                return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str).encode())
+            except (TypeError, ValueError, RecursionError):
+                return over
+        if _size(receipt, 131_073) > 131_072:
             raise HTTPException(status_code=413, detail="receipt exceeds 128 KiB")
+        # The answer a binding is checked against may be larger than the receipt.
+        if _size(body.model_dump(), 262_145) > 262_144:
+            raise HTTPException(status_code=413, detail="request exceeds 256 KiB")
 
         signature = receipt.get("signature")
         version = receipt_signature_version(receipt)
+        named_key = str(signature.get("public_key") or "") if isinstance(signature, dict) else ""
+        binding = body.receipt_binding or (body.response or {}).get("receipt_binding")
+        # A hub does not put its key in its own receipts. Such a receipt is tried against this
+        # Hub's key and then against the key a binding names as its signer, when that key is
+        # pinned for an active peer: a routed answer carries the provider hub's receipt.
+        if named_key:
+            candidates = [c for c in (_pinned_signer(named_key),) if c is not None]
+        else:
+            candidates = [c for c in (_pinned_signer(""),) if c is not None]
+            bound_signer = str(binding.get("receipt_signer") or "") if isinstance(binding, dict) else ""
+            if bound_signer and not same_key(bound_signer, signer.public_key_b64):
+                candidates += [c for c in (_pinned_signer(bound_signer),) if c is not None]
+        pinned = candidates[0] if candidates else None
         classical_valid = False
         hybrid_valid = False
         pq_present = isinstance(signature, dict) and bool(signature.get("pq_value"))
+        pq_pinned = False
         if version and isinstance(signature, dict):
-            classical_valid = any(
-                Signer.verify(
-                    signer.public_key_b64,
-                    str(signature.get("value") or ""),
-                    canonical,
-                )
-                for canonical in signer.receipt_canonical_candidates(receipt, version)
-            )
-            hybrid_valid = signer.verify_receipt_signature(receipt)
+            for candidate in candidates:
+                key, pq_key, _ = candidate
+                if not any(Signer.verify(key, str(signature.get("value") or ""), canonical)
+                           for canonical in signer.receipt_canonical_candidates(receipt, version)):
+                    continue
+                pinned, classical_valid = candidate, True
+                # Both identities are pinned: this Hub's own, or the ML-DSA key pinned for the
+                # peer. A peer whose PQ key is not pinned yet has its ML-DSA layer checked as
+                # presented, and the answer says so (`pq_pinned`).
+                pq_pinned = bool(pq_key)
+                hybrid_valid = (signer.verify_receipt_signature(receipt) if same_key(key, signer.public_key_b64)
+                                else signer.verify_receipt_signature(receipt, key, pq_key))
+                break
 
-        return {
+        answer: dict[str, Any] = {
             "valid": hybrid_valid,
             "classical_valid": classical_valid,
             "pq_present": pq_present,
             # `None` means there was no PQ claim to evaluate. When present, `valid`
-            # requires both layers and pins ML-DSA to this Hub's persisted PQ key.
+            # requires both layers; for this Hub's own receipts ML-DSA is pinned too.
             "pq_valid": hybrid_valid if pq_present else None,
+            "pq_pinned": pq_pinned if pq_present else None,
             "algorithm": "ed25519+ml-dsa-65" if pq_present else "ed25519",
             "signature_version": version or None,
-            "signer_matches_live_key": classical_valid,
+            "signer": pinned[2] if pinned else None,
+            "signer_matches_live_key": classical_valid and pinned is not None
+            and same_key(pinned[0], signer.public_key_b64),
             "policy_requires_pq": pqc_required(),
             "protocol_version": "v2",
         }
+        if isinstance(binding, dict):
+            bsig = binding.get("signature")
+            bpinned = _pinned_signer(str(bsig.get("public_key") or "") if isinstance(bsig, dict) else "")
+            if bpinned is None:
+                answer["binding"] = {"valid": False, "signature_valid": False,
+                                     "detail": "binding signed by a key this Hub does not hold"}
+            else:
+                check = receipt_binding.verify(
+                    binding, public_key_b64=bpinned[0], response=body.response,
+                    input_payload=body.input, client_nonce=body.client_nonce,
+                    pq_public_key_b64=bpinned[1] or None)
+                check["signer"] = bpinned[2]
+                # The key must belong to the hub the binding names, or a peer could sign a
+                # binding in another hub's name.
+                own = same_key(bpinned[0], signer.public_key_b64)
+                named_hub = str(binding.get("hub") or "").rstrip("/")
+                check["hub_matches"] = (
+                    (not config.hub_url or named_hub == config.hub_url.rstrip("/")) if own
+                    else named_hub == str(bpinned[2]).rstrip("/"))
+                # It names THIS receipt: the same nonce, and as signer the key the receipt
+                # really verified under — whether or not the receipt names a key itself.
+                check["names_this_receipt"] = bool(
+                    str(receipt.get("nonce") or "") == binding.get("receipt_nonce")
+                    and classical_valid and pinned is not None
+                    and same_key(pinned[0], str(binding.get("receipt_signer") or "")))
+                check["valid"] = bool(check["valid"] and check["names_this_receipt"]
+                                      and check["hub_matches"] and hybrid_valid)
+                answer["binding"] = check
+        return answer
 
     @router.post("/lottery/work-seat-entitlement")
     async def lottery_work_seat_entitlement(
