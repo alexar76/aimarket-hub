@@ -695,7 +695,8 @@ def redeem(*, store: TopupStore, ledger: Any, payments: settle.PaymentStore, non
                              "the payment could not be recorded; retry — nothing was credited", retryable=True)
     # 3. The credit — one transaction, idempotent on the reference.
     result = ledger.deposit(q.account_id, credited_mc, reference=reference,
-                            note=f"USDC top-up {tx_hash[:18]}… from {payer[:10]}…")
+                            note=f"USDC top-up {tx_hash[:18]}… from {payer[:10]}…",
+                            base_usdc=credits.is_base_usdc(q.chain_id, q.token_contract, decimals))
     if result.get("error"):
         store.release(nonce, tx_hash)
         logger.error("topup: crediting %s for %s failed: %s", q.account_id, nonce[:18], result["error"])

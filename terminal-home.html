@@ -309,6 +309,18 @@
   .search-observed .name { color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
   .search-observed .meta { color: var(--muted); font-size: 12px; margin-top: 5px; }
   .search-seller-link { display: inline-block; margin-top: 10px; color: var(--cyan); font-size: 13px; }
+  .external-directory { max-width: 960px; margin: 0 auto 24px; }
+  .external-directory h2 { margin: 0 0 4px; color: var(--ink); font-size: 18px; }
+  .external-directory > p { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+  .external-services { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .external-service { min-width: 0; padding: 12px 14px; background: var(--panel-solid); border: 1px solid var(--brd); border-radius: var(--radius); }
+  .external-service .name { display: inline-block; color: var(--cyan); font-weight: 700; font-size: 15px; overflow-wrap: anywhere; text-underline-offset: 3px; }
+  .external-service p { margin: 5px 0; color: var(--muted); font-size: 13px; }
+  .external-service .terms { color: var(--good); font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+  .external-service a:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+  .search-group .external-services { grid-template-columns: 1fr; gap: 0; }
+  .search-group .external-service { border-width: 1px 0 0; border-radius: 0; background: transparent; padding: 12px 16px; }
+  @media (max-width: 640px) { .external-services { grid-template-columns: 1fr; } }
   .match-insight { display: flex; align-items: center; gap: 7px; margin-top: 7px; min-width: 0; }
   .match-pill {
     flex: 0 0 auto; border: 1px solid rgba(123,92,255,.42); border-radius: 4px;
@@ -1086,6 +1098,14 @@
     </div>
   </div>
 
+  <!-- apex-only -->
+  <section class="external-directory" id="external-directory" aria-labelledby="external-directory-title" hidden>
+    <h2 id="external-directory-title" data-i18n="external_title">Direct x402 services</h2>
+    <p data-i18n="external_note">Published terms. Use your own wallet to pay the provider directly.</p>
+    <div class="external-services" id="external-services"></div>
+  </section>
+  <!-- /apex-only -->
+
   <div class="heroes">
     <div class="stat" data-a="cyan">
       <div class="stat-label" data-i18n="s_inv">Invocations</div>
@@ -1453,7 +1473,8 @@
     }
     applyStaticI18n();
     try { renderKnockRail(); } catch (_) { /* rail not in the DOM yet */ }
-    if (searchMatches.length || searchObserved.length) renderSearchResults(searchMatches, searchMetaState, searchObserved);
+    renderExternalDirectory();
+    if (searchMatches.length || searchObserved.length || searchExternal.length) renderSearchResults(searchMatches, searchMetaState, searchObserved, searchExternal);
   }
 
   async function loadCapI18n() {
@@ -2125,7 +2146,53 @@
   const invokeBody = document.getElementById('invoke-body');
   const invokeForm = document.getElementById('invoke-form');
   let searchMatches = [];
-  let searchObserved = [], searchMetaState = {};
+  let searchObserved = [], searchExternal = [], searchMetaState = {};
+  let externalDirectory = [];
+
+  const externalDocHosts = new Map([
+    ['coinmarketcap', 'coinmarketcap.com'], ['tavily', 'docs.tavily.com'], ['laso', 'docs.laso.finance'],
+  ]);
+  const externalNetworkNames = new Map([['base', 'Base'], ['solana', 'Solana']]);
+
+  function externalDocumentation(c) {
+    try {
+      const url = new URL(c.documentation_url);
+      return url.protocol === 'https:' && !url.username && !url.password && !url.port
+        && url.hostname === externalDocHosts.get(c.id) ? url.href : '';
+    } catch { return ''; }
+  }
+
+  function externalRows(rows) {
+    return (Array.isArray(rows) ? rows : []).filter(c => c && typeof c.name === 'string' && c.name.trim()
+      && c.hub_invoke === false && c.payment_recipient === 'provider' && c.payment_protocol === 'x402'
+      && c.asset === 'USDC' && ['per_request', 'minimum_load'].includes(c.price_basis)
+      && typeof c.published_price_usd === 'number' && Number.isFinite(c.published_price_usd) && c.published_price_usd > 0
+      && externalDocumentation(c));
+  }
+
+  function renderExternal(c) {
+    const networks = (Array.isArray(c.payment_networks) ? c.payment_networks : [])
+      .map(network => externalNetworkNames.get(network)).filter(Boolean);
+    const price = t('external_' + c.price_basis, { amount: c.published_price_usd });
+    return `<article class="external-service"><a class="name" href="${esc(externalDocumentation(c))}"
+        target="_blank" rel="noopener noreferrer" title="${esc(t('external_docs'))}">${esc(c.name)}</a>
+      <p>${esc(t('external_desc_' + c.id, null, c.description))}</p>
+      <p class="terms">${esc([price, 'x402', ...networks].join(' · '))}</p></article>`;
+  }
+
+  function renderExternalDirectory() {
+    const section = document.getElementById('external-directory');
+    if (!section) return;
+    document.getElementById('external-services').innerHTML = externalDirectory.map(renderExternal).join('');
+    section.hidden = !externalDirectory.length;
+  }
+
+  async function loadExternalDirectory() {
+    if (!document.getElementById('external-directory')) return;
+    const response = await fetchJson(`${HUB}/ai-market/v2/external-services`);
+    externalDirectory = externalRows(response?.external);
+    renderExternalDirectory();
+  }
 
   function evidenceTime(value) {
     if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value)) return esc(t('evidence_unknown'));
@@ -2171,13 +2238,15 @@
       <div class="meta">${esc(t('observed_payment_note'))}</div></div>`;
   }
 
-  function renderSearchResults(matches, searchMeta = {}, observed = []) {
+  function renderSearchResults(matches, searchMeta = {}, observed = [], external = []) {
     matches = (Array.isArray(matches) ? matches : []).filter(c => c && accessMode(c) !== 'operator_gated');
     observed = (Array.isArray(observed) ? observed : []).filter(c => c && typeof c === 'object');
+    external = externalRows(external);
     searchMatches = matches;
     searchObserved = observed;
+    searchExternal = external;
     searchMetaState = searchMeta;
-    if (!matches.length && !observed.length) {
+    if (!matches.length && !observed.length && !external.length) {
       drop.innerHTML = `<div class="search-item"><span class="meta">${esc(t('no_matches'))}</span></div>`;
       return;
     }
@@ -2198,9 +2267,10 @@
       <div class="match-insight"><span class="match-pill ${matchType}">${esc(matchLabel)} ${Math.round(matchScore * 100)}</span><span class="match-reason">${esc(reason)}</span><span class="match-meter" aria-hidden="true"><i style="width:${Math.max(4, Math.round(matchScore * 100))}%"></i></span></div>
     </div>`;
     }).join('');
-    drop.innerHTML = readout
+    drop.innerHTML = (matches.length || observed.length ? readout : '')
       + (matches.length ? `<section class="search-group" aria-label="${esc(t('search_catalogue'))}"><h3>${esc(t('search_catalogue'))}</h3><p class="search-group-note">${esc(t('catalogue_evidence_note'))}</p>${catalog}</section>` : '')
-      + (observed.length ? `<section class="search-group" aria-label="${esc(t('search_observed'))}"><h3>${esc(t('search_observed'))}</h3><p class="search-group-note">${esc(t('observed_evidence_note'))}</p>${observed.map(renderObserved).join('')}</section>` : '');
+      + (observed.length ? `<section class="search-group" aria-label="${esc(t('search_observed'))}"><h3>${esc(t('search_observed'))}</h3><p class="search-group-note">${esc(t('observed_evidence_note'))}</p>${observed.map(renderObserved).join('')}</section>` : '')
+      + (external.length ? `<section class="search-group" aria-label="${esc(t('external_title'))}"><h3>${esc(t('external_title'))}</h3><p class="search-group-note">${esc(t('external_note'))}</p><div class="external-services">${external.map(renderExternal).join('')}</div></section>` : '');
   }
 
   function showInvoke(state, title, body) {
@@ -2392,12 +2462,12 @@
     const q = input.value.trim();
     if (!q) return;
     drop.classList.add('open');
-    searchMatches = []; searchObserved = []; searchMetaState = {};
+    searchMatches = []; searchObserved = []; searchExternal = []; searchMetaState = {};
     drop.innerHTML = `<div class="search-item"><span class="meta">${esc(t('searching'))}</span></div>`;
     try {
       const r = await fetch(`${HUB}/ai-market/v2/search?intent=${encodeURIComponent(q)}&limit=8`);
       const d = await r.json();
-      renderSearchResults(d.matches, d.search || {}, d.observed);
+      renderSearchResults(d.matches, d.search || {}, d.observed, d.external);
     } catch {
       searchMatches = [];
       drop.innerHTML = `<div class="search-item"><span class="meta">${esc(t('search_failed'))}</span></div>`;
@@ -2931,7 +3001,8 @@
       catTitle.textContent = t('caps_title');
       paintCaps();
     }
-    if (searchMatches.length || searchObserved.length) renderSearchResults(searchMatches, searchMetaState, searchObserved);
+    renderExternalDirectory();
+    if (searchMatches.length || searchObserved.length || searchExternal.length) renderSearchResults(searchMatches, searchMetaState, searchObserved, searchExternal);
     renderFeed(); renderTicker(); renderTop(); renderPulse(lastSummary);
     renderKnockRail();
     if (selectedTrace) renderTrace(selectedTrace);
@@ -3056,6 +3127,7 @@
   setInterval(poll, POLL);
   loadUiI18n().catch(() => {});
   loadCapI18n().catch(() => {});
+  loadExternalDirectory().catch(() => {});
 })();
 </script>
 </body>

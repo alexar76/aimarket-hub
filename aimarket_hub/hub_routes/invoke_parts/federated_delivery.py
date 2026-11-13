@@ -610,7 +610,8 @@ def _fed_record(d: SimpleNamespace, call: _Call, fed: _Fed, result_data: dict[st
             fed_capture = (credits_ledger.capture_hold(fed_nonce, publisher_share=share)
                            if share is not None else credits_ledger.capture_hold(fed_nonce))
         else:
-            fed_capture = invoke.capture_hold(fed_nonce)
+            fed_capture = (invoke.capture_hold(fed_nonce, publisher_share=share)
+                           if share is not None else invoke.capture_hold(fed_nonce))
         if fed_capture.get("error") or fed_capture.get("already") not in (None, "captured"):
             logger.error(
                 "federated invoke: capture of reservation %s failed: %s",
@@ -622,7 +623,7 @@ def _fed_record(d: SimpleNamespace, call: _Call, fed: _Fed, result_data: dict[st
             )
         fed.settled = True
         if share is not None and not credit_hold:
-            d._pay_publisher_share(share)
+            d._pay_publisher_share(fed_nonce)
 
     # Bookkeeping must never be able to destroy delivered work. At this point the
     # peer has answered, the money side is settled, and the caller is owed the

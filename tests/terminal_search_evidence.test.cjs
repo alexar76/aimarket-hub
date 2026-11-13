@@ -13,18 +13,27 @@ function section(start, end) {
 }
 function fixture() {
   const listeners = {};
+  const directory = {hidden: true};
+  const cards = {innerHTML: ''};
+  const requests = [];
   const ctx = {
     URL, Date, lang: 'en', HUB: 'https://hub.example',
     input: {value: 'weather'},
     drop: {innerHTML: '', classList: {add() {}}},
     form: {addEventListener(name, callback) { listeners[name] = callback; }},
-    t(key) { return ui[ctx.lang][key] || key; },
+    t(key, vars, fallback) {
+      let value = ui[ctx.lang][key] || fallback || key;
+      for (const [name, term] of Object.entries(vars || {})) value = value.replace(`{${name}}`, String(term));
+      return value;
+    },
     hostOf: u => u === 'local' ? '' : new URL(u).host,
     descForSearch: c => c.description || '',
     capabilityPrice: c => String(c.price_per_call_usd),
     accessMode: c => c.access_mode || 'public',
     usd: n => '$' + n,
     fetch: async () => ({json: async () => ctx.response}),
+    fetchJson: async url => { requests.push(url); return ctx.response; },
+    document: {getElementById(id) { return ctx.apex && (id === 'external-directory' ? directory : cards); }},
   };
   vm.createContext(ctx);
   vm.runInContext(section('  function esc(', '\n  function visitorId('), ctx);
@@ -34,10 +43,16 @@ function fixture() {
     ctx,
     render(matches, observed) { ctx.renderSearchResults(matches, {}, observed); return ctx.drop.innerHTML; },
     async search(response) { ctx.response = response; await listeners.submit({preventDefault() {}}); return ctx.drop.innerHTML; },
+    async directory(external, apex = true) {
+      ctx.apex = apex;
+      ctx.response = {external};
+      await ctx.loadExternalDirectory();
+      return {hidden: directory.hidden, html: cards.innerHTML, requests};
+    },
     matches() { return vm.runInContext('searchMatches', ctx); },
     relanguage(lang) {
       ctx.lang = lang;
-      vm.runInContext('renderSearchResults(searchMatches, searchMetaState, searchObserved)', ctx);
+      vm.runInContext('renderSearchResults(searchMatches, searchMetaState, searchObserved, searchExternal)', ctx);
       return ctx.drop.innerHTML;
     },
   };
@@ -49,6 +64,16 @@ const quote = {
   observed_by: 'https://hub.example', observed_at: '2026-10-31T10:00:00Z',
 };
 const catalog = {name: 'Weather catalog', source_hub: 'https://catalog.example', description: 'weather'};
+const externalDefaults = {payment_protocol: 'x402', payment_networks: ['base'], asset: 'USDC',
+  published_price_usd: 0.01, price_basis: 'per_request', payment_recipient: 'provider', hub_invoke: false};
+const cmc = {...externalDefaults, id: 'coinmarketcap', name: 'CoinMarketCap', description: 'Market quotes',
+  documentation_url: 'https://coinmarketcap.com/api/documentation/ai-agent-hub/x402',
+  endpoint: 'https://pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest'};
+const tavily = {...externalDefaults, id: 'tavily', name: 'Tavily', description: 'Web search',
+  documentation_url: 'https://docs.tavily.com/documentation/machine-payments/x402', endpoint: 'https://x402.tavily.com/search'};
+const laso = {...externalDefaults, id: 'laso', name: 'Laso', description: 'Prepaid cards',
+  documentation_url: 'https://docs.laso.finance/guides/usa-prepaid-card', endpoint: 'https://laso.finance/get-card',
+  payment_networks: ['base', 'solana'], price_basis: 'minimum_load', published_price_usd: 5};
 
 test('observed-only search is a result, never a sandbox invocation', async () => {
   const f = fixture();
@@ -123,4 +148,47 @@ test('empty search resets prior results and missing timestamps stay unknown', as
   const empty = await f.search({matches: [], observed: []});
   assert.ok(empty.includes(ui.en.no_matches));
   assert.equal(f.matches().length, 0);
+});
+
+test('external-only search links to first-party documentation without sandbox invocation', async () => {
+  const f = fixture();
+  const html = await f.search({matches: [], observed: [], external: [laso]});
+  assert.match(html, /Direct x402 services/);
+  assert.match(html, /5 USDC minimum load · x402 · Base · Solana/);
+  assert.match(html, /href="https:\/\/docs.laso.finance\/guides\/usa-prepaid-card"/);
+  assert.doesNotMatch(html, /get-card|data-idx|search-readout|Observed offers/);
+  assert.ok(!html.includes(ui.en.no_matches));
+  assert.equal(f.matches().length, 0);
+  for (const lang of Object.keys(ui)) assert.ok(f.relanguage(lang).includes(ui[lang].external_title));
+  assert.ok((await f.search({matches: [], observed: [], external: []})).includes(ui.zh.no_matches));
+});
+
+test('home directory renders all three cards and stays absent on other hubs', async () => {
+  const f = fixture();
+  const hidden = await f.directory([cmc, tavily, laso], false);
+  assert.equal(hidden.hidden, true);
+  assert.deepEqual(hidden.requests, []);
+  const result = await f.directory([cmc, tavily, laso]);
+  assert.equal(result.hidden, false);
+  assert.deepEqual(result.requests, ['https://hub.example/ai-market/v2/external-services']);
+  assert.equal((result.html.match(/class="external-service"/g) || []).length, 3);
+  for (const provider of [cmc, tavily, laso]) assert.ok(result.html.includes(provider.documentation_url));
+  assert.match(result.html, /href="https:\/\/coinmarketcap.com\/api\/documentation\/ai-agent-hub\/x402"\s+target="_blank" rel="noopener noreferrer" title="Provider documentation">CoinMarketCap<\/a>/);
+  assert.doesNotMatch(result.html, /pro-api.coinmarketcap|x402.tavily.com|laso.finance\/get-card/);
+  const empty = await f.directory([]);
+  assert.equal(empty.hidden, true);
+});
+
+test('external entries never change callable catalogue indexes or accept unsafe documentation links', async () => {
+  const f = fixture();
+  const html = await f.search({matches: [catalog], observed: [quote], external: [
+    {...tavily, name: '<img src=x>', documentation_url: 'javascript:alert(1)'},
+    {...tavily, documentation_url: tavily.endpoint}, {...laso, hub_invoke: true},
+    {...cmc, name: '<script>CoinMarketCap</script>'},
+  ]});
+  assert.equal(f.matches().length, 1);
+  assert.equal((html.match(/data-idx=/g) || []).length, 1);
+  assert.equal((html.match(/class="external-service"/g) || []).length, 1);
+  assert.match(html, /&lt;script&gt;CoinMarketCap&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /javascript:|<script>|<img|x402.tavily.com/);
 });

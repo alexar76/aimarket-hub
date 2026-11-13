@@ -742,6 +742,9 @@ def create_app(
     )
     _deposit_watcher = accounts_scope._deposit_watcher
     lifespan_late.deposit_watcher = _deposit_watcher
+    from aimarket_hub.hub_routes import publisher_withdrawals as _withdrawal_routes
+
+    _withdrawal_routes.register(router=router, ledger=hub_credits, hub_url=config.hub_url)
 
     # Live stats, permission violations, supply audits.
     _market_stats_routes.register(

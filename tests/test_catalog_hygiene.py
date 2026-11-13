@@ -38,7 +38,8 @@ def _cap(**overrides) -> Capability:
     return Capability(**values)
 
 
-def _client(tmp_path, *, peer_status: str = "active", peer_age_s: int = 0, max_age_s: int = 60):
+def _client(tmp_path, *, peer_status: str = "active", peer_age_s: int = 0, max_age_s: int = 60,
+            hub_url: str = "https://catalog.example"):
     db = HubDatabase(tmp_path / "hub.db")
     cap = _cap()
     db.upsert_capability(cap)
@@ -54,6 +55,8 @@ def _client(tmp_path, *, peer_status: str = "active", peer_age_s: int = 0, max_a
         status=peer_status,
     )
     config = HubConfig()
+    config.hub_url = hub_url
+    config.hub_name = "modelmarket.dev"
     config.db_path = str(tmp_path / "hub.db")
     config.signing_key_path = str(tmp_path / "key")
     config.catalog_max_stale_s = max_age_s
@@ -116,3 +119,30 @@ def test_key_mismatch_offer_is_never_returned_even_for_audit(tmp_path):
             params={"intent": "run", "include_stale": True},
         ).json()
         assert not any(row["capability_id"] == CAPABILITY for row in result["matches"])
+
+
+def test_apex_exposes_external_provider_references_without_catalogue_offers(tmp_path):
+    with _client(tmp_path, hub_url="https://modelmarket.dev") as client:
+        directory = client.get("/ai-market/v2/external-services")
+        assert directory.status_code == 200
+        rows = {row["id"]: row for row in directory.json()["external"]}
+        assert set(rows) == {"coinmarketcap", "tavily", "laso"}
+        assert (rows["laso"]["published_price_usd"], rows["laso"]["price_basis"]) == (5, "minimum_load")
+        assert rows["tavily"]["method"] == "POST"
+        assert all(row["payment_recipient"] == "provider" and row["hub_invoke"] is False for row in rows.values())
+
+        search = client.get("/ai-market/v2/search", params={"intent": "CMC"}).json()
+        assert search["external"] == [rows["coinmarketcap"]]
+        assert all(row["capability_id"] == CAPABILITY for row in search["matches"])
+        assert search["observed"] == []
+        assert client.get("/ai-market/v2/search", params={"intent": "Laso", "budget": 1}).json()["external"] == []
+        assert client.get("/ai-market/v2/search", params={"intent": "eSIM"}).json()["external"] == []
+        manifest = client.get("/ai-market/v2/manifest").json()
+        assert "external" not in manifest
+        assert {row["capability_id"] for row in manifest["tools"]} == {CAPABILITY, "pipeline.run@v1"}
+
+
+def test_external_provider_references_are_disabled_on_uni_even_with_apex_name(tmp_path):
+    with _client(tmp_path, hub_url="https://uni.modelmarket.dev") as client:
+        assert client.get("/ai-market/v2/external-services").status_code == 404
+        assert "external" not in client.get("/ai-market/v2/search", params={"intent": "Laso"}).json()

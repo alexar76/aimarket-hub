@@ -333,11 +333,11 @@ scheduler can be disabled. A key/balance has no automatic expiry or hourly money
 cap. Signed mandates supply separate limits when `require_mandate=True` prevents
 raw-key bypass.
 
-Release and the trusted operator's `CreditsLedger.refund` adjust service credit;
-neither sends USDC. The latter is not a receipt-bound, replay-safe customer refund.
-No self-service cash withdrawal is provided: an actual return is a separate operator
-payment and reconciliation of its outstanding liability. See the full
-[credit lifecycle](credits-topup.md#credit-lifecycle) and [mandate limits](mandates.md).
+Release and the trusted operator's `CreditsLedger.refund` adjust service credit. A
+publisher can request a separate [Base USDC withdrawal](publisher-withdrawals.md)
+for earnings with recorded backing. Customer balance refunds still need a separate
+operator payment and reconciliation. See the [credit lifecycle](credits-topup.md#credit-lifecycle)
+and [mandate limits](mandates.md).
 
 ---
 
@@ -351,12 +351,10 @@ path the default does not take. A ledger settlement record is not an on-chain tr
 This rail is **not** how a seller is paid on-chain, and the market rail above does not
 depend on it. It does pay the publisher in credits: after a channel capture the hub
 credits `publisher_share_bps` (70% by default) of the channel price to the
-listing's `publisher_id`, when that is a credit account on this hub. So every
-channel-paid call to such a listing books a credit liability to the publisher next
-to the channel balance. The share is a second write after the capture; the
-`payout` entry is keyed by the receipt, so a retry does not pay it twice, but a
-process killed between the two writes leaves that one share unpaid, and nothing
-retries it.
+listing's `publisher_id`, when that is a credit account on this hub. The channel
+capture records a durable obligation for that share in the same transaction as
+the debit. The hub retries incomplete obligations after a restart and in the
+background. The credits ledger deduplicates the payout by publisher and receipt.
 
 Two switches decide how custodial it actually is:
 

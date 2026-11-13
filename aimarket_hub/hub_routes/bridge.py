@@ -102,6 +102,9 @@ def register(*, config: HubConfig, db: HubDatabase, hub_credits: Any, router: AP
             raise HTTPException(status_code=404, detail=(
                 "not a route this hub serves now: see /ai-market/v2/federation/observed-sellers "
                 "(a route is served while its last observation is fresh and quoted)"))
+        explicit_get = route.get("source") == _observed.EXPLICIT_GET_SOURCE
+        if explicit_get and payload:
+            raise HTTPException(status_code=400, detail="this observed GET uses the registered URL and its fixed query")
         price = route.get("price_usd")
         if not isinstance(price, (int, float)) or not math.isfinite(float(price)) or float(price) <= 0:
             raise HTTPException(status_code=409, detail="the observed price of this route is not a positive USD amount")
@@ -156,7 +159,8 @@ def register(*, config: HubConfig, db: HubDatabase, hub_credits: Any, router: AP
             try:
                 reply, payment = await x402_bridge.pay_and_resend(
                     ledger=book, first=first, resend=call, limit_usd=price, expected_pay_to=payee or None,
-                    buyer_account=account_id, receipt_id=receipt, seller=route["seller"], route=url)
+                    buyer_account=account_id, receipt_id=receipt, seller=route["seller"], route=url,
+                    explicit_get=explicit_get)
             except x402_bridge.BridgeRefused as exc:
                 return JSONResponse(status_code=502, content={
                     "success": False, "error": "upstream_unpaid",
@@ -164,6 +168,16 @@ def register(*, config: HubConfig, db: HubDatabase, hub_credits: Any, router: AP
                     "bridge": {"via": "x402-bridge", "refusal": exc.code}, "protocol_version": "v2"})
             passed = {k: v for k, v in reply.headers.items() if k.lower() in _PASSED_REPLY_HEADERS[:2]}
             if 200 <= reply.status_code < 300:
+                if explicit_get and not payment.tx_hash:
+                    x402_bridge.finish(
+                        book, payment, delivered=False, http_status=reply.status_code,
+                        detail="the fixed GET returned no matching Base settlement receipt",
+                    )
+                    return JSONResponse(status_code=502, content={
+                        "success": False, "error": "seller_settlement_unconfirmed",
+                        "detail": "The seller supplied no matching Base settlement receipt. Your hold was released. "
+                                  "Ask the hub operator to reconcile this payment before retrying.",
+                        "payment_id": payment.payment_id, "protocol_version": "v2"})
                 capture = hub_credits.capture_hold(receipt, amount_mc=payment.amount_mc)
                 if capture.get("error") or capture.get("already") not in (None, "captured"):
                     raise HTTPException(status_code=502, detail="settlement failed: reservation could not be captured")

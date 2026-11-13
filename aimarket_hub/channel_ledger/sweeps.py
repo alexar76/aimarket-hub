@@ -13,6 +13,7 @@ import time
 from datetime import datetime
 from typing import Any
 
+from aimarket_hub.credits import CreditsLedger, mc_to_usd
 from aimarket_hub.paging import page_limit
 
 logger = logging.getLogger("aimarket_hub.channels")
@@ -51,6 +52,58 @@ class LedgerSweepsMixin:
                 self.reap_stale_holds()
             except Exception as exc:
                 logger.error("Channel hold-reaper error: %s", exc)
+
+    def reconcile_publisher_shares(
+        self, credits_ledger: CreditsLedger, *, receipt_id: str = "", limit: int = 50,
+    ) -> int:
+        """Apply committed channel obligations to the separate credits ledger.
+
+        The credits ledger deduplicates its payout by account and payout receipt. If
+        the process dies after it commits the credit but before acknowledging it here,
+        the next run can acknowledge the same payout without incrementing the balance.
+        """
+        with self._get_conn() as conn:
+            if receipt_id:
+                rows = conn.execute(
+                    "SELECT * FROM channel_publisher_shares WHERE receipt_id = ? AND credited_at = ''",
+                    (receipt_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM channel_publisher_shares WHERE credited_at = '' AND next_attempt_at <= ? "
+                    "ORDER BY next_attempt_at, receipt_id LIMIT ?",
+                    (time.time(), page_limit(limit, default=50, maximum=500)),
+                ).fetchall()
+
+        credited = 0
+        for row in rows:
+            error = None
+            try:
+                result = credits_ledger.pay_publisher(
+                    row["account_id"], mc_to_usd(row["amount_mc"]),
+                    receipt_id=row["payout_receipt_id"], note=row["note"],
+                    **({"cash_backed": True} if row["cash_backed"] else {}),
+                )
+                error = result.get("error")
+            except Exception as exc:  # The captured debit and the obligation are already durable.
+                error = str(exc)
+            with self._get_conn() as conn:
+                if error is not None:
+                    logger.warning("Publisher share %s remains pending: %s", row["receipt_id"], error)
+                    conn.execute(
+                        "UPDATE channel_publisher_shares SET next_attempt_at = ? "
+                        "WHERE receipt_id = ? AND credited_at = ''",
+                        (time.time() + 60, row["receipt_id"]),
+                    )
+                else:
+                    cursor = conn.execute(
+                        "UPDATE channel_publisher_shares SET credited_at = ? "
+                        "WHERE receipt_id = ? AND credited_at = ''",
+                        (channels._now_iso(), row["receipt_id"]),
+                    )
+                    credited += cursor.rowcount
+                conn.commit()
+        return credited
 
     def _sweep_expired(self) -> int:
         """Expire stale open channels, recording the unspent remainder as a payout

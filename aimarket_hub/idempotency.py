@@ -159,19 +159,17 @@ class IdempotencyStore:
 
         saved = json.loads(held["response_headers"])
         receipt = saved["receipt"]
-        if channels.hold_state(receipt) != "captured":
-            if int(saved["deadline"]) <= int(time.time()):
-                return self._expire_escrow(scope, key, held, receipt) if finalize else None
-            capture = channels.capture_hold(receipt)
+        share = PublisherShare(*saved["share"]) if saved["share"] is not None else None
+        captured = channels.hold_state(receipt) == "captured"
+        if not captured and int(saved["deadline"]) <= int(time.time()):
+            return self._expire_escrow(scope, key, held, receipt) if finalize else None
+        if not captured or share is not None:
+            capture = (channels.capture_hold(receipt, publisher_share=share)
+                       if share is not None else channels.capture_hold(receipt))
             if not capture.get("ok") and channels.hold_state(receipt) != "captured":
                 return None
-        if saved["share"] is not None:
-            share = PublisherShare(*saved["share"])
-            result = CreditsLedger(self._conn).pay_publisher(
-                share.account_id, share.amount_usd, receipt_id=share.receipt_id, note=share.note,
-            )
-            if result.get("error"):
-                return None
+        if share is not None:
+            channels.reconcile_publisher_shares(CreditsLedger(self._conn), receipt_id=receipt)
         if not finalize:
             return held
         headers = json.dumps(saved["headers"])

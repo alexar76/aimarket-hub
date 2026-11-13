@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 from aimarket_hub import credits as hub_credits
 from aimarket_hub.channels import APPEAL_BOND_PREFIX
-from aimarket_hub.channels import hold_state
+from aimarket_hub.channels import hold_state, reconcile_publisher_shares
+from aimarket_hub.credits import PublisherShare
 from aimarket_hub.metrics import record_verify_appeal
 from aimarket_hub.signing import RECEIPT_SIG_VERSION
 
@@ -278,12 +279,13 @@ class SettlementFinalizingMixin:
         settled = False
         ledger_note = None
         bond_note = None
+        share = self._verified_share(row) if paid and not refunding else None
         if paid and from_status == vs._FINALIZING:
-            settled, ledger_note, captured_now = self._settle_hold(nonce, capture=not refunding)
+            settled, ledger_note, captured_now = self._settle_hold(
+                nonce, capture=not refunding, publisher_share=share,
+            )
             if captured_now:
-                # Only on the attempt that captured: a replay must not accrue twice.
                 self._accrue_acex(row)
-                self._pay_verified_share(row)
             if refunding and ledger_note is None:
                 self._withdraw_escrow_authorization(nonce)
         elif paid:
@@ -295,17 +297,18 @@ class SettlementFinalizingMixin:
                 else:
                     self._withdraw_escrow_authorization(nonce)
             else:
-                res = vs.capture_hold(nonce)
+                res = vs.capture_hold(nonce, publisher_share=share) if share is not None else vs.capture_hold(nonce)
                 if res.get("error"):
                     ledger_note = f"capture_failed:{res['error']}"
                     logger.error("verified-settlement %s: capture failed: %s", nonce, res["error"])
                 else:
                     settled = True
                     self._accrue_acex(row)
-                    self._pay_verified_share(row)
         else:
             # Advisory: nothing was held; the invoke settled (freely) at response time.
             settled = not refunding
+        if settled and share is not None:
+            reconcile_publisher_shares(hub_credits.CreditsLedger(self._db._conn), receipt_id=nonce)
         if from_status == vs._FINALIZING:
             if bond:
                 bond_note = self._settle_bond(nonce, bond)
@@ -471,28 +474,14 @@ class SettlementFinalizingMixin:
         return f"wallet:{wallet}" if wallet else channel_id
 
     @staticmethod
-    def _pay_verified_share(row: Any) -> None:
-        """Pay the seller the share fixed at the call (publisher_share_bps), once the verdict
-        captured. Idempotent on the receipt (pay_publisher dedupes on it), never raises.
-
-        The plain channel path pays this share at capture; a verified sale captured through the
-        verdict paid nothing, so the operator kept 100% of exactly the sales sold as "providers
-        get paid for verified work" (audit 2026-11-11, pay-on-verified-2).
-        """
+    def _verified_share(row: Any) -> PublisherShare | None:
+        """Read the frozen publisher terms from a paid verification's checkpoint."""
         keys = set(row.keys()) if hasattr(row, "keys") else set()
         account = str(row["publisher_account"] or "") if "publisher_account" in keys else ""
         amount = float(row["publisher_share_usd"] or 0) if "publisher_share_usd" in keys else 0.0
-        if not account or amount <= 0:
-            return
-        try:
-            result = hub_credits.ledger().pay_publisher(
-                account, amount, receipt_id=str(row["nonce"]), note="verified capability sale")
-        except Exception:  # noqa: BLE001
-            logger.exception("verified-settlement %s: paying the seller's share failed", row["nonce"])
-            return
-        if result.get("error"):
-            logger.error("verified-settlement %s: paying the seller's share failed: %s",
-                         row["nonce"], result["error"])
+        if not account or hub_credits.usd_to_mc(amount) <= 0:
+            return None
+        return PublisherShare(account, amount, str(row["nonce"]), "verified capability sale")
 
     @staticmethod
     def _escrow_uncollectable(receipt_id: str) -> bool:
@@ -553,14 +542,21 @@ class SettlementFinalizingMixin:
     # ── Appeals: moving the money once a final outcome is decided ──────────
 
     @staticmethod
-    def _settle_hold(receipt_id: str, *, capture: bool) -> tuple[bool, str | None, bool]:
+    def _settle_hold(
+        receipt_id: str, *, capture: bool, publisher_share: PublisherShare | None = None,
+    ) -> tuple[bool, str | None, bool]:
         """Move one channel hold the decided way. (settled, ledger_note, moved_now).
 
         capture_hold/release_hold are one-shot, so a replay of a decided outcome finds the
         hold already resolved. That is success when an earlier attempt resolved it THE SAME
         WAY — and a ledger fault to surface when it went the other way (or vanished).
         """
-        res = vs.capture_hold(receipt_id) if capture else vs.release_hold(receipt_id)
+        if not capture:
+            res = vs.release_hold(receipt_id)
+        elif publisher_share is None:
+            res = vs.capture_hold(receipt_id)
+        else:
+            res = vs.capture_hold(receipt_id, publisher_share=publisher_share)
         if not res.get("error"):
             return capture, None, capture
         wanted = "captured" if capture else "released"

@@ -665,7 +665,7 @@ def register(
 
     @router.get("/federation/observed-sellers")
     async def observed_sellers_list():
-        """x402 sellers this hub lists from their own discovery document, with their consent.
+        """x402 sellers this hub observes with their consent.
 
         Public. Every probed route says what its last unpaid 402 named and whether it is
         served now. Nothing here is signed by a seller, and this hub is not in their payment
@@ -700,7 +700,8 @@ def register(
         origin; default every route the discovery document lists, up to the cap); ``pay_to``
         (the recipient the seller confirmed; default: pinned on first sight); ``name``.
         Re-posting with a new ``pay_to`` is how the operator re-confirms a changed recipient;
-        re-posting without one keeps the pin.
+        re-posting without one keeps the pin. For configured origins without discovery, pass
+        exact GET URLs (with any fixed query) in ``routes`` and a seller-confirmed Base ``pay_to``.
         """
         _require_admin(authorization)
         from aimarket_hub import observed_sellers as _observed
@@ -730,6 +731,9 @@ def register(
         if pay_to and (len(pay_to) > 128 or any(c.isspace() for c in pay_to)):
             raise HTTPException(status_code=400, detail="pay_to is not an address")
         existing = db.get_observed_seller(origin) or {}
+        confirmed_pay_to = pay_to or (existing.get("consent") or {}).get("confirmed_pay_to")
+        if confirmed_pay_to:
+            consent["confirmed_pay_to"] = confirmed_pay_to
         db.upsert_observed_seller(
             origin,
             consent=consent,

@@ -16,6 +16,7 @@ from aimarket_hub.access_policy import capability_access_mode, capability_is_pub
 from aimarket_hub.catalog import catalogue_display_name
 from aimarket_hub.config import HubConfig
 from aimarket_hub.database import HubDatabase
+from aimarket_hub.external_services import external_references, is_modelmarket_apex
 from aimarket_hub.fulfillment import capability_is_fulfillable
 from aimarket_hub.semantic_search import interpret_intent
 from aimarket_hub.signing import Signer
@@ -62,13 +63,20 @@ def register(
     signer: Signer,
     supply_security: SupplySecurity,
 ) -> SimpleNamespace:
-    """Attach /manifest, /prices and /search to ``router``."""
+    """Attach the catalogue routes to ``router``."""
     # api.py's module-level helpers; imported here because api.py imports this module.
     from aimarket_hub.api import (
         _catalogue_route,
         _catalogue_snapshot,
         _input_requirements,
     )
+    modelmarket_apex = is_modelmarket_apex(config.hub_url)
+
+    if modelmarket_apex:
+        @router.get("/external-services")
+        def external_services():
+            """Public references to services agents call and pay directly."""
+            return {"external": external_references(), "protocol_version": "v2"}
 
     # ── Manifest ────────────────────────────────────────────────
 
@@ -418,7 +426,7 @@ def register(
         total = len(filtered)
         window = filtered[offset:] if page <= 0 else filtered[offset:offset + page]
         interpretation = interpret_intent(intent)
-        return {
+        result = {
             "query": intent,
             "category": category_key or None,
             "matches": window,
@@ -442,6 +450,10 @@ def register(
             "total_hubs_searched": db.peer_count() + 1,
             "protocol_version": "v2",
         }
+        if modelmarket_apex:
+            # These editorial references never go into callable or observed offer results.
+            result["external"] = external_references(intent, budget=budget) if hub == "any" else []
+        return result
 
     return SimpleNamespace(
         search=search,

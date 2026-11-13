@@ -129,7 +129,8 @@ def test_a_plain_transfer_from_a_linked_wallet_is_credited_once(monkeypatch, tmp
         assert again.status_code == 409                                  # nor by hand
 
 
-def test_money_from_an_unknown_wallet_waits_and_is_credited_when_linked(monkeypatch, tmp_path, on):
+@pytest.mark.parametrize("canonical_receipt", [True, False])
+def test_money_from_an_unknown_wallet_waits_and_is_credited_when_linked(monkeypatch, tmp_path, on, canonical_receipt):
     with hub(monkeypatch, tmp_path) as (client, db):
         account, _ = funded_account(client, db, 0.0)
         on.transfer(tx(2), SENDER, 2_000_000)
@@ -138,10 +139,16 @@ def test_money_from_an_unknown_wallet_waits_and_is_credited_when_linked(monkeypa
         listed = client.get("/ai-market/v2/admin/deposits", headers=ADMIN).json()["unattributed"]
         assert [(d["tx_hash"], d["sender"], d["amount_units"]) for d in listed] == [(tx(2), SENDER, 2_000_000)]
         assert balance(db, account) == 0.0
+        if not canonical_receipt:
+            # An older observation has no token identity. Linking under a new token profile
+            # may still credit it for service, but cannot qualify it for publisher cash-out.
+            on.receipts[tx(2)]["logs"][0]["address"] = "0x" + "f2" * 20
         linked = client.post(f"/ai-market/v2/accounts/{account}/payer-wallets", json={"address": SENDER},
                              headers=ADMIN).json()
         assert linked["credited_now"] == 1
         assert balance(db, account) == pytest.approx(2.0)
+        backing = db._conn.execute("SELECT base_principal_mc FROM credit_accounts WHERE account_id = ?", (account,)).fetchone()
+        assert backing["base_principal_mc"] == (200_000 if canonical_receipt else 0)
         assert _well_known_watch(client)["unattributed_deposits"] == 0
 
 

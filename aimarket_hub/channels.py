@@ -116,6 +116,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from aimarket_hub.credits import CreditsLedger, PublisherShare
 from aimarket_hub.paging import page_limit
 from aimarket_hub.channel_ledger.storage import LedgerStorageMixin
 from aimarket_hub.channel_ledger.sweeps import LedgerSweepsMixin
@@ -366,6 +367,25 @@ def _verify_tx_onchain(
     if not tx:
         return {"ok": False, "error": "tx_hash is required for on-chain verification"}
 
+    from aimarket_hub import realm
+    from aimarket_hub.deposit_verify import token_address_for, verify_deposit
+    from aimarket_hub.x402 import ASSET_PROFILES
+
+    verify_args = dict(tx_hash=tx, amount_usd=amount_usd, chain=chain, token=token,
+                       recipient=_RECIPIENT, min_confirmations=_MIN_CONFIRMATIONS)
+    canonical_usdc = ASSET_PROFILES[("base", "USDC")]["address"]
+
+    def verify_cash_deposit():
+        if (chain.strip().lower() != "base" or token.strip().upper() != "USDC" or realm.is_uni()
+                or token_address_for(chain, token).lower() != canonical_usdc.lower()):
+            return None
+        try:
+            check = verify_deposit(**verify_args, expected_chain_id=8453, token_address=canonical_usdc)
+        except Exception:
+            logger.warning("Canonical Base USDC evidence unavailable for deposit %s", tx[:12])
+            return None
+        return check if check.ok and check.details.get("decimals") == 6 else None
+
     verify_tx_payment_details = _shared_on_chain("verify_tx_payment_details")
     if verify_tx_payment_details is None:
         # The canonical verifier lives in the web app, which a standalone hub image does
@@ -374,16 +394,10 @@ def _verify_tx_onchain(
         # verifies the deposit itself instead: same three questions (right recipient,
         # right token, right amount, enough confirmations) asked straight of the chain,
         # and it still returns the PAYER so the caller can bind the channel to it.
-        from aimarket_hub.deposit_verify import verify_deposit
-
-        check = verify_deposit(
-            tx_hash=tx,
-            amount_usd=amount_usd,
-            chain=chain,
-            token=token,
-            recipient=_RECIPIENT,
-            min_confirmations=_MIN_CONFIRMATIONS,
-        )
+        cash_check = verify_cash_deposit()
+        # Preserve the existing service-credit path for configured tokens and
+        # networks. Only the pinned verification can back a USDC withdrawal.
+        check = cash_check or verify_deposit(**verify_args)
         if not check.ok:
             return {"ok": False, "error": check.error}
         logger.info(
@@ -393,7 +407,8 @@ def _verify_tx_onchain(
         )
         return {"ok": True, "sender": check.sender, "paid_units": int(check.paid_units or 0),
                 "expected_units": int(check.expected_units or 0),
-                "decimals": int((check.details or {}).get("decimals") or 0)}
+                "decimals": int((check.details or {}).get("decimals") or 0),
+                "base_usdc_deposit": cash_check is not None}
 
     try:
         verified, sender = verify_tx_payment_details(
@@ -413,7 +428,12 @@ def _verify_tx_onchain(
             "error": "on-chain verification failed — transaction does not match "
             "expected recipient/amount/token or has insufficient confirmations",
         }
-    return {"ok": True, "sender": str(sender or "").strip()}
+    payer = str(sender or "").strip()
+    cash_check = verify_cash_deposit() if payer else None
+    result = {"ok": True, "sender": payer}
+    if cash_check and _wallet_matches(payer, cash_check.sender):
+        result["base_usdc_deposit"] = True
+    return result
 
 
 # ── Payer proof-of-control (PAYAUTH-003b) ────────────────────────
@@ -1163,11 +1183,20 @@ def hold_channel(
     )
 
 
-def capture_hold(receipt_id: str) -> dict[str, Any]:
+def capture_hold(receipt_id: str, *, publisher_share: PublisherShare | None = None) -> dict[str, Any]:
     """Capture a verified hold. NOT crypto-gated: an in-flight hold must resolve
     even if the operator flips the master switch off mid-settlement (mirrors
     refund_channel, which is likewise ungated)."""
-    return _ledger.capture_hold(receipt_id)
+    return _ledger.capture_hold(receipt_id, publisher_share=publisher_share)
+
+
+def reconcile_publisher_shares(credits_ledger: CreditsLedger, *, receipt_id: str = "") -> int:
+    """Attempt to credit a committed share now, or recover a page of pending shares."""
+    try:
+        return _ledger.reconcile_publisher_shares(credits_ledger, receipt_id=receipt_id)
+    except Exception:
+        logger.exception("Channel publisher-share reconciliation failed; obligations remain durable")
+        return 0
 
 
 def release_hold(receipt_id: str) -> dict[str, Any]:

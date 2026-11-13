@@ -13,6 +13,9 @@ a real Base USDC transfer in `test_deposit_verify_live.py`.
 
 from __future__ import annotations
 
+import pytest
+
+from aimarket_hub import channels, deposit_verify
 from aimarket_hub.deposit_verify import TRANSFER_TOPIC, DepositCheck, verify_deposit
 
 USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
@@ -53,6 +56,45 @@ def _check(**kwargs) -> DepositCheck:
                     recipient=HUB, min_confirmations=2, token_address=USDC)
     defaults.update(kwargs)
     return verify_deposit(**defaults)
+
+
+@pytest.mark.parametrize(("chain_id", "token", "rpc_url", "realm", "cash_backed"), [
+    (8453, USDC, "https://configured.test", "live", True),
+    (84532, USDC, "https://configured.test", "live", False),
+    (8453, "0x" + "22" * 20, "https://configured.test", "live", False),
+    (8453, USDC, "http://127.0.0.1:8545", "live", True),
+    (8453, USDC, "http://127.0.0.1:8545", "uni", False),
+])
+@pytest.mark.parametrize("shared_verifier", [False, True])
+def test_channel_deposit_cash_provenance_requires_canonical_chain_and_token(
+    monkeypatch, chain_id, token, rpc_url, realm, cash_backed, shared_verifier,
+):
+    monkeypatch.setenv("AIMARKET_CHAIN_REALM", realm)
+    monkeypatch.setenv("AIMARKET_TOKEN_USDC", token)
+    monkeypatch.setattr(channels, "_RECIPIENT", HUB)
+    def verified_by_web(**kwargs):
+        return True, PAYER
+
+    monkeypatch.setattr(channels, "_shared_on_chain", lambda name: verified_by_web if shared_verifier else None)
+    monkeypatch.setattr(deposit_verify, "rpc_urls_for", lambda chain: [rpc_url])
+    monkeypatch.setattr(deposit_verify, "_rpc_chain_id", lambda url: chain_id)
+    monkeypatch.setattr(deposit_verify, "_make_rpc", lambda urls, timeout: _rpc(_receipt(token=token)))
+    verified = channels._verify_tx_onchain(tx_hash=TX, amount_usd=5.0, chain="base", token="USDC")
+    assert verified["ok"] and verified.get("base_usdc_deposit", False) is cash_backed
+
+
+def test_bad_cash_proof_keeps_a_deposit_verified_by_the_shared_verifier(monkeypatch):
+    monkeypatch.setenv("AIMARKET_CHAIN_REALM", "live")
+    monkeypatch.setenv("AIMARKET_TOKEN_USDC", USDC)
+    monkeypatch.setattr(channels, "_shared_on_chain", lambda name: lambda **kwargs: (True, PAYER))
+
+    def malformed_rpc_proof(**kwargs):
+        assert kwargs["expected_chain_id"] == 8453
+        raise ValueError("bad receipt status")
+
+    monkeypatch.setattr(deposit_verify, "verify_deposit", malformed_rpc_proof)
+    verified = channels._verify_tx_onchain(tx_hash=TX, amount_usd=5.0, chain="base", token="USDC")
+    assert verified == {"ok": True, "sender": PAYER}
 
 
 class TestAccepts:

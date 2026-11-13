@@ -46,6 +46,7 @@ CHANNEL_LEDGER_TABLES: tuple[str, ...] = (
     "channel_holds",
     "channel_payout_obligations",
     "channel_payout_claims",
+    "channel_publisher_shares",
 )
 
 
@@ -1732,6 +1733,75 @@ _register(69, "069_topup_excess_resolved", """
     ALTER TABLE credit_topup_quotes ADD COLUMN excess_resolved TEXT NOT NULL DEFAULT '';
 """, """
     ALTER TABLE credit_topup_quotes DROP COLUMN excess_resolved;
+""")
+
+
+_register(70, "070_channel_publisher_shares", """
+    ALTER TABLE channels ADD COLUMN publisher_backed_cents BIGINT NOT NULL DEFAULT 0;
+    CREATE TABLE IF NOT EXISTS channel_publisher_shares (
+        receipt_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        amount_mc BIGINT NOT NULL CHECK (amount_mc > 0),
+        payout_receipt_id TEXT NOT NULL,
+        note TEXT NOT NULL,
+        cash_backed INTEGER NOT NULL DEFAULT 0 CHECK (cash_backed IN (0, 1)),
+        credited_at TEXT NOT NULL DEFAULT '',
+        next_attempt_at REAL NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_channel_publisher_shares_pending
+        ON channel_publisher_shares (next_attempt_at, receipt_id) WHERE credited_at = '';
+""", """
+    DROP TABLE IF EXISTS channel_publisher_shares;
+    ALTER TABLE channels DROP COLUMN publisher_backed_cents;
+""")
+
+
+_register(71, "071_publisher_withdrawals", """
+    ALTER TABLE credit_accounts ADD COLUMN base_principal_mc BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE credit_accounts ADD COLUMN publisher_cash_mc BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE credit_accounts ADD COLUMN base_principal_collateral_mc BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE credit_accounts ADD COLUMN publisher_cash_collateral_mc BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE credit_accounts ADD COLUMN publisher_payout_wallet TEXT NOT NULL DEFAULT '';
+
+    CREATE TABLE IF NOT EXISTS publisher_withdrawals (
+        withdrawal_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        amount_mc BIGINT NOT NULL CHECK (amount_mc > 0),
+        recipient TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('requested', 'signed', 'broadcast', 'paid', 'reverted', 'cancelled')),
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        nonce BIGINT,
+        tx_hash TEXT UNIQUE,
+        raw_tx TEXT NOT NULL DEFAULT '',
+        UNIQUE (account_id, request_id),
+        UNIQUE (sender, nonce)
+    );
+    CREATE INDEX IF NOT EXISTS idx_publisher_withdrawals_account
+        ON publisher_withdrawals (account_id, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_publisher_withdrawals_sender_inflight
+        ON publisher_withdrawals (sender) WHERE status IN ('signed', 'broadcast');
+    CREATE TABLE IF NOT EXISTS publisher_withdrawal_signers (
+        sender TEXT PRIMARY KEY,
+        version BIGINT NOT NULL DEFAULT 0
+    );
+""", """
+    DROP TABLE IF EXISTS publisher_withdrawal_signers;
+    DROP TABLE IF EXISTS publisher_withdrawals;
+    ALTER TABLE credit_accounts DROP COLUMN publisher_payout_wallet;
+    ALTER TABLE credit_accounts DROP COLUMN publisher_cash_collateral_mc;
+    ALTER TABLE credit_accounts DROP COLUMN base_principal_collateral_mc;
+    ALTER TABLE credit_accounts DROP COLUMN publisher_cash_mc;
+    ALTER TABLE credit_accounts DROP COLUMN base_principal_mc;
+""")
+
+
+_register(72, "072_channel_base_usdc_deposit", """
+    ALTER TABLE channels ADD COLUMN base_usdc_deposit INTEGER NOT NULL DEFAULT 0;
+""", """
+    ALTER TABLE channels DROP COLUMN base_usdc_deposit;
 """)
 
 

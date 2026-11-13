@@ -333,6 +333,95 @@ def test_no_discovery_document_lists_nothing():
     assert seen["routes"] == [] and seen["last_error"]
 
 
+FIXED_GET = f"{SELLER}/x?id=1,1027"
+
+
+def _explicit_get_402(*, pay_to=PAY_TO, resource=f"{SELLER}/x"):
+    reply = _v2_402(amount="10000", pay_to=pay_to)
+    doc = json.loads(base64.b64decode(reply["headers"]["payment-required"]))
+    doc["resource"]["url"] = resource
+    base = doc["accepts"][0]
+    base["extra"] = {"name": "USD Coin", "version": "2", "assetTransferMethod": "eip3009"}
+    doc["accepts"] = [
+        {**base, "network": "eip155:56", "asset": "0x" + "a0" * 20},
+        {**base, "amount": "100", "extra": {**base["extra"], "assetTransferMethod": "permit2-exact"}},
+        base,
+    ]
+    reply["headers"]["payment-required"] = base64.b64encode(json.dumps(doc).encode()).decode()
+    return reply
+
+
+def _explicit_seller(**updates):
+    return {"origin": SELLER, "allowed_routes": [FIXED_GET],
+            "consent": {**CONSENT, "confirmed_pay_to": PAY_TO},
+            "pinned_pay_to": PAY_TO, **updates}
+
+
+def test_explicit_get_without_discovery_uses_fixed_query_and_chooses_base_exact(monkeypatch):
+    monkeypatch.setenv("AIMARKET_OBSERVED_EXPLICIT_GET_ORIGINS", SELLER)
+    seller = FakeSeller(None, {FIXED_GET: _explicit_get_402()}, head={"status": 200})
+    record = _explicit_seller()
+    now = 1_800_000_000
+    seen = run(obs.observe_seller(record, request=seller, now=now))
+    assert [c["method"] for c in seller.calls] == ["GET", "GET", "HEAD", "GET"]
+    assert seller.calls[-1]["url"] == FIXED_GET and seller.calls[-1]["json"] is None
+    assert all(not {k.lower() for k in c["headers"]} & {"payment-signature", "x-payment", "authorization"}
+               for c in seller.calls)
+    route, = obs.served_routes([{**record, **seen}], now=now)
+    assert route["url"] == FIXED_GET and route["method"] == "GET"
+    assert route["source"] == obs.EXPLICIT_GET_SOURCE
+    assert route["network"] == "eip155:8453" and route["amount_atomic"] == "10000"
+    assert route["price_usd"] == pytest.approx(0.01)
+    monkeypatch.delenv("AIMARKET_OBSERVED_EXPLICIT_GET_ORIGINS")
+    assert obs.served_routes([{**record, **seen}], now=now) == []
+
+
+@pytest.mark.parametrize("condition", ["no_opt_in", "no_routes", "foreign_route", "fragment",
+                                      "no_consent", "tofu_pin", "stale_pin", "discovery_error"])
+def test_explicit_get_does_not_probe_without_all_authority(monkeypatch, condition):
+    monkeypatch.setenv("AIMARKET_OBSERVED_EXPLICIT_GET_ORIGINS", SELLER)
+    seller = FakeSeller(None, {})
+    record = _explicit_seller()
+    if condition == "no_opt_in":
+        monkeypatch.setenv("AIMARKET_OBSERVED_EXPLICIT_GET_ORIGINS", FIXED_GET)
+    elif condition == "no_routes":
+        record["allowed_routes"] = []
+    elif condition == "foreign_route":
+        record["allowed_routes"] = ["https://foreign.example/x"]
+    elif condition == "fragment":
+        record["allowed_routes"] = [FIXED_GET + "#not-sent"]
+    elif condition == "no_consent":
+        record["consent"] = {"confirmed_pay_to": PAY_TO}
+    elif condition == "tofu_pin":
+        record["consent"] = CONSENT
+    elif condition == "stale_pin":
+        record["pinned_pay_to"] = OTHER_PAY_TO
+
+    async def request(method, url, headers, max_bytes, json_body):
+        result = await seller(method, url, headers, max_bytes, json_body)
+        if condition == "discovery_error" and url.endswith("/.well-known/x402"):
+            return {"status": 503}
+        return result
+
+    seen = run(obs.observe_seller(record, request=request))
+    assert seen["routes"] == []
+    assert [c["url"] for c in seller.calls] == [SELLER + path for path in obs.DISCOVERY_PATHS]
+
+
+@pytest.mark.parametrize("quote", [
+    _explicit_get_402(pay_to=OTHER_PAY_TO),
+    _explicit_get_402(resource=f"{SELLER}/another"),
+    _explicit_get_402(resource=f"{SELLER}/x?id=999"),
+])
+def test_explicit_get_does_not_list_incompatible_or_retargeted_quote(monkeypatch, quote):
+    monkeypatch.setenv("AIMARKET_OBSERVED_EXPLICIT_GET_ORIGINS", SELLER)
+    seller = FakeSeller(None, {FIXED_GET: quote})
+    seen = run(obs.observe_seller(_explicit_seller(), request=seller))
+    route, = seen["routes"]
+    assert route["result"] == "no_offer" and not route["listed"]
+    assert seen["pinned_pay_to"] == PAY_TO
+
+
 def test_a_stale_observation_is_not_served():
     seller = FakeSeller(SWARM_SHAPE, {})
     seen = run(obs.observe_seller({"origin": SELLER}, request=seller, now=1_800_000_000))
@@ -501,6 +590,26 @@ def test_reposting_without_pay_to_keeps_the_pin(monkeypatch, tmp_path):
         r = _add(client, pay_to=OTHER_PAY_TO)
         assert r.json()["seller"]["pinned_pay_to"] == OTHER_PAY_TO
         assert r.json()["seller"]["routes_served"] == 2
+
+
+def test_explicit_get_registration_requires_operator_supplied_pin(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIMARKET_OBSERVED_EXPLICIT_GET_ORIGINS", SELLER)
+    seller = FakeSeller(None, {FIXED_GET: _explicit_get_402()}, head={"status": 200})
+    with _hub(monkeypatch, tmp_path, seller) as client:
+        initial = _add(client, routes=[FIXED_GET], consent={**CONSENT, "confirmed_pay_to": PAY_TO})
+        assert initial.status_code == 200 and initial.json()["seller"]["routes_served"] == 0
+        assert FIXED_GET not in [call["url"] for call in seller.calls]
+
+        confirmed = _add(client, routes=[FIXED_GET], pay_to=PAY_TO)
+        assert confirmed.status_code == 200 and confirmed.json()["seller"]["routes_served"] == 1
+        route, = confirmed.json()["seller"]["routes"]
+        assert route["url"] == FIXED_GET and route["source"] == obs.EXPLICIT_GET_SOURCE
+        assert "confirmed_pay_to" not in confirmed.json()["seller"]["consent"]
+
+        reposted = _add(client, routes=[FIXED_GET])
+        assert reposted.status_code == 200 and reposted.json()["seller"]["routes_served"] == 1
+        monkeypatch.delenv("AIMARKET_OBSERVED_EXPLICIT_GET_ORIGINS")
+        assert client.get("/ai-market/v2/federation/observed-sellers").json()["sellers"][0]["routes_served"] == 0
 
 
 def test_an_agent_on_mcp_is_told_to_call_the_seller_itself(monkeypatch, tmp_path):

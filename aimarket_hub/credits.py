@@ -60,6 +60,14 @@ KEY_PREFIX = "aimk_"
 _KEY_BYTES = 24  # 192 bits — a guessable API key is a free invoke
 
 
+def is_base_usdc(chain_id: int | None, token: str, decimals: int) -> bool:
+    """Check the profile of a deposit that its caller already verified on-chain."""
+    from aimarket_hub import realm, x402
+
+    address = x402.ASSET_PROFILES[("base", "USDC")]["address"]
+    return not realm.is_uni() and chain_id == 8453 and decimals == 6 and token.lower() == address.lower()
+
+
 def enabled() -> bool:
     """Is the credits rail switched on?
 
@@ -350,7 +358,8 @@ class CreditsLedger:
         except _UnknownAccount:
             return {"error": f"unknown or disabled account {account_id}"}
 
-    def deposit(self, account_id: str, amount_mc: int, *, reference: str, note: str = "") -> dict[str, Any]:
+    def deposit(self, account_id: str, amount_mc: int, *, reference: str, note: str = "",
+                base_usdc: bool = False) -> dict[str, Any]:
         """Credit money the buyer PAID (a USDC top-up), once per ``reference``.
 
         Not :meth:`grant`: a grant is credit given away and counts toward ``granted_mc``,
@@ -395,9 +404,10 @@ class CreditsLedger:
                     (reference, account_id, amount_mc, (note or "")[:200]),
                 )
                 cur = self._conn.execute(
-                    "UPDATE credit_accounts SET balance_mc = balance_mc + ?, topped_up_mc = topped_up_mc + ? "
+                    "UPDATE credit_accounts SET balance_mc = balance_mc + ?, topped_up_mc = topped_up_mc + ?, "
+                    "base_principal_mc = base_principal_mc + ? "
                     "WHERE account_id = ?",
-                    (amount_mc, amount_mc, account_id),
+                    (amount_mc, amount_mc, amount_mc if base_usdc else 0, account_id),
                 )
                 if not _changed(cur):
                     raise _Unknown(account_id)
@@ -554,6 +564,7 @@ class CreditsLedger:
                 "balance_mc = balance_mc + ? WHERE account_id = ?",
                 (captured_mc + back_to_balance, captured_mc, back_to_balance, account_id),
             )
+            backed_mc = self._consume_base_backing(account_id, captured_mc)
             self._log(account_id, "capture", captured_mc, receipt_id=receipt_id)
             if rest_mc:
                 self._log(account_id, "release", rest_mc, receipt_id=receipt_id,
@@ -561,7 +572,9 @@ class CreditsLedger:
                                 else "uncharged part of the hold")[:200])
             amount_mc = captured_mc
             if publisher_share is not None:
-                result = self._pay_publisher(*publisher_share)
+                share_mc = usd_to_mc(publisher_share.amount_usd)
+                cash_mc = min(share_mc, backed_mc, share_mc * backed_mc // captured_mc) if captured_mc else 0
+                result = self._pay_publisher(*publisher_share, cash_mc=cash_mc)
                 if result.get("error"):
                     raise RuntimeError(f"could not settle publisher share: {result['error']}")
             return {"captured_usd": mc_to_usd(amount_mc), "remaining_balance": self.balance(account_id)}
@@ -709,6 +722,7 @@ class CreditsLedger:
                     f"insufficient credit: {mc_to_usd(amount_mc)} needed, "
                     f"{self.balance(account_id)} available"
                 )}
+            self._consume_base_backing(account_id, amount_mc, collateral=as_collateral)
             self._log(
                 account_id, "collateral" if as_collateral else "debit", amount_mc,
                 receipt_id=receipt_id, note=note,
@@ -721,11 +735,25 @@ class CreditsLedger:
         if amount_mc <= 0:
             return {"error": "amount must be positive"}
         with atomic(self._conn):
+            # Lock the balance before reading the backed portion of posted collateral.
+            locked = self._conn.execute("UPDATE credit_accounts SET balance_mc = balance_mc WHERE account_id = ?",
+                                        (account_id,))
+            if not _changed(locked):
+                return {"error": f"unknown account {account_id}"}
+            backed = self._conn.execute(
+                "SELECT base_principal_collateral_mc, publisher_cash_collateral_mc "
+                "FROM credit_accounts WHERE account_id = ?", (account_id,),
+            ).fetchone()
+            principal = min(amount_mc, int(backed["base_principal_collateral_mc"]))
+            cash = min(amount_mc - principal, int(backed["publisher_cash_collateral_mc"]))
             cur = self._conn.execute(
                 "UPDATE credit_accounts SET balance_mc = balance_mc + ?, "
-                "collateral_mc = CASE WHEN collateral_mc >= ? THEN collateral_mc - ? ELSE 0 END "
+                "collateral_mc = CASE WHEN collateral_mc >= ? THEN collateral_mc - ? ELSE 0 END, "
+                "base_principal_collateral_mc = base_principal_collateral_mc - ?, "
+                "publisher_cash_collateral_mc = publisher_cash_collateral_mc - ?, "
+                "base_principal_mc = base_principal_mc + ?, publisher_cash_mc = publisher_cash_mc + ? "
                 "WHERE account_id = ?",
-                (amount_mc, amount_mc, amount_mc, account_id),
+                (amount_mc, amount_mc, amount_mc, principal, cash, principal, cash, account_id),
             )
             if not _changed(cur):
                 return {"error": f"unknown account {account_id}"}
@@ -751,7 +779,7 @@ class CreditsLedger:
             return {"refunded_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
 
     def pay_publisher(self, account_id: str, amount_usd: float, *,
-                      receipt_id: str = "", note: str = "") -> dict[str, Any]:
+                      receipt_id: str = "", note: str = "", cash_backed: bool = False) -> dict[str, Any]:
         """Credit a seller their share of a call a buyer just paid for.
 
         This is the seller-earnings route the hub never had. Its absence is why the
@@ -766,9 +794,11 @@ class CreditsLedger:
         the operator earned. `stats` reports both sides.
         """
         with atomic(self._conn):
-            return self._pay_publisher(account_id, amount_usd, receipt_id, note)
+            cash_mc = usd_to_mc(amount_usd) if cash_backed and receipt_id else 0
+            return self._pay_publisher(account_id, amount_usd, receipt_id, note, cash_mc=cash_mc)
 
-    def _pay_publisher(self, account_id: str, amount_usd: float, receipt_id: str, note: str) -> dict[str, Any]:
+    def _pay_publisher(self, account_id: str, amount_usd: float, receipt_id: str, note: str,
+                       *, cash_mc: int = 0) -> dict[str, Any]:
         amount_mc = usd_to_mc(amount_usd)
         if amount_mc <= 0:
             return {"error": "payout amount must be positive"}
@@ -780,17 +810,42 @@ class CreditsLedger:
         )
         if not _changed(locked):
             return {"error": f"unknown account {account_id}"}
-        if receipt_id and self._conn.execute(
-            "SELECT 1 FROM credit_ledger WHERE account_id = ? AND kind = 'payout' AND receipt_id = ? LIMIT 1",
-            (account_id, receipt_id),
-        ).fetchone():
-            return {"paid_usd": 0.0, "already": True, "balance_usd": self.balance(account_id)}
+        if receipt_id:
+            previous = self._conn.execute(
+                "SELECT amount_mc FROM credit_ledger WHERE account_id = ? AND kind = 'payout' AND receipt_id = ? "
+                "ORDER BY id LIMIT 1", (account_id, receipt_id),
+            ).fetchone()
+            if previous is not None:
+                if int(previous["amount_mc"]) != amount_mc:
+                    return {"error": "publisher payout receipt already used with a different amount"}
+                return {"paid_usd": 0.0, "already": True, "balance_usd": self.balance(account_id)}
         self._conn.execute(
-            "UPDATE credit_accounts SET balance_mc = balance_mc + ? WHERE account_id = ?",
-            (amount_mc, account_id),
+            "UPDATE credit_accounts SET balance_mc = balance_mc + ?, publisher_cash_mc = publisher_cash_mc + ? "
+            "WHERE account_id = ?", (amount_mc, cash_mc, account_id),
         )
         self._log(account_id, "payout", amount_mc, receipt_id=receipt_id, note=note)
+        if cash_mc:
+            self._log(account_id, "publisher_cash_accrual", cash_mc, receipt_id=receipt_id)
         return {"paid_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
+
+    def _consume_base_backing(self, account_id: str, amount_mc: int, *, collateral: bool = False) -> int:
+        """Consume verified principal first, then seller proceeds. Caller owns the account row lock."""
+        if not amount_mc:
+            return 0
+        row = self._conn.execute(
+            "SELECT base_principal_mc, publisher_cash_mc FROM credit_accounts WHERE account_id = ?", (account_id,),
+        ).fetchone()
+        principal = min(amount_mc, int(row["base_principal_mc"]))
+        cash = min(amount_mc - principal, int(row["publisher_cash_mc"]))
+        if principal or cash:
+            self._conn.execute(
+                "UPDATE credit_accounts SET base_principal_mc = base_principal_mc - ?, "
+                "publisher_cash_mc = publisher_cash_mc - ?, "
+                "base_principal_collateral_mc = base_principal_collateral_mc + ?, "
+                "publisher_cash_collateral_mc = publisher_cash_collateral_mc + ? WHERE account_id = ?",
+                (principal, cash, principal if collateral else 0, cash if collateral else 0, account_id),
+            )
+        return principal + cash
 
     def payouts_total_usd(self) -> float:
         row = self._conn.execute(
@@ -822,11 +877,14 @@ class CreditsLedger:
             "COALESCE(SUM(held_mc), 0) AS held, COALESCE(SUM(spent_mc), 0) AS spent, "
             "COALESCE(SUM(granted_mc), 0) AS granted, "
             "COALESCE(SUM(topped_up_mc), 0) AS topped_up, "
-            "COALESCE(SUM(collateral_mc), 0) AS collateral FROM credit_accounts",
+            "COALESCE(SUM(collateral_mc), 0) AS collateral, "
+            "(SELECT COALESCE(SUM(amount_mc), 0) FROM publisher_withdrawals "
+            "WHERE status IN ('requested', 'signed', 'broadcast')) AS pending_withdrawals FROM credit_accounts",
         ).fetchone()
         if not row:
             return {"accounts": 0, "credits_earned_usd": 0.0, "outstanding_credit_usd": 0.0,
                     "held_usd": 0.0, "granted_usd": 0.0, "topped_up_usd": 0.0, "collateral_usd": 0.0}
+        pending_mc = int(row["pending_withdrawals"])
         return {
             "accounts": int(row["n"] or 0),
             # What the hub has actually earned on this rail — the only number that answers
@@ -835,8 +893,9 @@ class CreditsLedger:
             # Everything the operator is holding for somebody else: unspent balances,
             # in-flight reservations, and posted stake.
             "outstanding_credit_usd": mc_to_usd(
-                int(row["bal"] or 0) + int(row["held"] or 0) + int(row["collateral"] or 0)
+                int(row["bal"] or 0) + int(row["held"] or 0) + int(row["collateral"] or 0) + pending_mc
             ),
+            "publisher_withdrawal_pending_usd": mc_to_usd(pending_mc),
             "held_usd": mc_to_usd(row["held"]),
             "collateral_usd": mc_to_usd(row["collateral"]),
             "granted_usd": mc_to_usd(row["granted"]),

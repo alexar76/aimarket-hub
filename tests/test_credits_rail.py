@@ -117,6 +117,7 @@ def test_capture_and_publisher_share_commit_together(ledger, monkeypatch):
     assert ledger.capture_hold("sale", publisher_share=share)["captured_usd"] == 0.01
     assert ledger.capture_hold("sale", publisher_share=share)["already"] == "captured"
     assert ledger.pay_publisher(seller, 0.005, receipt_id="sale")["already"] is True
+    assert "different amount" in ledger.pay_publisher(seller, 0.006, receipt_id="sale")["error"]
     assert ledger.earnings(seller) == ledger.balance(seller) == 0.005
 
 

@@ -40,6 +40,7 @@ What keeps it safe:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -52,6 +53,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 logger = logging.getLogger("aimarket_hub.x402_bridge")
 
@@ -61,6 +63,8 @@ CHAIN_ID = 8453
 USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 USDC_DECIMALS = 6
 USDC_DOMAIN = {"name": "USD Coin", "version": "2"}
+_CMC_FIXED_GET = "https://pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest?id=1,1027"
+_TX_HASH = re.compile(r"0x[0-9a-fA-F]{64}")
 _ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
 _KEY = re.compile(r"(0x)?[0-9a-fA-F]{64}")
 # Statuses after which money may have left the wallet; all of them count against the caps.
@@ -271,7 +275,8 @@ def _payees(expected: str | Iterable[str] | None) -> frozenset[str]:
 
 
 def choose_offer(body: Any, headers: dict[str, Any] | None, *, limit_usd: float,
-                 expected_pay_to: str | Iterable[str] | None) -> Offer:
+                 expected_pay_to: str | Iterable[str] | None,
+                 explicit_get_url: str | None = None) -> Offer:
     """The cheapest offer of a 402 the bridge may pay, or BridgeRefused saying why none qualifies.
 
     ``expected_pay_to`` is required: the addresses the seller published before this 402 (its
@@ -285,6 +290,12 @@ def choose_offer(body: Any, headers: dict[str, Any] | None, *, limit_usd: float,
     version, accepts, resource = _accepts_of(body, headers)
     if not accepts:
         raise BridgeRefused("the seller's 402 carries no payment offer")
+    get_resources = set()
+    if explicit_get_url:
+        # Some sellers (including CMC) bind their challenge to the endpoint, without
+        # its query. The actual URL, including the query, stays fixed by operator consent.
+        endpoint = urlsplit(explicit_get_url)._replace(query="", fragment="").geturl()
+        get_resources = {explicit_get_url, endpoint}
     reasons: list[str] = []
     best: Offer | None = None
     for accept in accepts:
@@ -310,6 +321,16 @@ def choose_offer(body: Any, headers: dict[str, Any] | None, *, limit_usd: float,
         if pay_to.lower() not in allowed:
             reasons.append("a recipient other than the ones this seller published")
             continue
+        extra = accept.get("extra") if isinstance(accept.get("extra"), dict) else {}
+        if explicit_get_url:
+            route = accept.get("resource") if version == 1 else (resource or {})
+            if isinstance(route, dict):
+                route = route.get("url")
+            if (version not in (1, 2) or not isinstance(route, str) or route not in get_resources
+                    or extra.get("name") != USDC_DOMAIN["name"] or str(extra.get("version")) != USDC_DOMAIN["version"]
+                    or extra.get("assetTransferMethod", "eip3009") != "eip3009"):
+                reasons.append("the fixed GET route needs a resource-bound Base EIP-3009 challenge")
+                continue
         amount = int(terms["amount_atomic"])
         try:
             timeout = int(accept.get("maxTimeoutSeconds") or 300)
@@ -317,7 +338,7 @@ def choose_offer(body: Any, headers: dict[str, Any] | None, *, limit_usd: float,
             timeout = 300
         offer = Offer(x402_version=version, accept=dict(accept), resource=resource, pay_to=pay_to,
                       amount_atomic=amount, max_timeout_s=max(1, timeout),
-                      extra=accept.get("extra") if isinstance(accept.get("extra"), dict) else {})
+                      extra=extra)
         if offer.amount_usd > limit_usd + 1e-9:
             reasons.append(f"a price of ${offer.amount_usd:.6f}, above the ${limit_usd:.6f} quoted to the buyer")
             continue
@@ -402,7 +423,85 @@ def settlement(headers: dict[str, Any] | None) -> dict[str, Any]:
 
 def _tx_of(settled: dict[str, Any]) -> str:
     tx = str(settled.get("transaction") or settled.get("txHash") or settled.get("tx_hash") or "")
-    return tx if re.fullmatch(r"0x[0-9a-fA-F]{64}", tx) else ""
+    return tx if _TX_HASH.fullmatch(tx) else ""
+
+
+def _cmc_network_id_matches(value: Any) -> bool:
+    """Reject a conflicting chain ID when CMC supplies one in a recognizable form."""
+    if type(value) is int:
+        return value == CHAIN_ID
+    if not isinstance(value, str) or not value.strip():
+        return False
+    tag = value.strip().lower()
+    if re.fullmatch(r"[0-9]+", tag):
+        return tag.lstrip("0") == str(CHAIN_ID)
+    if re.fullmatch(r"0x[0-9a-f]+", tag):
+        return tag[2:].lstrip("0") == format(CHAIN_ID, "x")
+    if tag.startswith("eip155:"):
+        return tag == NETWORK
+    return tag not in {"base-sepolia", "ethereum", "optimism", "arbitrum", "polygon", "solana"}
+
+
+def _cmc_settlement_tx(settled: dict[str, Any], *, wallet: str, offer: Offer) -> str:
+    tx = settled.get("txHash")
+    if (settled.get("success") is not True
+            or not isinstance(tx, str) or not _TX_HASH.fullmatch(tx)
+            or ("network" in settled and str(settled["network"]) not in _NETWORK_ALIASES)
+            or ("networkId" in settled and not _cmc_network_id_matches(settled["networkId"]))
+            or ("payer" in settled and str(settled["payer"]).lower() != wallet.lower())
+            or ("amount" in settled and str(settled["amount"]) != str(offer.amount_atomic))
+            or any(alias in settled and str(settled[alias]).lower() != tx.lower()
+                   for alias in ("transaction", "tx_hash"))):
+        return ""
+    return tx.lower()
+
+
+def _cmc_paid_on_base(tx: str, *, wallet: str, nonce: str, offer: Offer, rpc: Any = None) -> bool:
+    from aimarket_hub import chain_net, settle
+
+    payer_topic = "0x" + wallet[2:].lower().zfill(64)
+    payee_topic = "0x" + offer.pay_to[2:].lower().zfill(64)
+    authorization = [settle.AUTHORIZATION_USED_TOPIC, payer_topic, nonce.lower()]
+    transfer = [settle.TRANSFER_TOPIC, payer_topic, payee_topic]
+    amount = f"0x{offer.amount_atomic:064x}"
+
+    def verify(call: Any) -> bool:
+        if int(call("eth_chainId", []), 16) != CHAIN_ID:
+            raise ValueError("settlement RPC differs from Base mainnet")
+        receipt = call("eth_getTransactionReceipt", [tx])
+        if not receipt or receipt["transactionHash"].lower() != tx or int(receipt["status"], 16) != 1:
+            return False
+        height = int(receipt["blockNumber"], 16)
+        block_hash = receipt["blockHash"].lower()
+        if height <= 0 or not _TX_HASH.fullmatch(block_hash):
+            return False
+        block = call("eth_getBlockByNumber", [hex(height), False])
+        if not block or int(block["number"], 16) != height or block["hash"].lower() != block_hash:
+            return False
+
+        def matches(log: dict[str, Any], topics: list[str], data: str) -> bool:
+            return (log["address"].lower() == USDC.lower()
+                    and log.get("removed", False) is False
+                    and log["transactionHash"].lower() == tx
+                    and log["blockHash"].lower() == block_hash
+                    and int(log["blockNumber"], 16) == height
+                    and [topic.lower() for topic in log["topics"]] == topics
+                    and log["data"].lower() == data)
+
+        logs = receipt["logs"]
+        bound = [index for index, log in enumerate(logs) if matches(log, authorization, "0x")]
+        if len(bound) != 1 or bound[0] == len(logs) - 1:
+            return False
+        used, moved = logs[bound[0]:bound[0] + 2]
+        return (matches(moved, transfer, amount)
+                and int(moved["logIndex"], 16) == int(used["logIndex"], 16) + 1)
+
+    if rpc is not None:
+        return verify(rpc)
+    # Read the chain ID, receipt and canonical block from the same node.
+    timeout = 3.0
+    pool = chain_net.pool_for_urls(settle.rpc_urls(CHAIN_ID), chain_id=CHAIN_ID, timeout=timeout)
+    return pool.run(lambda url: verify(lambda method, params: settle._rpc(url, method, params, timeout)))
 
 
 # ── balance ──────────────────────────────────────────────────────────────────
@@ -588,7 +687,7 @@ class BridgeLedger:
         return resolved
 
     def reserve(self, *, offer: Offer, buyer_account: str, receipt_id: str, seller: str, route: str,
-                balance_usd: float, now: float) -> str:
+                balance_usd: float, now: float, prevent_unresolved: bool = False) -> str:
         """Check every cap and write the ``reserved`` row in one transaction; returns its id."""
         from aimarket_hub.db_backend import atomic
 
@@ -598,6 +697,13 @@ class BridgeLedger:
             # PostgreSQL (row lock) as they already do on SQLite (the backend's lock), and the sums below
             # include every reservation that committed before this one.
             self._conn.execute("UPDATE x402_bridge_state SET version = version + 1 WHERE id = 1")
+            if prevent_unresolved and self._conn.execute(
+                "SELECT 1 FROM x402_bridge_payments WHERE buyer_account = ? AND route = ? "
+                "AND status IN ('reserved', 'signed', 'unknown', 'refused') LIMIT 1",
+                (buyer_account, route[:500]),
+            ).fetchone():
+                raise BridgeRefused("a previous payment for this fixed GET is still unresolved",
+                                    code="bridge_pending")
             if amount > max_call_usd() + 1e-9:
                 raise BridgeRefused(f"${amount:.6f} is above the bridge's per-call cap of ${max_call_usd():.2f}",
                                     code="bridge_cap")
@@ -695,7 +801,8 @@ class Payment:
 
 async def pay_and_resend(*, ledger: BridgeLedger, first: Any, resend: Any, limit_usd: float,
                          expected_pay_to: str | Iterable[str] | None, buyer_account: str, receipt_id: str, seller: str,
-                         route: str, rpc: Any = None, now: float | None = None) -> tuple[Any, Payment]:
+                         route: str, rpc: Any = None, now: float | None = None,
+                         explicit_get: bool = False) -> tuple[Any, Payment]:
     """Pay the 402 in ``first`` and send the call again.
 
     ``resend(extra_headers) -> response`` repeats the original request with the payment header added.
@@ -707,7 +814,8 @@ async def pay_and_resend(*, ledger: BridgeLedger, first: Any, resend: Any, limit
     except ValueError:
         body = {}
     headers = dict(getattr(first, "headers", {}) or {})
-    offer = choose_offer(body, headers, limit_usd=limit_usd, expected_pay_to=expected_pay_to)
+    offer = choose_offer(body, headers, limit_usd=limit_usd, expected_pay_to=expected_pay_to,
+                         explicit_get_url=route if explicit_get else None)
     stamp = time.time() if now is None else now
     wallet = address()
     try:
@@ -723,7 +831,7 @@ async def pay_and_resend(*, ledger: BridgeLedger, first: Any, resend: Any, limit
     except Exception as exc:  # noqa: BLE001
         logger.warning("x402 bridge: reconciliation before a purchase failed: %s", exc)
     payment_id = ledger.reserve(offer=offer, buyer_account=buyer_account, receipt_id=receipt_id, seller=seller,
-                                route=route, balance_usd=balance, now=stamp)
+                                route=route, balance_usd=balance, now=stamp, prevent_unresolved=explicit_get)
     try:
         header, value, auth = sign_payment(offer, now=int(stamp))
     except Exception as exc:
@@ -746,7 +854,25 @@ async def pay_and_resend(*, ledger: BridgeLedger, first: Any, resend: Any, limit
         _balance_cache.pop(wallet, None)
         raise
     settled = settlement(dict(getattr(resp, "headers", {}) or {}))
-    payment.tx_hash = _tx_of(settled)
+    if explicit_get and route == _CMC_FIXED_GET and any(
+        alias in settled for alias in ("txHash", "networkId", "x402FlowId")
+    ):
+        tx = _cmc_settlement_tx(settled, wallet=wallet, offer=offer)
+        if resp.status_code == 200 and tx:
+            try:
+                if await asyncio.wait_for(asyncio.to_thread(
+                    _cmc_paid_on_base, tx, wallet=wallet, nonce=payment.nonce, offer=offer, rpc=rpc,
+                ), timeout=10):
+                    payment.tx_hash = tx
+            except Exception as exc:
+                logger.warning("x402 bridge: CMC receipt check unavailable: %s", type(exc).__name__)
+    elif not explicit_get or (
+        settled.get("success") is True
+        and str(settled.get("network")) in _NETWORK_ALIASES
+        and ("payer" not in settled or str(settled["payer"]).lower() == wallet.lower())
+        and ("amount" not in settled or str(settled["amount"]) == str(offer.amount_atomic))
+    ):
+        payment.tx_hash = _tx_of(settled)
     _balance_cache.pop(wallet, None)
     return resp, payment
 

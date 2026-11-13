@@ -430,7 +430,8 @@ def _local_settle(d: SimpleNamespace, call: _Call, local: _Local) -> None:
             capture = (credits_ledger.capture_hold(nonce, publisher_share=share)
                        if share is not None else credits_ledger.capture_hold(nonce))
         else:
-            capture = invoke.capture_hold(nonce)
+            capture = (invoke.capture_hold(nonce, publisher_share=share)
+                       if share is not None else invoke.capture_hold(nonce))
         if capture.get("error") or capture.get("already") not in (None, "captured"):
             # The ledger refused to convert OUR OWN reservation into a debit
             # (it existed a moment ago). Something is wrong with the ledger
@@ -450,7 +451,7 @@ def _local_settle(d: SimpleNamespace, call: _Call, local: _Local) -> None:
         # The reservation is now a recorded debit — nothing left to release.
         local.resolved = True
         if share is not None and not credit_hold:
-            d._pay_publisher_share(share)
+            d._pay_publisher_share(nonce)
 
 
 def _local_sign_receipt(d: SimpleNamespace, call: _Call, local: _Local) -> None:

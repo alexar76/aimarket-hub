@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from aimarket_hub import verified_settlement as vs_mod
+from aimarket_hub import channels, credits, verified_settlement as vs_mod
 from tests.test_verified_settlement import (  # noqa: F401
     VERIFY, _build, _channel_state, _invoke, _MetisScript, _open_channel,
 )
@@ -94,6 +94,108 @@ def test_a_verified_sale_pays_the_seller_the_same_share_as_a_plain_one(tmp_path,
         after_verified = _balance(client, seller["api_key"])
     assert after_plain == pytest.approx(0.28)
     assert after_verified == pytest.approx(0.56)
+
+
+@pytest.mark.parametrize("verify", [None, {**VERIFY, "wait": True}])
+@pytest.mark.parametrize("credit_committed", [False, True])
+def test_channel_share_reconciles_after_restart_once(tmp_path, monkeypatch, _claims, verify, credit_committed):
+    monkeypatch.setenv("AIMARKET_CREDITS_ENABLED", "1")
+    monkeypatch.setenv("AIMARKET_CREDITS_FREE_GRANT_USD", "0")
+    app, db = _build(tmp_path, monkeypatch, _MetisScript([("judged", True, 0.95)]))
+    original_pay = credits.CreditsLedger.pay_publisher
+
+    def interrupted_pay(ledger, *args, **kwargs):
+        if credit_committed:
+            assert original_pay(ledger, *args, **kwargs)["paid_usd"] == pytest.approx(0.28)
+        raise RuntimeError("interrupted publisher payment")
+
+    with TestClient(app) as client:
+        seller = _publisher(client, db)
+        channel_id, secret = _open_channel(client)
+        with monkeypatch.context() as failure:
+            failure.setattr(credits.CreditsLedger, "pay_publisher", interrupted_pay)
+            response = _invoke(client, channel_id, secret, verify=verify)
+        assert response.status_code == 200, response.text
+        receipt_id = response.json()["receipt"]["nonce"]
+        assert _balance(client, seller["api_key"]) == pytest.approx(0.28 if credit_committed else 0)
+
+    old_channel_ledger = channels._ledger
+    with old_channel_ledger._get_conn() as conn:
+        obligation = conn.execute(
+            "SELECT * FROM channel_publisher_shares WHERE receipt_id = ?", (receipt_id,),
+        ).fetchone()
+        assert obligation["amount_mc"] == 28_000 and obligation["account_id"] == seller["account_id"]
+        assert obligation["credited_at"] == "" and not obligation["cash_backed"]
+        # Restart after the failed attempt's retry delay.
+        conn.execute("UPDATE channel_publisher_shares SET next_attempt_at = 0 WHERE receipt_id = ?", (receipt_id,))
+        conn.commit()
+    channel_ledger = channels.ChannelLedger(db_path=str(tmp_path / "channels.db"))
+    monkeypatch.setattr(channels, "_ledger", channel_ledger)
+    try:
+        with TestClient(app) as client:
+            assert _balance(client, seller["api_key"]) == pytest.approx(0.28)
+            assert channels.reconcile_publisher_shares(credits.CreditsLedger(db._conn), receipt_id=receipt_id) == 0
+        with channel_ledger._get_conn() as conn:
+            assert conn.execute("SELECT credited_at FROM channel_publisher_shares WHERE receipt_id = ?",
+                                (receipt_id,)).fetchone()["credited_at"]
+            assert conn.execute("SELECT amount_cents FROM debited_receipts WHERE receipt_id = ?",
+                                (receipt_id,)).fetchone()["amount_cents"] == 40
+        payouts = db._conn.execute("SELECT amount_mc FROM credit_ledger WHERE kind = 'payout' AND receipt_id = ?",
+                                   (receipt_id,)).fetchall()
+        assert [r["amount_mc"] for r in payouts] == [28_000]
+    finally:
+        for ledger in (old_channel_ledger, channel_ledger):
+            ledger.stop_sweep()
+            ledger._backend.close()
+        db.close()
+
+
+def test_cash_backed_channel_share_and_debit_commit_together(tmp_path, monkeypatch, _claims):
+    from eth_account import Account
+    from eth_account.messages import encode_defunct
+
+    monkeypatch.setenv("AIMARKET_CHAIN_REALM", "live")
+    monkeypatch.setenv("AIMARKET_CHANNEL_ALLOW_UNPROVEN_PAYER", "0")
+    monkeypatch.setattr(channels, "_VERIFY_STUB", False)
+    monkeypatch.setattr(channels, "_is_production_mode", lambda: True)
+    monkeypatch.setattr(channels, "_escrow_required", lambda: False)
+    monkeypatch.setattr(channels, "_RECIPIENT", "0x" + "22" * 20)
+    depositor = Account.from_key("0x" + "12" * 32)
+    tx_hash = "0x" + "ab" * 32
+    monkeypatch.setattr(channels, "_verify_tx_onchain", lambda **kwargs: {
+        "ok": True, "sender": depositor.address, "base_usdc_deposit": True,
+    })
+    challenge = channels.payer_proof_challenge(payer=depositor.address, tx_hash=tx_hash, chain="base", deposit_usd=1)
+    signature = "0x" + depositor.sign_message(encode_defunct(text=challenge)).signature.hex()
+    ledger = channels.ChannelLedger(db_path=str(tmp_path / "channels.db"))
+    try:
+        channel = ledger.open(1, token="USDC", chain="base", wallet=depositor.address, tx_hash=tx_hash,
+                              payer_signature=signature)["channel"]
+        channel_id, secret = channel["channel_id"], channel["channel_secret"]
+        receipt_id = "sale-with-custodial-deposit"
+        share = credits.PublisherShare("acct_publisher", 0.28, receipt_id, "capability sale")
+        assert ledger.hold(channel_id, 0.4, receipt_id, secret=secret)["ok"]
+
+        def unavailable(*args, **kwargs):
+            raise RuntimeError("obligation store unavailable")
+
+        with monkeypatch.context() as failure:
+            failure.setattr(ledger, "_enqueue_publisher_share", unavailable)
+            with pytest.raises(RuntimeError, match="obligation store unavailable"):
+                ledger.capture_hold(receipt_id, publisher_share=share)
+        assert ledger.hold_state(receipt_id) == "held"
+        assert ledger.get(channel_id)["used_usd"] == 0
+        assert ledger.capture_hold(receipt_id, publisher_share=share)["ok"]
+        assert ledger.refund(channel_id, 0.4, secret=secret)["remaining_balance"] == pytest.approx(0.72)
+        assert "error" in ledger.refund(channel_id, 0.01, secret=secret)
+        assert ledger.close(channel_id, wallet=depositor.address, secret=secret)["settlement"]["refund_owed_usd"] == 0.72
+        with ledger._get_conn() as conn:
+            obligation = conn.execute("SELECT * FROM channel_publisher_shares WHERE receipt_id = ?",
+                                      (receipt_id,)).fetchone()
+            assert obligation["cash_backed"] == 1 and obligation["amount_mc"] == 28_000
+    finally:
+        ledger.stop_sweep()
+        ledger._backend.close()
 
 
 def test_the_jury_sees_the_request_input(tmp_path, monkeypatch, _claims):

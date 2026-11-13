@@ -172,6 +172,7 @@ class LedgerOpeningMixin:
         # Only such deposits are single-use-guarded (see consumed_deposits claim
         # below): stub/demo channels carry no real tx to replay.
         verified_onchain = False
+        base_usdc_deposit = False
         proven_payer = ""  # the wallet whose signature recovered below, and only that
         if not channels._VERIFY_STUB:
             if channels._is_production_mode():
@@ -278,6 +279,7 @@ class LedgerOpeningMixin:
                 # bypass: the channel is bound to the payer, never left anonymous.
                 wallet = payer
                 verified_onchain = True
+                base_usdc_deposit = bool(proven_payer and result.get("base_usdc_deposit"))
                 deposit_cents = self._credit_whole_payment(deposit_cents, result, tx_hash)
             elif not channels._allow_demo_credit():
                 # Not production, not stub, not explicitly demo → fail closed. A misconfigured
@@ -413,11 +415,11 @@ class LedgerOpeningMixin:
                     """INSERT INTO channels
                        (channel_id, balance_cents, original_deposit_cents, used_cents,
                         token, chain, wallet, tx_hash, recipient, status,
-                        opened_at, expires_at, secret_hash)
-                       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
+                        opened_at, expires_at, secret_hash, base_usdc_deposit)
+                       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
                     (channel_id, deposit_cents, deposit_cents,
                      token, chain, wallet, tx_hash, channels._RECIPIENT, now, expires,
-                     secret_hash),
+                     secret_hash, int(base_usdc_deposit)),
                 )
                 if proven_payer:
                     self._record_proven_payer(conn, channel_id, proven_payer)

@@ -9,7 +9,8 @@ anything behind it.
 This tier moves that work to the hub. With the seller's consent (one email, recorded by the
 operator) the hub reads the seller's own x402 discovery document (``/.well-known/x402``),
 sends each listed route one UNPAID request and reads the ``402``: price, asset, network and
-``payTo``. Only what the live ``402`` said is listed, and only as an observation:
+``payTo``. A hub may opt in to observing exact GET URLs authorized by a seller whose
+discovery paths are absent. Only what the live ``402`` said is listed, and only as an observation:
 
 - nothing here is signed by the seller, and the hub does not claim it was;
 - the hub never sits in the payment path: a buyer calls the seller's URL itself and pays per
@@ -38,6 +39,7 @@ from aimarket_hub import crawler as _crawler
 logger = logging.getLogger(__name__)
 
 TIER = "observed"
+EXPLICIT_GET_SOURCE = "operator_explicit_get"
 
 #: The x402 discovery convention: `/.well-known/x402`, served by some as `x402.json`.
 DISCOVERY_PATHS = ("/.well-known/x402", "/.well-known/x402.json")
@@ -111,6 +113,25 @@ def normalize_origin(url: str) -> str:
 def same_origin(url: str, origin: str) -> bool:
     """A route counts only on the seller's own origin (spec §3.1, the `endpoint` rule)."""
     return bool(origin) and normalize_origin(url) == origin and urlparse(url).scheme == "https"
+
+
+def _explicit_get_routes(seller: dict[str, Any]) -> list[dict[str, Any]]:
+    """Operator-approved GET probes for consented sellers without a discovery document."""
+    origin = seller["origin"]
+    configured = {value.strip().rstrip("/").lower() for value in
+                  os.getenv("AIMARKET_OBSERVED_EXPLICIT_GET_ORIGINS", "").split(",")}
+    consent = seller.get("consent") or {}
+    pin = str(seller.get("pinned_pay_to") or "")
+    confirmed = str(consent.get("confirmed_pay_to") or "")
+    if (origin not in configured or not enabled() or not re.fullmatch(r"0x[0-9a-fA-F]{40}", pin)
+            or pin == "0x" + "0" * 40
+            or pin.lower() != confirmed.lower() or not (consent.get("by") and consent.get("at"))):
+        return []
+    urls = dict.fromkeys(u for u in seller.get("allowed_routes") or []
+                         if isinstance(u, str) and len(u) <= 500 and same_origin(u, origin)
+                         and not urlparse(u).fragment)
+    return [{"url": url, "method": "GET", "listed_price_usd": None, "source": EXPLICIT_GET_SOURCE}
+            for url in list(urls)[:max_routes()]]
 
 
 def clean_consent(raw: Any) -> dict[str, str]:
@@ -368,17 +389,19 @@ def _request_headers(hub_url: str) -> dict[str, str]:
 
 
 async def fetch_discovery(origin: str, *, hub_url: str = "", request: Any = None
-                          ) -> tuple[str, Any, str]:
-    """``(url, document, error)`` for the first discovery path that answers JSON."""
+                          ) -> tuple[str, Any, str, bool]:
+    """The first JSON document, or whether both discovery paths report it absent."""
     request = request or _default_request
     last_error = "no discovery document"
+    absent = True
     for path in DISCOVERY_PATHS:
         url = origin + path
         reply = await request("GET", url, _request_headers(hub_url), MAX_DISCOVERY_BYTES, None)
         if reply.get("status") == 200 and isinstance(reply.get("json"), dict):
-            return url, reply["json"], ""
+            return url, reply["json"], "", False
+        absent = absent and reply.get("status") in (404, 410)
         last_error = reply.get("error") or f"{url} answered {reply.get('status')}"
-    return "", None, last_error
+    return "", None, last_error, absent
 
 
 # HEAD-first: what a seller can do so that a listing check costs it nothing. A seller that
@@ -387,22 +410,45 @@ async def fetch_discovery(origin: str, *, hub_url: str = "", request: Any = None
 # against a trial. Most frameworks do not do this by default — Express and Starlette run the
 # GET handler for HEAD, and a POST-only route answers 404/405 — so HEAD is tried first and the
 # unpaid request of §2.7 is the fallback. A 2xx to HEAD means the seller served the route for
-# free (the free call is already spent), so there is no fallback: the result is not_priced.
+# free (the free call is already spent), so there is no fallback on discovered routes.
+# Explicit GET routes have separate operator and seller authorization for one GET probe.
 _HEAD_FALLBACK_STATUSES = frozenset({0, 400, 404, 405, 422, 501})
 
 
-async def probe_route(route: dict[str, Any], *, hub_url: str = "", request: Any = None
-                      ) -> dict[str, Any]:
+async def probe_route(route: dict[str, Any], *, hub_url: str = "", request: Any = None,
+                      expected_pay_to: str = "") -> dict[str, Any]:
     """At most two unpaid requests to a route, HEAD first. Never carries a payment header."""
     request = request or _default_request
     method = route.get("method") or "POST"
+    explicit = route.get("source") == EXPLICIT_GET_SOURCE
+
+    def read_offer(reply: dict[str, Any]) -> dict[str, Any] | None:
+        if not explicit:
+            return offer_from_402(reply.get("json"), reply.get("headers"))
+        from aimarket_hub.x402_bridge import BridgeRefused, choose_offer
+
+        try:
+            offer = choose_offer(
+                reply.get("json"), reply.get("headers"), limit_usd=math.inf,
+                expected_pay_to=expected_pay_to, explicit_get_url=route["url"],
+            )
+        except BridgeRefused:
+            return None
+        resource = offer.resource if isinstance(offer.resource, dict) else {}
+        return {
+            **(offer_terms(offer.accept) or {}),
+            "x402_version": offer.x402_version,
+            "offer_description": _first_description(resource.get("description"), offer.accept.get("description")),
+        }
+
     head = await request("HEAD", route["url"], _request_headers(hub_url), MAX_PROBE_BYTES, None)
     head_status = int(head.get("status") or 0)
-    if head_status == 402 and offer_from_402(head.get("json"), head.get("headers")) is not None:
+    head_offer = read_offer(head) if head_status == 402 else None
+    if head_offer is not None:
         reply, probe_method = head, "HEAD"
-    elif 200 <= head_status < 300:
-        reply, probe_method = head, "HEAD"
-    elif head_status in _HEAD_FALLBACK_STATUSES or head_status == 402:
+    elif head_status in _HEAD_FALLBACK_STATUSES or head_status == 402 or (
+        200 <= head_status < 300 and method == "GET" and explicit
+    ):
         # No terms on HEAD (a 402 with its offer only in a body HEAD cannot carry, or a route
         # that does not answer HEAD): the one unpaid request of §2.7.
         reply = await request(
@@ -416,9 +462,10 @@ async def probe_route(route: dict[str, Any], *, hub_url: str = "", request: Any 
     status = int(reply.get("status") or 0)
     seen = {"http_status": status, "probed_at": _now_iso(), "probe_method": probe_method}
     if status == 402:
-        offer = offer_from_402(reply.get("json"), reply.get("headers"))
+        offer = head_offer if probe_method == "HEAD" else read_offer(reply)
         if offer is None:
-            return {**seen, "result": "no_offer", "detail": "402 named no recipient"}
+            detail = "402 has no matching Base USDC offer for this route and pinned recipient" if explicit else "402 named no recipient"
+            return {**seen, "result": "no_offer", "detail": detail}
         if offer.get("price_usd") is None:
             return {**seen, **offer, "result": "unknown_asset",
                     "detail": "the 402 asks for an asset this hub cannot price in USD"}
@@ -446,6 +493,8 @@ def judge_route(route: dict[str, Any], probe: dict[str, Any], pinned_pay_to: str
         "listed_price_usd": route.get("listed_price_usd"),
         **{k: v for k, v in probe.items() if k != "offer_description"},
     }
+    if route.get("source") == EXPLICIT_GET_SOURCE:
+        row["source"] = EXPLICIT_GET_SOURCE
     if probe.get("result") != "quoted":
         row["listed"] = False
         return row
@@ -465,18 +514,21 @@ async def observe_seller(seller: dict[str, Any], *, hub_url: str = "", request: 
                          now: float | None = None) -> dict[str, Any]:
     """Observe one consented seller. Returns the fields to store; writes nothing."""
     origin = seller["origin"]
-    discovery_url, doc, error = await fetch_discovery(origin, hub_url=hub_url, request=request)
+    discovery_url, doc, error, absent = await fetch_discovery(origin, hub_url=hub_url, request=request)
     observed_at = _now_iso(now)
     if doc is None:
+        candidates = _explicit_get_routes(seller) if absent else []
+    else:
+        candidates = select_routes(parse_discovery(doc, origin), seller.get("allowed_routes"), max_routes())
+    if doc is None and not candidates:
         return {"observed_at": observed_at, "last_error": error, "discovery_url": "",
                 "routes": [], "name": seller.get("name") or origin,
                 "pinned_pay_to": seller.get("pinned_pay_to") or ""}
-    candidates = select_routes(parse_discovery(doc, origin), seller.get("allowed_routes"), max_routes())
     pinned = seller.get("pinned_pay_to") or ""
     routes = []
     served_free = False
     for route in candidates:
-        probe = await probe_route(route, hub_url=hub_url, request=request)
+        probe = await probe_route(route, hub_url=hub_url, request=request, expected_pay_to=pinned)
         if not pinned and probe.get("result") == "quoted":
             # Pinned on first sight, like a peer's key: what changes later is the signal.
             pinned = probe.get("pay_to") or ""
@@ -490,7 +542,11 @@ async def observe_seller(seller: dict[str, Any], *, hub_url: str = "", request: 
     probed = {r["url"] for r in routes}
     missing = [u for u in (seller.get("allowed_routes") or [])
                if u not in {c["url"] for c in candidates}]
-    error = f"not in the discovery document: {', '.join(missing[:5])}" if missing else ""
+    if missing:
+        source = "discovery document" if doc is not None else "eligible fixed GET routes"
+        error = f"not in the {source}: {', '.join(missing[:5])}"
+    else:
+        error = ""
     if served_free:
         skipped = sum(1 for c in candidates if c["url"] not in probed)
         error = ("a route answered without asking for payment; the rest of this cycle "
@@ -542,8 +598,14 @@ def served_routes(sellers: list[dict[str, Any]], *, hub_url: str = "",
     for seller in sellers:
         if not is_fresh(seller.get("observed_at") or "", now):
             continue
+        allowed_explicit = {r["url"] for r in _explicit_get_routes(seller)}
         for route in seller.get("routes") or []:
             if not route.get("listed"):
+                continue
+            explicit = route.get("source") == EXPLICIT_GET_SOURCE
+            if explicit and (route.get("method") != "GET"
+                             or str(route.get("pay_to") or "").lower() != str(seller.get("pinned_pay_to") or "").lower()
+                             or route["url"] not in allowed_explicit):
                 continue
             out.append({
                 "tier": TIER,
@@ -562,6 +624,7 @@ def served_routes(sellers: list[dict[str, Any]], *, hub_url: str = "",
                 "observed_by": hub_url,
                 "signed_by_seller": False,
                 "how_to_buy": HOW_TO_BUY,
+                **({"source": EXPLICIT_GET_SOURCE} if explicit else {}),
             })
     return out
 

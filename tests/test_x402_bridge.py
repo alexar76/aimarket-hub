@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 import aimarket_hub.api as api_mod  # noqa: F401  (create_app wiring)
 import aimarket_hub.channels as channels_mod
 import aimarket_hub.outbound_http as ohttp
-from aimarket_hub import credits, x402_bridge
+from aimarket_hub import credits, settle, x402_bridge
 from aimarket_hub.api import create_app
 from aimarket_hub.channels import ChannelLedger
 from aimarket_hub.config import HubConfig
@@ -700,6 +700,153 @@ def test_a_credit_buyer_buys_an_observed_route(tmp_path, monkeypatch, bridge_env
     assert (method, url, sent_json) == ("POST", ROUTE, {"text": "hello"})
     assert sent_headers["PAYMENT-SIGNATURE"]
     assert _payments(db)[0]["status"] == "delivered"
+
+
+@pytest.mark.parametrize("receipt", [SETTLED, {}, {"payment-response": base64.b64encode(json.dumps({
+    "success": True, "transaction": "0x" + "aa" * 32, "network": "eip155:56",
+}).encode()).decode()}])
+def test_observed_fixed_get_pays_only_the_exact_registered_request(tmp_path, monkeypatch, bridge_env, receipt):
+    from aimarket_hub.observed_sellers import EXPLICIT_GET_SOURCE
+
+    fixed = f"{ROUTE}?id=1,1027"
+    terms = {"x402Version": 2, "resource": {"url": ROUTE}, "accepts": [
+        _offer(amount="100", network="eip155:56"),
+        _offer(amount="1500"),
+    ]}
+    challenge = {"payment-required": base64.b64encode(json.dumps(terms).encode()).decode()}
+    shop = _Shop((402, None, challenge), (200, {"quotes": [1, 1027]}, receipt), (402, None, challenge))
+    client, db = _observed_hub(tmp_path, monkeypatch, shop, pinned=PAYEE)
+    monkeypatch.setenv("AIMARKET_OBSERVED_EXPLICIT_GET_ORIGINS", SHOP)
+    seller = db.get_observed_seller(SHOP)
+    db.upsert_observed_seller(
+        SHOP, consent={**seller["consent"], "confirmed_pay_to": PAYEE},
+        allowed_routes=[fixed], pinned_pay_to=PAYEE,
+    )
+    db.save_observed_seller_observation(SHOP, {**seller, "routes": [{
+        **seller["routes"][0], "url": fixed, "method": "GET", "source": EXPLICIT_GET_SOURCE,
+    }]})
+    key, account = _buyer()
+    assert _buy(client, key, url=f"{ROUTE}?id=999", input={}).status_code == 404
+    assert _buy(client, key, url=fixed, input={"id": "999"}).status_code == 400
+    assert shop.calls == []
+
+    result = _buy(client, key, url=fixed, input={}, max_price_usd=0.002)
+    assert [call[:3] for call in shop.calls] == [("GET", fixed, None), ("GET", fixed, None)]
+    assert "PAYMENT-SIGNATURE" not in shop.calls[0][3]
+    signed = json.loads(base64.b64decode(shop.calls[1][3]["PAYMENT-SIGNATURE"]))
+    assert signed["accepted"]["network"] == "eip155:8453"
+    assert signed["payload"]["authorization"]["value"] == "1500"
+    if receipt == SETTLED:
+        assert result.status_code == 200, result.text
+        assert result.json()["result"] == {"quotes": [1, 1027]}
+        assert credits.ledger().balance(account) == pytest.approx(0.9985)
+        assert _payments(db)[0]["status"] == "delivered"
+    else:
+        assert result.status_code == 502, result.text
+        assert result.json()["error"] == "seller_settlement_unconfirmed"
+        assert credits.ledger().balance(account) == pytest.approx(1.0)
+        assert _payments(db)[0]["status"] == "unknown"
+        repeated = _buy(client, key, url=fixed, input={}, max_price_usd=0.002)
+        assert repeated.status_code == 502 and repeated.json()["bridge"]["refusal"] == "bridge_pending"
+        assert len(_payments(db)) == 1
+        assert "PAYMENT-SIGNATURE" not in shop.calls[2][3]
+
+
+@pytest.mark.parametrize("case", [
+    "verified", "opaque_network_id", "wrong_query", "wrong_status", "wrong_header_network", "wrong_network_id",
+    "invalid_hash", "conflicting_hash", "wrong_header_payer", "wrong_header_amount", "failed_status",
+    "wrong_chain", "wrong_block", "wrong_nonce", "wrong_amount", "wrong_payee", "wrong_payer", "wrong_token",
+    "wrong_log_block", "nonadjacent_transfer", "duplicate_authorization", "receipt_unavailable",
+])
+def test_cmc_fixed_get_receipt_binds_the_exact_authorization(tmp_path, monkeypatch, bridge_env, case):
+    from aimarket_hub.observed_sellers import EXPLICIT_GET_SOURCE
+
+    fixed = x402_bridge._CMC_FIXED_GET
+    endpoint = fixed.split("?", 1)[0]
+    origin = "https://pro-api.coinmarketcap.com"
+    if case == "wrong_query":
+        fixed = endpoint + "?id=999"
+    tx = "0x" + "ab" * 32
+    block_hash = "0x" + "cd" * 32
+    alias = {"success": True, "txHash": tx, "networkId": 8453, "x402FlowId": "fixture"}
+    alias.update({
+        "opaque_network_id": {"networkId": "opaque-vendor-id"},
+        "wrong_header_network": {"network": "eip155:1"}, "wrong_network_id": {"networkId": "0x1"},
+        "invalid_hash": {"txHash": "0x12"}, "conflicting_hash": {"transaction": block_hash},
+        "wrong_header_payer": {"payer": OTHER}, "wrong_header_amount": {"amount": 9999},
+        "failed_status": {"success": False},
+    }.get(case, {}))
+    challenge = {"x402Version": 2, "resource": {"url": endpoint}, "accepts": [_offer(amount="10000")]}
+    headers = {"payment-required": base64.b64encode(json.dumps(challenge).encode()).decode()}
+    receipt_header = {"payment-response": base64.b64encode(json.dumps(alias).encode()).decode()}
+    shop = _Shop((402, None, headers), (201 if case == "wrong_status" else 200, {"quotes": [1, 1027]}, receipt_header),
+                 (402, None, headers))
+    client, db = _observed_hub(tmp_path, monkeypatch, shop)
+    monkeypatch.setenv("AIMARKET_OBSERVED_EXPLICIT_GET_ORIGINS", origin)
+    consent = {"by": "fixture", "at": "2026-11-13", "confirmed_pay_to": PAYEE}
+    db.upsert_observed_seller(origin, consent=consent, allowed_routes=[fixed], pinned_pay_to=PAYEE)
+    source = db.get_observed_seller(SHOP)
+    db.save_observed_seller_observation(origin, {**source, "origin": origin, "pinned_pay_to": PAYEE, "routes": [{
+        **source["routes"][0], "url": fixed, "method": "GET", "source": EXPLICIT_GET_SOURCE,
+        "price_usd": 0.01, "amount_atomic": "10000",
+    }]})
+    calls = []
+
+    def rpc(_url, method, params, _timeout):
+        calls.append(method)
+        if method == "eth_chainId":
+            return "0x1" if case == "wrong_chain" else "0x2105"
+        if method == "eth_getBlockByNumber":
+            assert params == ["0x40", False]
+            return {"number": "0x40", "hash": tx if case == "wrong_block" else block_hash}
+        assert method == "eth_getTransactionReceipt" and params == [tx]
+        if case == "receipt_unavailable":
+            return None
+        signed = json.loads(base64.b64decode(shop.calls[1][3]["PAYMENT-SIGNATURE"]))
+        nonce = signed["payload"]["authorization"]["nonce"]
+
+        def topic(address):
+            return "0x" + address[2:].lower().zfill(64)
+
+        payer = topic(OTHER if case == "wrong_payer" else BRIDGE_ADDRESS)
+        payee = topic(OTHER if case == "wrong_payee" else PAYEE)
+        facts = {"address": x402_bridge.USDC, "transactionHash": tx, "blockHash": block_hash,
+                 "blockNumber": "0x40", "removed": False}
+        used = {**facts, "logIndex": "0x4", "data": "0x", "topics": [settle.AUTHORIZATION_USED_TOPIC, payer,
+                tx if case == "wrong_nonce" else nonce]}
+        moved = {**facts, "logIndex": "0x6" if case == "nonadjacent_transfer" else "0x5",
+                 "data": f"0x{(10001 if case == 'wrong_amount' else 10000):064x}",
+                 "topics": [settle.TRANSFER_TOPIC, payer, payee]}
+        if case == "wrong_token":
+            moved["address"] = OTHER
+        if case == "wrong_log_block":
+            moved["blockNumber"] = "0x41"
+        logs = [used, moved]
+        if case == "duplicate_authorization":
+            logs.append({**used, "logIndex": "0x6"})
+        return {**facts, "status": "0x1", "logs": logs}
+
+    monkeypatch.setattr(settle, "rpc_urls", lambda chain_id: ["https://cmc-test.invalid"])
+    monkeypatch.setattr(settle, "_rpc", rpc)
+    key, account = _buyer()
+    result = _buy(client, key, url=fixed, input={}, max_price_usd=0.01)
+    assert [call[:3] for call in shop.calls] == [("GET", fixed, None), ("GET", fixed, None)], result.text
+    assert "PAYMENT-SIGNATURE" not in shop.calls[0][3] and "PAYMENT-SIGNATURE" in shop.calls[1][3]
+    [row] = _payments(db)
+    if case in {"verified", "opaque_network_id"}:
+        assert result.status_code == 200, result.text
+        assert result.json()["paid_via"]["tx_hash"] == tx
+        assert row["status"] == "delivered" and row["tx_hash"] == tx
+        assert credits.ledger().balance(account) == pytest.approx(0.99)
+        assert calls == ["eth_chainId", "eth_getTransactionReceipt", "eth_getBlockByNumber"]
+        return
+
+    assert result.status_code == 502 and result.json()["error"] == "seller_settlement_unconfirmed", result.text
+    assert row["status"] == "unknown" and not row["tx_hash"]
+    assert credits.ledger().balance(account) == pytest.approx(1.0)
+    repeated = _buy(client, key, url=fixed, input={}, max_price_usd=0.01)
+    assert repeated.status_code == 502 and repeated.json()["bridge"]["refusal"] == "bridge_pending"
+    assert len(_payments(db)) == 1 and "PAYMENT-SIGNATURE" not in shop.calls[2][3]
 
 
 def test_an_observed_route_is_not_paid_above_its_observed_price(tmp_path, monkeypatch, bridge_env):

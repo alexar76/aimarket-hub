@@ -248,11 +248,13 @@ def verify_deposit(
     rpc: RpcCaller | None = None,
     token_address: str = "",
     timeout: float = 8.0,
+    expected_chain_id: int | None = None,
 ) -> DepositCheck:
     """Did ``tx_hash`` pay ``recipient`` at least ``amount_usd`` of ``token``?
 
     Returns the paying wallet on success — the caller cannot credit a deposit it cannot
-    bind to a payer, and refuses when this is empty.
+    bind to a payer, and refuses when this is empty. With an expected chain id, every
+    endpoint eligible to supply the receipt and block height must report that chain.
     """
     tx = (tx_hash or "").strip()
     if not (tx.startswith("0x") and len(tx) == 66):
@@ -279,9 +281,20 @@ def verify_deposit(
 
     if rpc is None:
         urls = rpc_urls_for(chain)
+        if expected_chain_id is not None:
+            urls = [url for url in urls if _rpc_chain_id(url) == expected_chain_id]
+            if not urls:
+                return DepositCheck(False, error=f"no eligible RPC endpoint verified chain id {expected_chain_id}")
         if not urls:
             return DepositCheck(False, error=f"no RPC endpoint configured for chain {chain!r}")
         rpc = _make_rpc(urls, timeout)
+    elif expected_chain_id is not None:
+        try:
+            matches_chain = _hex_to_int(rpc("eth_chainId", [])) == expected_chain_id
+        except Exception:
+            matches_chain = False
+        if not matches_chain:
+            return DepositCheck(False, error=f"RPC did not verify chain id {expected_chain_id}")
 
     try:
         receipt = rpc("eth_getTransactionReceipt", [tx])

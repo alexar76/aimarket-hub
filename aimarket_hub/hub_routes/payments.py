@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 from fastapi import HTTPException, Request
 
-from aimarket_hub import credits, settle, topup, x402
+from aimarket_hub import channels, credits, settle, topup, x402
 from aimarket_hub.config import HubConfig
 from aimarket_hub.credits import CreditsLedger, PublisherShare
 from aimarket_hub.settle import InvoiceStore, PaymentStore as SettlePaymentStore
@@ -78,17 +78,9 @@ def register(
         return PublisherShare(account, share, f"hearth:{bill_id}",
                               f"hearth owner share: {peer.url} {bill.get('slug', '')}")
 
-    def _pay_publisher_share(payout: PublisherShare) -> None:
-        """Settle a share after capture on a rail with a separate ledger."""
-        try:
-            result = hub_credits.pay_publisher(
-                payout.account_id, payout.amount_usd, receipt_id=payout.receipt_id, note=payout.note,
-            )
-        except Exception:
-            logger.exception("payout: crediting %s failed", payout.account_id)
-            return
-        if result.get("error"):
-            logger.error("payout: crediting %s failed: %s", payout.account_id, result["error"])
+    def _pay_publisher_share(receipt_id: str) -> None:
+        """Attempt the durable channel obligation after capture."""
+        channels.reconcile_publisher_shares(hub_credits, receipt_id=receipt_id)
 
     def _bind_listing_payee(request: Request, cap: Any) -> str:
         """Publish the seller on this request so a 402 names their wallet."""
@@ -319,7 +311,7 @@ def register(
         as a limit, most of it granted outright so a new project can try the catalogue
         for free. Spending that limit on a listing whose seller must be paid for real
         would mean the operator pays a stranger, in USDC, out of pocket, for a call the
-        buyer got as a gift — and `_pay_publisher_share` cannot even book it, because a
+        buyer got as a gift — and `_publisher_share` cannot even book it, because a
         wallet is not a credit account, so today it is simply dropped and the operator
         keeps 100% of somebody else's sale.
 

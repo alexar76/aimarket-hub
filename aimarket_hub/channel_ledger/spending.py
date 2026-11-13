@@ -8,6 +8,9 @@ import hmac
 import math
 from typing import Any
 
+from aimarket_hub import realm
+from aimarket_hub.credits import MILLICENTS_PER_DOLLAR, PublisherShare, usd_to_mc
+
 
 def _move(conn: Any, sql: str, params: tuple) -> bool:
     """Run one conditional UPDATE; True when it matched exactly one row.
@@ -231,18 +234,25 @@ class LedgerSpendingMixin:
             "held_usd": channels._cents_to_dollars(amount_cents),
         }
 
-    def capture_hold(self, receipt_id: str) -> dict[str, Any]:
+    def capture_hold(self, receipt_id: str, *, publisher_share: PublisherShare | None = None) -> dict[str, Any]:
         """Capture a hold after a passing verdict: reservation becomes a recorded debit.
 
         No secret needed — the buyer pre-authorized the amount at hold time. Works
         regardless of current channel status (the cents were reserved while open).
+        The receipt's publisher obligation commits with the debit in this ledger.
         """
         with self._lock, self._get_conn() as conn:
             hold = conn.execute(
-                "SELECT * FROM channel_holds WHERE receipt_id = ? AND status = 'held'",
+                "SELECT * FROM channel_holds WHERE receipt_id = ?",
                 (receipt_id,),
             ).fetchone()
-            if not hold:
+            if not hold or hold["status"] != "held":
+                if hold and hold["status"] == "captured" and publisher_share is not None:
+                    # A signed escrow or verified-settlement checkpoint can replay a
+                    # capture made before the outbox existed. Its saved share still
+                    # accrues, but the old capture may already have been reversed.
+                    self._enqueue_publisher_share(conn, receipt_id, publisher_share, cash_backed=False)
+                    conn.commit()
                 return {"error": "hold not found or already resolved"}
 
             # The hold changes state first and only if it is still held: a capture and a
@@ -260,9 +270,27 @@ class LedgerSpendingMixin:
                 "VALUES (?, ?, ?, ?)",
                 (receipt_id, hold["channel_id"], hold["amount_cents"], channels._now_iso()),
             )
+            protected_cents = 0
+            if publisher_share is not None:
+                mc_per_cent = MILLICENTS_PER_DOLLAR // 100
+                share_cents = (usd_to_mc(publisher_share.amount_usd) + mc_per_cent - 1) // mc_per_cent
+                cash_backed = (
+                    0 < share_cents <= hold["amount_cents"] and not realm.is_uni()
+                    and conn.execute(
+                        "SELECT 1 FROM channels c JOIN consumed_deposits d ON c.channel_id = d.channel_id "
+                        "WHERE c.channel_id = ? AND c.base_usdc_deposit = 1 "
+                        "AND LOWER(c.chain) = 'base' AND LOWER(d.chain) = 'base' "
+                        "AND UPPER(c.token) = 'USDC' AND c.escrow_channel = '' AND c.recipient <> '' "
+                        "AND c.tx_hash <> '' AND LOWER(c.tx_hash) = LOWER(d.tx_hash) LIMIT 1",
+                        (hold["channel_id"],),
+                    ).fetchone() is not None
+                )
+                self._enqueue_publisher_share(conn, receipt_id, publisher_share, cash_backed=cash_backed)
+                protected_cents = share_cents if cash_backed else 0
             conn.execute(
-                "UPDATE channels SET used_cents = used_cents + ? WHERE channel_id = ?",
-                (hold["amount_cents"], hold["channel_id"]),
+                "UPDATE channels SET used_cents = used_cents + ?, "
+                "publisher_backed_cents = publisher_backed_cents + ? WHERE channel_id = ?",
+                (hold["amount_cents"], protected_cents, hold["channel_id"]),
             )
             conn.commit()
 
@@ -271,6 +299,16 @@ class LedgerSpendingMixin:
             "channel_id": hold["channel_id"],
             "captured_usd": channels._cents_to_dollars(hold["amount_cents"]),
         }
+
+    @staticmethod
+    def _enqueue_publisher_share(conn: Any, receipt_id: str, share: PublisherShare, *, cash_backed: bool) -> None:
+        conn.execute(
+            "INSERT INTO channel_publisher_shares "
+            "(receipt_id, account_id, amount_mc, payout_receipt_id, note, cash_backed) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (receipt_id) DO NOTHING",
+            (receipt_id, share.account_id, usd_to_mc(share.amount_usd), share.receipt_id or receipt_id,
+             share.note, int(cash_backed)),
+        )
 
     def release_hold(self, receipt_id: str) -> dict[str, Any]:
         """Release a hold after a failing verdict: reservation returns to balance."""
@@ -384,7 +422,9 @@ class LedgerSpendingMixin:
             # counted cents reserved by an unresolved hold: refunding those put them back
             # in the spendable balance while the hold could still be captured, minting
             # value the deposit never covered.
-            max_refund = row["used_cents"]
+            # A publisher's cash-backed accrual is funded from this capture. Keep
+            # its backing spent so a reversal cannot also promise it to the buyer.
+            max_refund = row["used_cents"] - row["publisher_backed_cents"]
             amount_cents = min(amount_cents, max_refund)
             if amount_cents <= 0:
                 return {"error": "refund amount would exceed recorded spend"}
@@ -392,7 +432,7 @@ class LedgerSpendingMixin:
             if not _move(
                 conn,
                 "UPDATE channels SET balance_cents = balance_cents + ?, used_cents = used_cents - ? "
-                "WHERE channel_id = ? AND status = 'open' AND used_cents >= ?",
+                "WHERE channel_id = ? AND status = 'open' AND used_cents - publisher_backed_cents >= ?",
                 (amount_cents, amount_cents, channel_id, amount_cents),
             ):
                 current = conn.execute(

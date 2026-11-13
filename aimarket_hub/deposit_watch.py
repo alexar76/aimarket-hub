@@ -42,7 +42,7 @@ import time
 from collections import defaultdict
 from typing import Any, Callable
 
-from aimarket_hub import settle, topup, x402
+from aimarket_hub import credits, settle, topup, x402
 
 logger = logging.getLogger(__name__)
 
@@ -315,7 +315,7 @@ class Retry(Exception):
 
 def credit_plain(*, store: DepositStore, ledger: Any, claim_deposit: Callable[..., dict[str, Any]],
                  release_deposit: Callable[..., None], tx_hash: str, account_id: str, amount_units: int,
-                 sender: str, block: int, chain: str, chain_id: int | None, decimals: int) -> str:
+                 sender: str, block: int, chain: str, chain_id: int | None, decimals: int, token: str = "") -> str:
     """Credit a plain transfer from a linked wallet. Same reference as the operator's hand credit."""
     credited_mc = topup.units_to_mc(amount_units, decimals)
     if credited_mc <= 0:
@@ -335,7 +335,8 @@ def credit_plain(*, store: DepositStore, ledger: Any, claim_deposit: Callable[..
             return ELSEWHERE
         raise Retry(f"deposit registry: {claim.get('error')}")
     result = ledger.deposit(account_id, credited_mc, reference=f"chain:{chain}:{tx_hash}",
-                            note=f"plain USDC transfer from linked wallet {sender[:10]}…")
+                            note=f"plain USDC transfer from linked wallet {sender[:10]}…",
+                            base_usdc=credits.is_base_usdc(chain_id, token, decimals))
     if result.get("error"):
         if claim.get("ok"):
             release_deposit(stack=DEPOSIT_STACK, chain=chain, tx_hash=tx_hash, claim_id=account_id,
@@ -478,7 +479,7 @@ class Watcher:
         return UNATTRIBUTED
 
     def _plain(self, *, tx_hash: str, sender: str, amount_units: int, block: int,
-               ctx: dict[str, Any], first_sight: bool) -> str:
+               ctx: dict[str, Any], first_sight: bool, verified_receipt: bool) -> str:
         """A plain transfer: credited to the linked account, or kept as unattributed."""
         settled = self._elsewhere(tx_hash=tx_hash, sender=sender, amount_units=amount_units,
                                   block=block, ctx=ctx)
@@ -494,7 +495,7 @@ class Watcher:
                                 release_deposit=self.release_deposit, tx_hash=tx_hash,
                                 account_id=account_id, amount_units=amount_units, sender=sender,
                                 block=block, chain=ctx["chain"], chain_id=ctx["chain_id"],
-                                decimals=ctx["decimals"])
+                                decimals=ctx["decimals"], token=ctx["token"] if verified_receipt else "")
         self.store.record(tx_hash=tx_hash, sender=sender, amount_units=amount_units, block=block,
                           status=UNATTRIBUTED, detail="no account has linked the sending wallet")
         if first_sight:
@@ -535,7 +536,7 @@ class Watcher:
                 return UNATTRIBUTED
             # 3. A plain transfer.
             return self._plain(tx_hash=tx_hash, sender=sender, amount_units=amount_units, block=block,
-                               ctx=ctx, first_sight=known is None)
+                               ctx=ctx, first_sight=known is None, verified_receipt=True)
         except Retry as exc:
             return self._pending(tx_hash=tx_hash, sender=sender, amount_units=amount_units, block=block,
                                  why=str(exc))
@@ -566,8 +567,21 @@ class Watcher:
                     self.store.record(tx_hash=tx_hash, sender=sender, amount_units=amount_units,
                                       block=block, status=UNATTRIBUTED, detail=detail)
                 return settled or UNATTRIBUTED
+            # An unattributed row predates wallet linking and has no stored token/chain proof.
+            # Preserve its normal credit, but require a receipt under the current profile for cash backing.
+            verified = False
+            if self.store.account_for(sender) and credits.is_base_usdc(ctx["chain_id"], ctx["token"], ctx["decimals"]):
+                try:
+                    receipt = self.rpc("eth_getTransactionReceipt", [tx_hash])
+                except Retry:
+                    return UNATTRIBUTED
+                if not receipt:
+                    return UNATTRIBUTED
+                transfers = self._transfers_into(receipt.get("logs") or [], ctx)
+                verified = ({payer for payer, _ in transfers} == {sender}
+                            and sum(units for _, units in transfers) == amount_units)
             return self._plain(tx_hash=tx_hash, sender=sender, amount_units=amount_units, block=block,
-                               ctx=ctx, first_sight=False)
+                               ctx=ctx, first_sight=False, verified_receipt=verified)
         except Retry as exc:
             return self._pending(tx_hash=tx_hash, sender=sender, amount_units=amount_units, block=block,
                                  why=str(exc))

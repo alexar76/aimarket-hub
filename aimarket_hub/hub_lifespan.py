@@ -59,6 +59,8 @@ def make_lifespan(
         crawl_task: asyncio.Task | None = None
         collect_task: asyncio.Task | None = None
         sweep_task: asyncio.Task | None = None
+        publisher_share_task: asyncio.Task | None = None
+        publisher_withdrawal_task: asyncio.Task | None = None
         a2a_sweep_task: asyncio.Task | None = None
         claim_task: asyncio.Task | None = None
         openapi_task: asyncio.Task | None = None
@@ -193,6 +195,30 @@ def make_lifespan(
             # then on the timer.
             _sweep_allowances_once()
             sweep_task = asyncio.create_task(_periodic_allowance_sweep(max(10.0, sweep_interval)))
+        if hub_credits is not None:
+            from aimarket_hub.channels import reconcile_publisher_shares
+
+            async def _periodic_publisher_shares() -> None:
+                while True:
+                    await asyncio.sleep(60.0)
+                    reconcile_publisher_shares(hub_credits)
+
+            reconcile_publisher_shares(hub_credits)
+            publisher_share_task = asyncio.create_task(_periodic_publisher_shares())
+            from aimarket_hub import realm
+            from aimarket_hub.publisher_withdrawals import PublisherWithdrawals
+
+            async def _periodic_withdrawal_reconcile() -> None:
+                store = PublisherWithdrawals(hub_credits)
+                while True:
+                    try:
+                        await asyncio.to_thread(store.reconcile_pending)
+                    except Exception as exc:  # noqa: BLE001 - retry after a transient database failure
+                        logger.warning("publisher withdrawals: reconciliation pass failed: %s", exc)
+                    await asyncio.sleep(60.0)
+
+            if not realm.is_uni():
+                publisher_withdrawal_task = asyncio.create_task(_periodic_withdrawal_reconcile())
         # Seller-direct x402 claims a killed process left consumed with no receipt: the buyer
         # paid the seller and could never present the payment again (audit 2026-11-11,
         # invoke-local-4). Released once they are far older than any provider timeout.
@@ -310,7 +336,8 @@ def make_lifespan(
         try:
             yield
         finally:
-            for task in (crawl_task, collect_task, sweep_task, openapi_task, deposit_task,
+            for task in (crawl_task, collect_task, sweep_task, publisher_share_task, publisher_withdrawal_task,
+                         openapi_task, deposit_task,
                          a2a_sweep_task, observe_task, claim_task, reconcile_task):
                 if task is None:
                     continue
