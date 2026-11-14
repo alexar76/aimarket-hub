@@ -624,3 +624,59 @@ def test_an_agent_on_mcp_is_told_to_call_the_seller_itself(monkeypatch, tmp_path
     assert "market_invoke" in body["observed_note"]
     if not body["matches"]:
         assert "observed" in body["note"]
+
+
+# ── Outside records: what an independent buyer received (spec §2.7) ─────
+
+
+def test_outside_record_keeps_the_host_exactly_as_the_origin_has_it(monkeypatch):
+    monkeypatch.delenv("AIMARKET_OBSERVED_OUTSIDE_RECORDS", raising=False)
+    # vet402 has a page for www.oracleinsight.xyz and none for oracleinsight.xyz (2026-11-14).
+    assert obs.outside_records("https://www.oracleinsight.xyz") == [
+        {"by": "vet402", "url": "https://vet402.com/sellers/www.oracleinsight.xyz"}]
+    assert obs.outside_records("https://AEMB.pro/") == [
+        {"by": "vet402", "url": "https://vet402.com/sellers/aemb.pro"}]
+    assert obs.outside_records("https://seller.example:8443") == []
+    assert obs.outside_records("http://seller.example") == []
+    assert obs.outside_records("not a url") == []
+
+
+def test_outside_check_names_exactly_this_url_and_method(monkeypatch):
+    monkeypatch.delenv("AIMARKET_OBSERVED_OUTSIDE_RECORDS", raising=False)
+    url = "https://www.oracleinsight.xyz/api/v1/safety/pre-trade?chain=base&token=0xabc"
+    check, = obs.outside_checks(url, "get")
+    assert check["by"] == "vet402"
+    assert check["url"] == ("https://vet402.com/api/v1/check?url="
+                            "https%3A%2F%2Fwww.oracleinsight.xyz%2Fapi%2Fv1%2Fsafety%2Fpre-trade"
+                            "%3Fchain%3Dbase%26token%3D0xabc&method=GET")
+    assert obs.outside_checks(url, "POST&x=1")[0]["url"].endswith("&method=POST")
+    assert obs.outside_checks("http://seller.example/x", "POST") == []
+
+
+@pytest.mark.parametrize("setting,expected", [
+    ("none", []), ("", []), ("unknown-service", []), ("VET402, vet402", ["vet402"])])
+def test_the_operator_chooses_which_outside_records_are_linked(monkeypatch, setting, expected):
+    monkeypatch.setenv("AIMARKET_OBSERVED_OUTSIDE_RECORDS", setting)
+    assert [r["by"] for r in obs.outside_records(SELLER)] == expected
+    assert [r["by"] for r in obs.outside_checks(f"{SELLER}/execute", "POST")] == expected
+
+
+def test_listing_and_search_link_outside_records_without_vouching_for_them(monkeypatch, tmp_path):
+    monkeypatch.delenv("AIMARKET_OBSERVED_OUTSIDE_RECORDS", raising=False)
+    seller = FakeSeller(SWARM_SHAPE, {})
+    with _hub(monkeypatch, tmp_path, seller) as client:
+        assert _add(client).status_code == 200
+        calls_after_add = len(seller.calls)
+        listing = client.get("/ai-market/v2/federation/observed-sellers").json()
+        public = listing["sellers"][0]
+        assert public["outside_records"] == [{"by": "vet402", "url": "https://vet402.com/sellers/seller.example"}]
+        route = next(r for r in public["routes"] if r["url"] == f"{SELLER}/services/read-page")
+        assert route["outside_checks"] == [{"by": "vet402", "url": (
+            "https://vet402.com/api/v1/check?url=https%3A%2F%2Fseller.example%2Fservices%2Fread-page&method=POST")}]
+        assert "does not run or read" in listing["outside_records_note"]
+        assert "delivery" not in listing["vouches_for"]
+
+        found = client.get("/ai-market/v2/search", params={"intent": "read page text"}).json()
+        assert found["observed"][0]["outside_checks"][0]["by"] == "vet402"
+        # Links are built, never fetched: listing and search send the seller nothing new.
+        assert len(seller.calls) == calls_after_add

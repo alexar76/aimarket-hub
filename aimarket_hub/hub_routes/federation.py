@@ -684,6 +684,7 @@ def register(
                 "amount, asset, network and payTo"
             ),
             "how_to_buy": _observed.HOW_TO_BUY,
+            "outside_records_note": _observed.OUTSIDE_RECORDS_NOTE,
             "sellers": [
                 _observed.public_seller(s, hub_url=config.hub_url)
                 for s in db.list_observed_sellers()

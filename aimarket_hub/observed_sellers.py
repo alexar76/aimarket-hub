@@ -32,7 +32,7 @@ import os
 import re
 import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from aimarket_hub import crawler as _crawler
 
@@ -590,6 +590,71 @@ HOW_TO_BUY = (
 )
 
 
+# ── Outside records (spec §2.7) ──────────────────────────────────────
+
+#: Services that pay x402 sellers themselves and publish what each paid call returned. A
+#: listing links each seller and each route to them, so a buyer can read what an independent
+#: buyer received before it pays: an observation says only what the unpaid 402 asked for.
+#: The hub builds the links and nothing more: it does not fetch them, run them or vouch for
+#: their answers. vet402 confirmed on 2026-11-14 that ``/sellers/<host>`` is the URL it keeps
+#: stable and that ``/api/v1/check`` needs no key.
+OUTSIDE_RECORDERS: dict[str, dict[str, str]] = {
+    "vet402": {
+        "record": "https://vet402.com/sellers/{host}",
+        "check": "https://vet402.com/api/v1/check?url={url}&method={method}",
+    },
+}
+
+OUTSIDE_RECORDS_NOTE = (
+    "outside_records and outside_checks link to services that pay these sellers themselves and "
+    "publish what each paid call returned. This hub builds the links only: it does not run or "
+    "read those services, and their answers are not part of what this listing vouches for."
+)
+
+
+def outside_recorders() -> list[str]:
+    """The outside records this hub links: ``AIMARKET_OBSERVED_OUTSIDE_RECORDS``, a comma list
+    of names from ``OUTSIDE_RECORDERS`` (default ``vet402``). ``none`` or an empty value links
+    nothing; an unknown name is ignored."""
+    raw = os.getenv("AIMARKET_OBSERVED_OUTSIDE_RECORDS", "vet402")
+    names = [n.strip().lower() for n in raw.split(",") if n.strip()]
+    return [n for n in dict.fromkeys(names) if n in OUTSIDE_RECORDERS]
+
+
+def _record_host(origin: str) -> str:
+    """The host exactly as the seller's origin has it. Records are kept per host:
+    ``www.oracleinsight.xyz`` has a vet402 page and ``oracleinsight.xyz`` has none, so the
+    host is never shortened. An origin with an explicit port gets no link."""
+    norm = normalize_origin(origin)
+    if not norm:
+        return ""
+    parsed = urlparse(norm)
+    if parsed.port is not None:
+        return ""
+    return parsed.hostname or ""
+
+
+def outside_records(origin: str) -> list[dict[str, str]]:
+    """Links to what independent buyers published about this seller."""
+    host = _record_host(origin)
+    if not host:
+        return []
+    return [{"by": name, "url": OUTSIDE_RECORDERS[name]["record"].format(host=host)}
+            for name in outside_recorders()]
+
+
+def outside_checks(url: str, method: str) -> list[dict[str, str]]:
+    """Links an agent can GET before it pays this route: the outside service's answer for
+    exactly this URL and method."""
+    if not isinstance(url, str) or not normalize_origin(url) or not same_origin(url, normalize_origin(url)):
+        return []
+    verb = str(method or "POST").upper()
+    if not re.fullmatch(r"[A-Z]{3,7}", verb):
+        verb = "POST"
+    return [{"by": name, "url": OUTSIDE_RECORDERS[name]["check"].format(url=quote(url, safe=""), method=verb)}
+            for name in outside_recorders()]
+
+
 def served_routes(sellers: list[dict[str, Any]], *, hub_url: str = "",
                   now: float | None = None) -> list[dict[str, Any]]:
     """Every route a buyer may be shown: listed on its last observation, and that observation
@@ -624,6 +689,7 @@ def served_routes(sellers: list[dict[str, Any]], *, hub_url: str = "",
                 "observed_by": hub_url,
                 "signed_by_seller": False,
                 "how_to_buy": HOW_TO_BUY,
+                "outside_checks": outside_checks(route["url"], route.get("method") or "POST"),
                 **({"source": EXPLICIT_GET_SOURCE} if explicit else {}),
             })
     return out
@@ -647,7 +713,10 @@ def public_seller(seller: dict[str, Any], *, hub_url: str = "", now: float | Non
         "pinned_pay_to": seller.get("pinned_pay_to") or "",
         "consent": public_consent(seller.get("consent") or {}),
         "last_error": seller.get("last_error") or "",
-        "routes": [{**r, "served": r["url"] in served} for r in seller.get("routes") or []],
+        "outside_records": outside_records(seller["origin"]),
+        "routes": [{**r, "served": r["url"] in served,
+                    "outside_checks": outside_checks(r["url"], r.get("method") or "POST")}
+                   for r in seller.get("routes") or []],
         "routes_served": len(served),
     }
 
