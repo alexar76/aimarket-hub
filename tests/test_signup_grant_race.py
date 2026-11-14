@@ -45,7 +45,7 @@ def budget(monkeypatch):
 def test_thirty_concurrent_signups_mint_exactly_the_budget(tmp_path, budget):
     db = HubDatabase(tmp_path / "hub.db")
     ledger = credits.CreditsLedger(db._conn)
-    barrier = threading.Barrier(30)
+    barrier = threading.Barrier(30, timeout=30)
     answers: list[dict] = []
     lock = threading.Lock()
 
@@ -60,6 +60,7 @@ def test_thirty_concurrent_signups_mint_exactly_the_budget(tmp_path, budget):
         t.start()
     for t in threads:
         t.join(timeout=60)
+        assert not t.is_alive(), "signup worker did not finish within 60s"
     db._conn.close()
     granted, accounts = _granted(tmp_path / "hub.db")
     assert accounts == 30                       # everyone gets an account ...

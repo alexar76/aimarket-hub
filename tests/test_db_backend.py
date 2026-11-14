@@ -1153,24 +1153,43 @@ class TestPostgresDialectBoundary:
 
 
 def test_sqlite_read_rows_survive_concurrent_updates(tmp_path):
+    """One file, one connection per worker — the multi-worker shape, not 12 threads
+    on a single shared connection (that shape deadlocks under coverage tracing)."""
     from concurrent.futures import ThreadPoolExecutor
-    backend = SQLiteBackend(tmp_path / "concurrent-reads.db")
-    backend.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, value INTEGER)")
-    backend.execute("INSERT INTO items VALUES (1, 0)")
-    backend.commit()
+
+    seed = SQLiteBackend(tmp_path / "concurrent-reads.db")
+    seed.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, value INTEGER)")
+    seed.execute("INSERT INTO items VALUES (1, 0)")
+    seed.commit()
+    seed.close()
+
+    workers = 12
     # Timeout on the barrier: a worker that dies before wait() must not leave the
-    # other eleven blocked forever (2026-11-14 CI hung >70 min on the coverage job).
-    barrier = threading.Barrier(12, timeout=30)
-    def reader_writer(worker):
-        barrier.wait()
-        for _ in range(100):
-            row = backend.execute("SELECT id, value FROM items WHERE id = 1").fetchone()
-            assert row is not None and row["id"] == 1
-            backend.execute("UPDATE items SET value = value + 1 WHERE id = 1")
-            backend.commit()
+    # others blocked forever (2026-11-14 CI hung >70 min on the coverage job).
+    barrier = threading.Barrier(workers, timeout=30)
+    errors: list[BaseException] = []
+    err_lock = threading.Lock()
+
+    def reader_writer(worker: int) -> None:
+        backend = SQLiteBackend(tmp_path / "concurrent-reads.db")
+        try:
+            barrier.wait()
+            for _ in range(100):
+                row = backend.execute("SELECT id, value FROM items WHERE id = 1").fetchone()
+                assert row is not None and row["id"] == 1
+                backend.execute("UPDATE items SET value = value + 1 WHERE id = 1")
+                backend.commit()
+        except BaseException as exc:  # noqa: BLE001 — recorded, asserted below
+            with err_lock:
+                errors.append(exc)
+        finally:
+            backend.close()
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(reader_writer, range(workers)))
+    assert not errors, errors
+    check = SQLiteBackend(tmp_path / "concurrent-reads.db")
     try:
-        with ThreadPoolExecutor(max_workers=12) as pool:
-            list(pool.map(reader_writer, range(12)))
-        assert backend.execute("SELECT value FROM items WHERE id = 1").fetchone()[0] == 1200
+        assert check.execute("SELECT value FROM items WHERE id = 1").fetchone()[0] == 1200
     finally:
-        backend.close()
+        check.close()

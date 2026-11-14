@@ -7,20 +7,26 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# One run per ref: a new push/dispatch cancels the previous cleanly instead of
+# leaving a wedged runner reporting in_progress for an hour after it died.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Historical green runs finish in ~20 min. Without a cap, a single hung
-    # pytest (seen 2026-11-14: "Pytest + coverage badge" stuck >70 min after
-    # provenance started loading) keeps the CI badge red indefinitely.
-    timeout-minutes: 30
+    # Last green Pytest+coverage was ~22 min (2026-11-11). Headroom for growth;
+    # without a cap, a wedged runner can sit in_progress past an hour (2026-11-14).
+    timeout-minutes: 45
     permissions:
       contents: read
     env:
       AIMARKET_TEE_SOFTWARE_OK: "1"
+      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
@@ -58,11 +64,15 @@ jobs:
 
       - name: Pytest + coverage badge
         # -m "not live": pyproject documents live as opt-in; without this the Base RPC
-        # suite is collected on every CI run. --timeout=120 (pytest-timeout) kills a
-        # single stuck test instead of holding the job open for the runner limit.
+        # suite is collected on every CI run.
+        # --timeout-method=thread: signal timeouts cannot interrupt a test stuck in
+        # ThreadPoolExecutor/Barrier join (default signal method left CI wedged while
+        # the job stayed in_progress well past timeout-minutes).
+        timeout-minutes: 40
         run: >
           bash scripts/ci_coverage_badge.sh -- tests/ -q --tb=short
-          -m "not live" -k "not cross_hub" --maxfail=5 --timeout=120 --cov=aimarket_hub
+          -m "not live" -k "not cross_hub" --maxfail=5
+          --timeout=120 --timeout-method=thread --cov=aimarket_hub
 
       - name: Assert package version matches pyproject
         run: |

@@ -128,9 +128,18 @@ testpaths = ["tests"]
 # Match the marker docs: live/network tests are opt-in (`pytest -m live`).
 addopts = "-m 'not live'"
 timeout = 120
+# thread: signal alarms do not break a main thread blocked on worker joins
+# (CI 2026-11-14: Pytest + coverage badge left in_progress for >70 min).
+timeout_method = "thread"
 markers = [
     "live: touches a real network (Base RPC) — run with `-m live`, excluded by default.",
 ]
+
+# Threaded race tests share SQLite connections; without this, coverage stop can
+# wait forever on worker threads after the suite looks finished.
+[tool.coverage.run]
+concurrency = ["thread"]
+source = ["aimarket_hub"]
 
 # The money gate (.github/workflows/ci.yml): bug-finding rules over the code that moves,
 # holds or authorizes money. The rest of the package is not held to it yet; widening the
