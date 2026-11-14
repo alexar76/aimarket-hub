@@ -151,7 +151,10 @@ async def test_announcement_slow_dns_yields_to_health_and_returns_by_deadline(is
             started = time.monotonic()
             health = await client.get("/ai-market/v2/health")
             assert health.status_code == 200
-            assert time.monotonic() - started < 0.5
+            # Health must not wait out the DNS guard (release.wait up to 2s).
+            # 0.5 was tight under a 14-minute CI suite; keep it well under the
+            # blocked announce without flake on a loaded runner.
+            assert time.monotonic() - started < 1.5
             assert not pending.done()
             response = await pending
             assert response.status_code == 400

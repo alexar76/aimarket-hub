@@ -4,7 +4,7 @@ import asyncio
 import io
 import json
 import os
-import select
+import selectors
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -34,7 +34,12 @@ def session(tmp_path, **extra_env):
             proc.stdin.flush()
 
         def read():
-            ready, _, _ = select.select([proc.stdout], [], [], 20)
+            # selectors (poll/kqueue) — not select.select — because a long CI
+            # suite can leave FDs above FD_SETSIZE (1023) and select() raises
+            # "filedescriptor out of range" even when the child is healthy.
+            with selectors.DefaultSelector() as sel:
+                sel.register(proc.stdout, selectors.EVENT_READ)
+                ready = sel.select(20)
             assert ready, "MCP did not answer while stdin stayed open"
             raw = proc.stdout.readline()
             assert raw, (tmp_path / "stderr.log").read_text()
