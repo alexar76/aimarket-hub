@@ -1158,7 +1158,9 @@ def test_sqlite_read_rows_survive_concurrent_updates(tmp_path):
     backend.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, value INTEGER)")
     backend.execute("INSERT INTO items VALUES (1, 0)")
     backend.commit()
-    barrier = threading.Barrier(12)
+    # Timeout on the barrier: a worker that dies before wait() must not leave the
+    # other eleven blocked forever (2026-11-14 CI hung >70 min on the coverage job).
+    barrier = threading.Barrier(12, timeout=30)
     def reader_writer(worker):
         barrier.wait()
         for _ in range(100):

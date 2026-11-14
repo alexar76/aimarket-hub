@@ -13,6 +13,10 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Historical green runs finish in ~20 min. Without a cap, a single hung
+    # pytest (seen 2026-11-14: "Pytest + coverage badge" stuck >70 min after
+    # provenance started loading) keeps the CI badge red indefinitely.
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
@@ -53,7 +57,12 @@ jobs:
             aimarket_hub/db_backend.py aimarket_hub/idempotency.py aimarket_hub/hub_routes/accounts.py aimarket_hub/hub_routes/invoke.py
 
       - name: Pytest + coverage badge
-        run: bash scripts/ci_coverage_badge.sh -- tests/ -q --tb=short -k "not cross_hub" --maxfail=5 --cov=aimarket_hub
+        # -m "not live": pyproject documents live as opt-in; without this the Base RPC
+        # suite is collected on every CI run. --timeout=120 (pytest-timeout) kills a
+        # single stuck test instead of holding the job open for the runner limit.
+        run: >
+          bash scripts/ci_coverage_badge.sh -- tests/ -q --tb=short
+          -m "not live" -k "not cross_hub" --maxfail=5 --timeout=120 --cov=aimarket_hub
 
       - name: Assert package version matches pyproject
         run: |
@@ -71,6 +80,7 @@ jobs:
     # The ledger, subcontracting and signup-grant races on PostgreSQL, where each request has
     # its own session and row locks (not the shared SQLite connection's lock) keep money exact.
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
       contents: read
     services:
@@ -96,9 +106,11 @@ jobs:
 
       - name: Money races and crash recovery on PostgreSQL
         run: |
-          pytest -q --tb=short tests/test_money_races_postgres.py tests/test_invoke_idempotency.py tests/test_credits_rail.py \
+          pytest -q --tb=short --timeout=120 \
+            tests/test_money_races_postgres.py tests/test_invoke_idempotency.py tests/test_credits_rail.py \
             tests/test_credits_invoke.py tests/test_credit_hold_recovery.py tests/test_subcontract.py \
             tests/test_subcontract_chains.py tests/test_mandates.py tests/test_mandates_hardening.py
 
       - name: Money path under load, then a ledger audit (PostgreSQL)
+        timeout-minutes: 10
         run: python scripts/load_money_path.py --invokes 600 --concurrency 32 --database-url "$AIMARKET_TEST_DATABASE_URL"

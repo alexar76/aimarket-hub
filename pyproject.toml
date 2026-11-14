@@ -55,7 +55,7 @@ dependencies = [
 
 [project.optional-dependencies]
 client = ["aimarket-hub[escrow,pqc]"]
-dev = ["pytest>=8", "pytest-asyncio>=0.25", "pytest-httpx>=0.35"]
+dev = ["pytest>=8", "pytest-asyncio>=0.25", "pytest-httpx>=0.35", "pytest-timeout>=2.3"]
 # Escrow settlement bridge (aimarket_hub.escrow_bridge). Optional on purpose: the
 # bridge fails closed with CryptoUnavailable when these are absent, so a hub that
 # does not settle on-chain carries no crypto stack. Required to ACCEPT escrow-funded
@@ -125,6 +125,9 @@ aimarket_hub = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Match the marker docs: live/network tests are opt-in (`pytest -m live`).
+addopts = "-m 'not live'"
+timeout = 120
 markers = [
     "live: touches a real network (Base RPC) — run with `-m live`, excluded by default.",
 ]
