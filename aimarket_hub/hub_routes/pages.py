@@ -66,6 +66,8 @@ def register(
     # operator's address into every code sample on the page.
     docs_pages = {lang: landing.docs_html(lang=lang) for lang in landing.COPY}
     example_pages = {lang: landing.integration_examples_html(lang=lang) for lang in landing.COPY}
+    devto_examples = {lang: landing.integration_examples_html(lang=lang, from_devto_hudson=True)
+                      for lang in landing.COPY}
 
     hub_root = os.path.abspath(os.path.join(os.path.dirname(_API_FILE), ".."))
     from aimarket_hub.ui_assets import ui_asset_path
@@ -326,8 +328,9 @@ def register(
         )
 
     @app.get("/examples", response_class=HTMLResponse)
-    async def integration_examples(lang: str = "en"):
-        return HTMLResponse(example_pages.get(lang, example_pages["en"]))
+    async def integration_examples(request: Request, lang: str = "en"):
+        pages = devto_examples if request.query_params.get("from") == landing.DEVTO_HUDSON_SOURCE else example_pages
+        return HTMLResponse(pages.get(lang, pages["en"]))
 
     # ── HEPHAESTUS studio ───────────────────────────────────────
 
@@ -664,6 +667,8 @@ def register(
         # the /developers and /examples handlers read.
         docs_pages.update({lang: landing.docs_html(lang=lang) for lang in landing.COPY})
         example_pages.update({lang: landing.integration_examples_html(lang=lang) for lang in landing.COPY})
+        devto_examples.update({lang: landing.integration_examples_html(lang=lang, from_devto_hudson=True)
+                               for lang in landing.COPY})
 
     # The three webfonts every page's <head> asks for, served by us. They used to come from
     # fonts.googleapis.com, which disclosed each visitor's address to Google before the first

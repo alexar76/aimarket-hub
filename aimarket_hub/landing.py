@@ -17,7 +17,18 @@ import re
 from html import escape
 
 from . import theme
-from .onboarding_copy import COPY
+from .onboarding_copy import COPY, ESIM_FIRST_CALL
+
+DEVTO_HUDSON_SOURCE = "devto-hudson"
+_ESIM_FIRST_CALL_COMMAND = r"""curl -fsS https://modelmarket.dev/ai-market/v2/invoke \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "product_id": "esim-modelmarket",
+    "capability_id": "esim.quote@v1",
+    "source_hub": "https://esim.modelmarket.dev",
+    "max_price_usd": 0,
+    "input": {"country": "NL", "limit": 2}
+  }'"""
 
 def _escrow_address() -> str:
     """The CURRENT escrow, for the Basescan link on the landing page.
@@ -458,12 +469,15 @@ def _localise(body: str, hub_url: str, ecosystem_links: bool) -> str:
 
 
 def _page(body: str, title: str, description: str, active: str,
-          hub_url: str, ecosystem_links: bool, lang: str = "en") -> str:
+          hub_url: str, ecosystem_links: bool, lang: str = "en", *, from_devto_hudson: bool = False) -> str:
     lang = lang if lang in COPY else "en"
     copy = COPY[lang]
     path = "/examples" if active == "examples" else "/developers"
+    show_esim = active == "examples" and ecosystem_links and hub_url.rstrip("/") == "https://modelmarket.dev"
+    from_devto_hudson = from_devto_hudson and show_esim
+    source = f'&amp;from={DEVTO_HUDSON_SOURCE}#first-call' if from_devto_hudson else ''
     switcher = '<nav class="btn-row" aria-label="Language">' + ''.join(
-        f'<a class="btn btn-ghost" href="{path}?lang={code}" lang="{code}"'
+        f'<a class="btn btn-ghost" href="{path}?lang={code}{source}" lang="{code}"'
         + (' aria-current="page"' if code == lang else '') + f'>{label}</a>'
         for code, label in (("en", "EN"), ("ru", "RU"), ("es", "ES"), ("fr", "FR"), ("zh", "中文"))
     ) + '</nav>'
@@ -480,6 +494,17 @@ def _page(body: str, title: str, description: str, active: str,
     # which was hard to read on the dark field.
     entry += (f'</div><p class="section-note"><a href="/developers?lang={lang}">{escape(copy[0])}</a> · '
               f'<a href="/examples?lang={lang}">{escape(copy[1])}</a></p></section>')
+    if show_esim:
+        heading, description_text = ESIM_FIRST_CALL[lang]
+        command = _ESIM_FIRST_CALL_COMMAND
+        if from_devto_hudson:
+            command = command.replace('    "input":', f'    "purpose": "{DEVTO_HUDSON_SOURCE}-first-call",\n    "input":')
+        entry += (
+            '<section class="shell section" id="first-call">'
+            f'<div class="section-head"><h2 class="section-title">{escape(heading)}</h2></div>'
+            f'<p class="section-note">{escape(description_text)}</p>'
+            f'<pre>{escape(command)}</pre></section>'
+        )
     reference = _localise(body, hub_url, ecosystem_links)
     if lang != "en":
         reference = f'<details class="shell"><summary>{escape(copy[8])}</summary><div lang="en">{reference}</div></details>'
@@ -511,7 +536,8 @@ def docs_html(hub_url: str = "", ecosystem_links: bool | None = None, lang: str 
     )
 
 
-def integration_examples_html(hub_url: str = "", ecosystem_links: bool | None = None, lang: str = "en") -> str:
+def integration_examples_html(hub_url: str = "", ecosystem_links: bool | None = None, lang: str = "en",
+                              *, from_devto_hudson: bool = False) -> str:
     """The /examples page, rendered for whoever is actually serving it."""
     return _page(
         _EXAMPLES_BODY,
@@ -522,6 +548,7 @@ def integration_examples_html(hub_url: str = "", ecosystem_links: bool | None = 
         hub_url or str(theme.BRAND.get("hub_url") or ""),
         bool(theme.BRAND.get("ecosystem_links")) if ecosystem_links is None else ecosystem_links,
         lang,
+        from_devto_hudson=from_devto_hudson,
     )
 
 
