@@ -222,9 +222,16 @@ def create_app(cfg: NodeConfig, signer: Any | None = None, transport: Any | None
     """The node's ASGI app. `transport` is for tests (an httpx transport to the upstream)."""
     # FastAPI resolves `request: Request` from module globals (this file uses postponed
     # annotations), which is why those imports sit at the top and not here.
-    from aimarket_hub.signing import Signer
+    from aimarket_hub.signing import Signer, hub_signs_hybrid
 
-    signer = signer or Signer(cfg.key_path)
+    # The node's identity follows the hub's own rule (`signing.hub_signs_hybrid`): a new node signs
+    # hybrid Ed25519 + ML-DSA-65; a node that holds an ML-DSA-65 key keeps signing with it even when
+    # AIMARKET_PQC is lost on a redeploy (peers pinned that key, and the ratchet refuses a node that
+    # stops); AIMARKET_PQC=1/0 still decides when it is set. Until 2026-11-15 a node read only the
+    # plain switch, so every node started without it signed Ed25519 only, and a hub that requires a
+    # post-quantum signature (hub.attestedmemory.net) kept domains.* and esim.modelmarket.dev
+    # pending for weeks while both looked healthy everywhere else.
+    signer = signer or Signer(cfg.key_path, pqc=hub_signs_hybrid(cfg.key_path))
     by_id = {(c.product, c.id): c for c in cfg.capabilities}
     by_cap = {c.id: c for c in cfg.capabilities}
     app = FastAPI(title=f"{cfg.name} — AIMarket node", docs_url=None, redoc_url=None)

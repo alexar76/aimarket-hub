@@ -214,3 +214,61 @@ def test_a_provider_key_travels_in_the_signed_manifest_and_a_bad_one_is_named(tm
     with pytest.raises(ValueError, match="provider_pubkey must be a base64 Ed25519"):
         node.load(path)
 
+
+# ── The node's own signer: hybrid unless told otherwise (2026-11-15) ──────────────────────────
+
+import importlib.util
+
+needs_pq = pytest.mark.skipif(importlib.util.find_spec("dilithium_py") is None,
+                              reason="ML-DSA-65 needs aimarket-hub[pqc]")
+
+
+def _default_signed_node(tmp_path, monkeypatch, key_name="node_key"):
+    path = tmp_path / "node.toml"
+    path.write_text(CONFIG)
+    cfg = node.load(path)
+    cfg.key_path = str(tmp_path / key_name)
+    return cfg
+
+
+@needs_pq
+def test_a_new_node_signs_hybrid_without_any_flag(tmp_path, monkeypatch):
+    monkeypatch.delenv("AIMARKET_PQC", raising=False)
+    cfg = _default_signed_node(tmp_path, monkeypatch)
+    with TestClient(node.create_app(cfg, transport=_seller([]))) as client:
+        wk = client.get("/.well-known/ai-market.json").json()
+        man = client.get("/ai-market/v2/manifest").json()
+    assert wk["signature"].get("pq_value") and man["signature"].get("pq_value")
+    assert (tmp_path / "node_key_mldsa").exists()
+
+
+@needs_pq
+def test_a_node_that_signed_hybrid_keeps_doing_so_when_the_flag_is_lost(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIMARKET_PQC", "1")
+    cfg = _default_signed_node(tmp_path, monkeypatch)
+    node.create_app(cfg, transport=_seller([]))            # first start, flag on: ML-DSA key made
+    monkeypatch.delenv("AIMARKET_PQC")                     # a redeploy that forgot the flag
+    with TestClient(node.create_app(cfg, transport=_seller([]))) as client:
+        assert client.get("/.well-known/ai-market.json").json()["signature"].get("pq_value")
+
+
+def test_an_explicit_off_still_signs_classic_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIMARKET_PQC", "0")
+    cfg = _default_signed_node(tmp_path, monkeypatch)
+    with TestClient(node.create_app(cfg, transport=_seller([]))) as client:
+        assert not client.get("/.well-known/ai-market.json").json()["signature"].get("pq_value")
+
+
+@needs_pq
+def test_a_hub_that_requires_post_quantum_admits_a_default_node(tmp_path, monkeypatch):
+    """The case that kept domains.* and esim.modelmarket.dev out of hub.attestedmemory.net."""
+    import aimarket_hub.crawler as crawler
+
+    monkeypatch.setattr(crawler, "_url_is_safe", lambda u: u.startswith("https://"))
+    monkeypatch.delenv("AIMARKET_PQC", raising=False)
+    cfg = _default_signed_node(tmp_path, monkeypatch)
+    with TestClient(node.create_app(cfg, transport=_seller([]))) as client:
+        monkeypatch.setenv("AIMARKET_PQC_REQUIRE", "1")
+        dossier = _assay(client, tmp_path, free_first=True)
+    assert dossier["verdict"] == "pass", dossier["checks"]
+
