@@ -21,11 +21,26 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from aimarket_hub import settle, provider_recovery
 from aimarket_hub.db_backend import returning_one
-from aimarket_hub.studio_paid import _json, check_input
+from aimarket_hub.studio_paid import _json, _refused_before_running, check_input
 
 PROTOCOL = 'SELLER-OP/1'
 ZERO_WALLET = '0x' + '00' * 20
 BASE = '/ai-market/v2/operations'
+
+
+def _quoted_price(terms):
+    return terms['amount_units'] / 10**terms['decimals'] if terms else 0
+
+
+def _same_offer_route(current, offer):
+    if current is None or current['input_schema'] != offer['input_schema']:
+        return False
+    # Both terms were computed at the original gross amount. Only the USD
+    # display price can differ from its rounded atomic equivalent.
+    def payment_route(terms):
+        return {key: value for key, value in terms.items() if key != 'amount_usd'} if terms else None
+
+    return payment_route(current['terms']) == payment_route(offer['terms'])
 
 
 class QuoteRequest(BaseModel):
@@ -44,6 +59,9 @@ class ExecuteRequest(BaseModel):
 
 
 class SellerOperations:
+    STALE_BUSY_S = 180.0
+    _PRE_DISPATCH = ("payment_pending", "ready")
+
     def __init__(self, studio, invoke):
         self.studio, self.conn, self.signer, self.invoke = studio, studio.conn, studio.signer, invoke
         self.provider_status = provider_recovery.request_status
@@ -61,7 +79,7 @@ class SellerOperations:
         except (ValueError, SchemaError) as exc:
             raise HTTPException(409, {'code': 'settlement_route_unsupported', 'detail': str(exc)[:300]}) from exc
         terms, schema = description['terms'], description['input_schema']
-        price = terms['amount_usd'] if terms else 0
+        price = _quoted_price(terms)
         if price > body.max_price_usd:
             raise HTTPException(409, 'seller price exceeds the approved maximum')
         operation_id, token = 'op_' + secrets.token_hex(16), secrets.token_urlsafe(32)
@@ -92,10 +110,19 @@ class SellerOperations:
             raise HTTPException(404, 'operation not found')
         return json.loads(row['state_json']), row
 
-    def save(self, operation_id, state, *, busy=False, response=None):
-        self.conn.execute('UPDATE seller_operations SET state_json = ?, busy = ?, response_json = ?, updated_at = ? WHERE operation_id = ? AND response_json = \'\'',
-            (_json(state), int(busy), _json(response) if response else '', time.time(), operation_id))
-        self.conn.commit()
+    def save(self, operation_id, state, *, busy=False, response=None, expected_state=None):
+        condition = " AND busy = 1 AND state_json = ?" if expected_state is not None else ""
+        args = (expected_state,) if expected_state is not None else ()
+        return returning_one(
+            self.conn,
+            "UPDATE seller_operations SET state_json = ?, busy = ?, response_json = ?, updated_at = ? "
+            "WHERE operation_id = ? AND response_json = ''" + condition + " RETURNING operation_id",
+            (_json(state), int(busy), _json(response) if response else '', time.time(), operation_id, *args),
+            commit=True,
+        ) is not None
+
+    def _claim_expired(self, row):
+        return bool(row['busy']) and time.time() - row['updated_at'] > self.STALE_BUSY_S
 
     def view(self, state, busy=False):
         offer = state['offer']
@@ -119,8 +146,10 @@ class SellerOperations:
         state, row = self.load(operation_id, token)
         if row['response_json']:
             return json.loads(row['response_json'])
-        if row['busy'] and time.time() - row['updated_at'] > 180:
-            # Never unlock a possibly dispatched non-idempotent provider on a timer.
+        if self._claim_expired(row):
+            if state['status'] in self._PRE_DISPATCH:
+                state['detail'] = 'Interrupted before dispatch. Resume with the same request and payment.'
+                return self.view(state)
             state.update(status='reconciliation_required', detail='Stale execution claim; verify provider outcome before any further action.')
         return self.view(state, row['busy'])
 
@@ -130,7 +159,7 @@ class SellerOperations:
             return self.status(operation_id, token)
         if state['status'] not in ('running', 'reconciliation_required'):
             return self.status(operation_id, token)
-        if row['busy'] and time.time() - row['updated_at'] <= 180:
+        if row['busy'] and not self._claim_expired(row):
             return self.status(operation_id, token)
         # Paid work may be recovered only after the original transfer was verified.
         # Old operations without that durable evidence remain operator-reconciled.
@@ -141,13 +170,20 @@ class SellerOperations:
             provider_recovery.verify(doc, state['provider_recovery'], operation_id, state['node'], state['request']['input'])
         except (ValueError, KeyError, TypeError, httpx.HTTPError):
             return self.status(operation_id, token)
-        original = _json(state)
+        original = row['state_json']
         if doc['status'] == 'completed':
             state.update(status='completed', result=doc['result'], receipt=doc,
                          detail='Recovered the signed provider result without a second dispatch.')
         elif doc['status'] == 'reconciliation_required':
             state.update(status='reconciliation_required', provider_requires_operator=True,
                          detail='Provider has no durable outcome; manual reconciliation is required.')
+            if row['busy']:
+                # A slow dispatched worker may still return a definitive answer.
+                # Surface the status without invalidating its claim's CAS.
+                _, latest = self.load(operation_id, token)
+                if latest['state_json'] != original or latest['response_json']:
+                    return self.status(operation_id, token)
+                return self.view(state, busy=True)
         else:
             return self.status(operation_id, token)
         response = self.view(state)
@@ -165,7 +201,8 @@ class SellerOperations:
             request['tx_hash'] = request['tx_hash'].lower()
         if state['request'] is not None and state['request'] != request:
             raise HTTPException(409, 'operation input, buyer and payment are immutable')
-        if row['response_json'] or row['busy'] or state['status'] == 'reconciliation_required':
+        reclaim = self._claim_expired(row) and state['status'] in self._PRE_DISPATCH
+        if row['response_json'] or (row['busy'] and not reclaim) or state['status'] in ('running', 'reconciliation_required'):
             return await self.recover(operation_id, token)
         offer = state['offer']
         if offer['wallet'] != ZERO_WALLET and offer['wallet'] != request['wallet']:
@@ -180,12 +217,18 @@ class SellerOperations:
             raise HTTPException(400, 'free operations accept no payment')
         if state['request'] is None and not request['tx_hash'] and time.time() >= offer['expires_at']:
             raise HTTPException(409, 'unstarted operation offer expired')
-        original_state = _json(state)
+        original_state = row['state_json']
         state['request'], state['input_digest'] = request, hashlib.sha256(_json(request['input']).encode()).hexdigest()
         state['status'] = 'payment_pending' if offer['terms'] else 'ready'
+        # The state CAS uses a new claim for every attempt, even when an expired
+        # worker held the same request. A late worker cannot pass the running fence.
+        state['execution_claim'] = secrets.token_hex(16)
+        claimed_state = _json(state)
         if not returning_one(self.conn,
-            'UPDATE seller_operations SET state_json = ?, busy = 1, updated_at = ? WHERE operation_id = ? AND busy = 0 AND state_json = ? RETURNING operation_id',
-            (_json(state), time.time(), operation_id, original_state), commit=True):
+            "UPDATE seller_operations SET state_json = ?, busy = 1, updated_at = ? "
+            "WHERE operation_id = ? AND busy = ? AND updated_at = ? AND state_json = ? "
+            "AND response_json = '' RETURNING operation_id",
+            (claimed_state, time.time(), operation_id, row['busy'], row['updated_at'], original_state), commit=True):
             return self.status(operation_id, token)
         dispatched = False
         try:
@@ -196,8 +239,8 @@ class SellerOperations:
                         paid_before=offer['invoice']['expires_at'] if time.time() >= offer['expires_at'] else None)
                 except Exception:
                     state['detail'] = 'Payment confirmation unavailable; retain the same operation and transaction.'
-                    self.save(operation_id, state)
-                    return self.view(state)
+                    self.save(operation_id, state, expected_state=claimed_state)
+                    return self.status(operation_id, token)
                 authorizer = str(payment.get('authorizer', '')).lower()
                 if request['wallet'] != ZERO_WALLET and authorizer != request['wallet']:
                     if offer['wallet'] != ZERO_WALLET:
@@ -206,11 +249,16 @@ class SellerOperations:
                         state['verified_payment'] = payment
                         state.update(status='failed', detail='Paid by a wallet other than the one this offer was made for; no provider dispatch. Ask the operator for a refund of the recorded payment.')
                         response = self.view(state)
-                        self.save(operation_id, state, response=response)
+                        self.save(operation_id, state, response=response, expected_state=claimed_state)
                         return self.status(operation_id, token)
                     # Open offer, wrong wallet declared: undo the claim so the same payment can be
                     # submitted again with the paying wallet (or none).
-                    self.save(operation_id, json.loads(original_state))
+                    reset = json.loads(original_state)
+                    reset.update(status='quoted', request=None, detail='')
+                    reset.pop('input_digest', None)
+                    reset.pop('execution_claim', None)
+                    if not self.save(operation_id, reset, expected_state=claimed_state):
+                        return self.status(operation_id, token)
                     raise HTTPException(409, 'payment authorizer differs from the declared wallet; nothing was dispatched — '
                                              'invoke again with the paying wallet, or without one')
                 # With no declared wallet, whoever paid this invoice is the buyer. The request itself
@@ -218,23 +266,31 @@ class SellerOperations:
                 state['verified_payment'], state['payer'] = payment, authorizer
             # Every revalidation precedes dispatch. The outer operation never renews the invoice.
             try:
-                current = self.studio.describe(state['node'], validate_input=False)
+                current = self.studio.describe(
+                    state['node'], validate_input=False,
+                    quoted_units=offer['terms']['amount_units'] if offer['terms'] else None,
+                )
             except (ValueError, SchemaError):
                 current = None  # the listing is gone or its route is no longer usable
-            if current != {'terms': offer['terms'], 'input_schema': offer['input_schema']}:
+            if not _same_offer_route(current, offer):
                 state.update(status='failed', detail='Listing changed after the offer; no provider dispatch.')
             else:
                 state['status'] = 'running'
-                self.save(operation_id, state, busy=True)  # durable BEFORE provider dispatch
+                if not self.save(operation_id, state, busy=True, expected_state=claimed_state):
+                    return self.status(operation_id, token)
+                claimed_state = _json(state)
                 headers = {}
                 if offer['terms']:
                     headers = {'X-Payment': request['tx_hash'], 'X-Payment-Nonce': offer['invoice']['nonce'],
                                'X-Payment-Secret': state['secret']}
                 payload = {k: state['node'][k] for k in ('product_id', 'capability_id', 'source_hub')}
-                payload.update(input=request['input'], max_price_usd=offer['terms']['amount_usd'] if offer['terms'] else 0)
+                payload.update(input=request['input'], max_price_usd=_quoted_price(offer['terms']))
                 dispatched = True
                 code, answer = await self.invoke(payload, headers, caller, operation_id=operation_id)
-                if code >= 500:
+                if _refused_before_running(code, answer):
+                    state.update(status='payment_pending' if offer['terms'] else 'ready',
+                                 detail='Hub refused before dispatch. Resume with the same request and payment.')
+                elif code >= 500:
                     state.update(status='reconciliation_required', detail='Provider outcome uncertain; no automatic second dispatch.')
                 else:
                     success = 200 <= code < 300 and answer.get('success', answer.get('ok')) is True
@@ -245,14 +301,15 @@ class SellerOperations:
         except BaseException:
             if dispatched:
                 state.update(status='reconciliation_required', detail='Interrupted execution; inspect the same operation, never repurchase.')
-                self.save(operation_id, state)
+                self.save(operation_id, state, expected_state=claimed_state)
             else:
                 # Nothing reached the provider: release the claim as it was, so the same request
                 # can simply run again. Marking it "reconciliation" stranded paid operations forever.
-                self.save(operation_id, json.loads(original_state))
+                self.save(operation_id, json.loads(original_state), expected_state=claimed_state)
             raise
         response = self.view(state)
-        self.save(operation_id, state, response=response if state['status'] in ('completed', 'failed') else None)
+        self.save(operation_id, state, response=response if state['status'] in ('completed', 'failed') else None,
+                  expected_state=claimed_state)
         return self.status(operation_id, token)
 
 

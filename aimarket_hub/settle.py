@@ -208,20 +208,24 @@ def splitter_hint(offer_to: str, seller: str) -> dict[str, Any] | None:
     }
 
 
-def terms_for(cap: Any, *, operator_pay_to: str = "") -> PaymentTerms | None:
+def terms_for(cap: Any, *, operator_pay_to: str = "", quoted_units: int | None = None) -> PaymentTerms | None:
     """Priced listing with a seller, or None — never terms that pay nobody."""
     from aimarket_hub import x402
 
     price = float(getattr(cap, "price_per_call_usd", 0) or 0)
     pay_to = seller_pay_to(cap, operator_pay_to=operator_pay_to)
-    if price <= 0 or not pay_to:
+    if not pay_to or (quoted_units is None and price <= 0):
         return None
     profile = x402.asset_profile()
     if not profile:
         return None
     decimals = int(profile.get("decimals") or 6)
     extra = profile.get("extra") or {}
-    gross = to_units(price, decimals)
+    gross = to_units(price, decimals) if quoted_units is None else quoted_units
+    if gross <= 0:
+        return None
+    if quoted_units is not None:
+        price = gross / 10**decimals
     # A fee needs somewhere to send it AND something to split it. Configured without
     # either, it is not applied at all rather than quietly charged to the seller.
     bps = fee_bps()
@@ -480,6 +484,7 @@ def verify_transfer(
             f"{terms.min_confirmations} required"
         )
 
+    mined_at = None
     if max_age_s > 0 or paid_before is not None:
         block = _rpc(used, "eth_getBlockByNumber", [hex(mined), False], timeout)
         raw_ts = (block or {}).get("timestamp")
@@ -592,6 +597,7 @@ def verify_transfer(
         "fee_units": paid_fee,
         "confirmations": confirmations,
         "block_number": mined,
+        "mined_at": mined_at,
         "chain": terms.chain,
         "token": terms.token,
         "pay_to": terms.pay_to,
@@ -717,18 +723,24 @@ class PaymentStore:
             conn.commit()
             return True
 
-    def release_invoice(self, tx_hash: str, nonce: str) -> bool:
+    def release_invoice(self, tx_hash: str, nonce: str, *, stale_before: float | None = None) -> bool:
         """Restore the same invoice and claim together after a definite refusal."""
         if not tx_hash or not nonce:
             return False
         with self._conn.get_connection() as conn:
-            conn.execute(
+            age_guard = " AND consumed_at > 0 AND consumed_at < ?" if stale_before is not None else ""
+            age_args = (stale_before,) if stale_before is not None else ()
+            released = conn.execute(
                 "UPDATE settle_invoices SET consumed_at = 0, tx_hash = '' "
-                "WHERE nonce = ? AND tx_hash = ?",
-                (nonce.lower(), tx_hash.lower()),
+                "WHERE nonce = ? AND tx_hash = ?" + age_guard,
+                (nonce.lower(), tx_hash.lower(), *age_args),
             )
+            if stale_before is not None and not released.rowcount:
+                conn.rollback()
+                return False
             deleted = conn.execute(
-                "DELETE FROM x402_payments WHERE settle_tx_hash = ? AND nonce = ?",
+                "DELETE FROM x402_payments WHERE settle_tx_hash = ? AND nonce = ? "
+                "AND COALESCE(receipt_id, '') = ''",
                 (tx_hash.lower(), nonce.strip()),
             )
             if not deleted.rowcount:
@@ -758,7 +770,8 @@ class PaymentStore:
         ).fetchall()
         released = 0
         for row in rows:
-            if self.release_invoice(str(row["tx_hash"]), str(row["nonce"])):
+            # A candidate may have delivered or been reclaimed since the scan.
+            if self.release_invoice(str(row["tx_hash"]), str(row["nonce"]), stale_before=cutoff):
                 released += 1
         return released
 

@@ -73,7 +73,10 @@ async def _invoke_local(d: SimpleNamespace, call: _Call):
     #   anything else           -> release_hold in the `finally` below
     # No rail switched on → free tier: charge nothing and never reserve/debit.
     # With EITHER rail on, a listed price is money.
-    local.price = 0.0 if (call.sandbox_mode or not call.price_rail_active) else local.list_price
+    if local.x402_accepted is not None:
+        local.price = local.x402_accepted["amount_usd"]
+    elif not call.sandbox_mode and call.price_rail_active:
+        local.price = local.list_price
     for phase in (_local_escrow_authorization, _local_reserve, _local_admit):
         refused = phase(d, call, local)
         if refused is not None:
@@ -216,6 +219,9 @@ def _local_quote(d: SimpleNamespace, call: _Call, local: _Local):
     ):
         # The catalogue sale is live: this listing has a seller to pay.
         call.price_rail_active = True
+    # Payment redemption checks the quote the buyer actually received.
+    if call.x402_payment is not None and not sandbox_mode:
+        return None
     # The ceiling is compared with what the paying rail will actually take. A payment channel
     # bills whole cents rounded UP (channels._dollars_to_cents_bill, BILLING-001), so a $0.004
     # call costs $0.01 there: checked against the list price, a buyer's max_price_usd of 0.004
@@ -226,17 +232,22 @@ def _local_quote(d: SimpleNamespace, call: _Call, local: _Local):
 
         charged = _dollars_to_cents_bill(list_price) / 100.0
     if body.max_price_usd is not None and charged > body.max_price_usd + 1e-9:
-        return JSONResponse(status_code=409, content={
-            "success": False,
-            "error": "price_limit_exceeded",
-            "detail": ("the capability price changed after selection; search again" if list_price > body.max_price_usd
-                       else "a payment channel bills whole cents: this call costs "
-                            f"${charged:.2f} there; raise max_price_usd or pay with credits or x402"),
-            "maximum_price_usd": body.max_price_usd,
-            "current_price_usd": charged,
-            "protocol_version": "v2",
-        })
+        detail = ("the capability price changed after selection; search again" if list_price > body.max_price_usd
+                  else "a payment channel bills whole cents: this call costs "
+                       f"${charged:.2f} there; raise max_price_usd or pay with credits or x402")
+        return _local_price_limit(body.max_price_usd, charged, detail)
     return None
+
+
+def _local_price_limit(maximum: float, charged: float, detail: str) -> JSONResponse:
+    return JSONResponse(status_code=409, content={
+        "success": False,
+        "error": "price_limit_exceeded",
+        "detail": detail,
+        "maximum_price_usd": maximum,
+        "current_price_usd": charged,
+        "protocol_version": "v2",
+    })
 
 
 def _local_seller_direct(d: SimpleNamespace, call: _Call, local: _Local):
@@ -261,7 +272,7 @@ def _local_seller_direct(d: SimpleNamespace, call: _Call, local: _Local):
     # unpaid_invoke_refused probe has a file Factory remediation can patch.
     from aimarket_hub.unpaid_invoke import must_refuse_unpaid_paid_capability
 
-    if x402_payment is not None and cap.price_per_call_usd > 0 and not sandbox_mode:
+    if x402_payment is not None and (cap.price_per_call_usd > 0 or x_payment_secret) and not sandbox_mode:
         local.x402_accepted = _settle_market_payment(
             raw=x402_raw,
             payload=x402_payment,
@@ -270,7 +281,10 @@ def _local_seller_direct(d: SimpleNamespace, call: _Call, local: _Local):
             capability_id=body.capability_id,
             header_nonce=(x_payment_nonce or "").strip(),
             header_secret=(x_payment_secret or "").strip(),
+            max_price_usd=body.max_price_usd,
         )
+        if "price_limit" in local.x402_accepted:
+            return _local_price_limit(body.max_price_usd, local.x402_accepted["price_limit"], local.x402_accepted["error"])
         if local.x402_accepted.get("error"):
             return JSONResponse(status_code=402, content={
                 "success": False,

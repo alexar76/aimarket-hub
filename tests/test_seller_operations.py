@@ -6,13 +6,15 @@ was then immutable, recovery needed a verified payment that was never stored, an
 paid the seller was stuck at contact_operator for good.
 """
 import asyncio
+import threading
+import time
 
 import pytest
 from fastapi import HTTPException
 
 from aimarket_hub import settle
 from aimarket_hub.seller_operations import ExecuteRequest, QuoteRequest, SellerOperations
-from tests.test_studio_paid import TX, WALLET, setup  # noqa: F401  (fixture)
+from tests.test_studio_paid import TX, WALLET, listing, setup  # noqa: F401  (fixture)
 
 OTHER = "0x" + "99" * 20
 
@@ -104,5 +106,77 @@ def test_an_unexpected_error_before_dispatch_releases_the_claim(setup, monkeypat
         run(ops, op, token)
     assert ops.status(op, token)["status"] != "reconciliation_required"
     monkeypatch.setattr(service, "describe", real)
+    assert run(ops, op, token)["status"] == "completed"
+    assert calls == [op]
+
+
+@pytest.mark.parametrize("price", [0, 0.01])
+def test_the_paid_offer_holds_after_the_listing_price_changes(setup, monkeypatch, price):
+    service, db, _ = setup
+    ops, calls = operations(service)
+    op, token = prepare(ops)
+    pay(monkeypatch, WALLET)
+    listing(db, price=price)
+    result = run(ops, op, token)
+    assert result["status"] == "completed"
+    assert run(ops, op, token) == result
+    assert calls == [op]
+
+
+@pytest.mark.asyncio
+async def test_only_the_current_predispatch_claim_may_invoke(setup, monkeypatch):
+    service, _, _ = setup
+    ops, calls = operations(service)
+    op, token = prepare(ops)
+    body = ExecuteRequest(input={}, tx_hash=TX)
+    loop = asyncio.get_running_loop()
+    checking = asyncio.Event()
+    release = threading.Event()
+    pay(monkeypatch, WALLET)
+    verify = settle.verify_transfer
+
+    def pause_first(**kwargs):
+        if not checking.is_set():
+            loop.call_soon_threadsafe(checking.set)
+            assert release.wait(5)
+        return verify(**kwargs)
+
+    monkeypatch.setattr(settle, "verify_transfer", pause_first)
+    first = asyncio.create_task(ops.execute(op, token, body, "buyer"))
+    try:
+        await asyncio.wait_for(checking.wait(), timeout=5)
+        ops.conn.execute(
+            "UPDATE seller_operations SET updated_at = ? WHERE operation_id = ?",
+            (time.time() - ops.STALE_BUSY_S - 1, op),
+        )
+        ops.conn.commit()
+        assert (await ops.recover(op, token))["recovery"]["action"] == "resume_same_operation"
+        second = await ops.execute(op, token, body, "buyer")
+    finally:
+        release.set()
+        first_result = await first
+    assert second["status"] == "completed"
+    assert first_result == second
+    assert calls == [op]
+
+
+@pytest.mark.parametrize("code,answer", [(429, {"detail": "slow down"}),
+                                        (503, {"detail": "payment verifier unavailable"})])
+def test_proven_predispatch_refusals_leave_the_same_paid_operation_retryable(setup, monkeypatch, code, answer):
+    service, _, _ = setup
+    ops, calls = operations(service)
+    op, token = prepare(ops)
+    pay(monkeypatch, WALLET)
+    original = ops.invoke
+
+    async def refused(*args, **kwargs):
+        return code, answer
+
+    ops.invoke = refused
+    outcome = run(ops, op, token)
+    assert outcome["status"] == "payment_pending"
+    assert outcome["recovery"]["action"] == "resume_same_operation"
+    assert calls == []
+    ops.invoke = original
     assert run(ops, op, token)["status"] == "completed"
     assert calls == [op]

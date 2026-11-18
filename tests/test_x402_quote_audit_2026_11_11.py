@@ -3,6 +3,8 @@ upward before the paid retry, and the hub refused the payment while the USDC sat
 The quote holds now."""
 from __future__ import annotations
 
+import pytest
+
 from aimarket_hub.models import Capability
 from tests.test_credits_invoke import _hub
 
@@ -27,18 +29,30 @@ def _cap(price):
                       prompt_template='{"answer": "echo", "ok": true}', payout_address="0x" + "cd" * 20)
 
 
-def test_a_quote_holds_when_the_listing_is_repriced_before_the_paid_retry(monkeypatch, tmp_path):
+@pytest.mark.parametrize("new_price", [0.005, 0.003, 0.0])
+def test_a_quote_holds_when_the_listing_is_repriced_before_the_paid_retry(monkeypatch, tmp_path, new_price):
     with _hub(monkeypatch, tmp_path, AIMARKET_CREDITS_ENABLED="0", AIMARKET_X402_ACCEPT="1",
               AIFACTORY_CRYPTO_ENABLED="1", AIMARKET_PAYMENT_RECIPIENT="0x" + "cd" * 20,
               AIMARKET_ALLOW_DEMO_CREDIT="1", AIMARKET_AUTO_CRAWL="0") as (client, db):
         db.upsert_capability(_cap(0.004))
         body = {"product_id": "demo-echo", "capability_id": "demo.echo@v1", "input": {"text": "hi"},
-                "source_hub": "local"}
+                "source_hub": "local", "max_price_usd": 0.004}
         quote = client.post("/ai-market/v2/invoke", json=body)
         assert quote.status_code == 402
         _paid_exactly(monkeypatch, 0.004)          # buyer pays the quoted amount to the seller
-        db.upsert_capability(_cap(0.005))          # listing repriced before the paid retry
-        r = client.post("/ai-market/v2/invoke", json=body, headers={
+        db.upsert_capability(_cap(new_price))
+        headers = {
             "X-Payment": "0x" + "44" * 32, "X-Payment-Nonce": quote.json()["nonce"],
-            "X-Payment-Secret": quote.json()["payment_secret"]})
+            "X-Payment-Secret": quote.json()["payment_secret"]}
+        refused = client.post("/ai-market/v2/invoke", json={**body, "max_price_usd": 0.003}, headers=headers)
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["current_price_usd"] == 0.004
+        r = client.post("/ai-market/v2/invoke", json=body, headers=headers)
         assert r.status_code == 200, r.text
+        assert r.json()["price_usd"] == r.json()["receipt"]["price_usd"] == 0.004
+        assert r.json()["list_price_usd"] == r.json()["receipt"]["list_price_usd"] == new_price
+        payment = db._conn.execute(
+            "SELECT amount_usd, amount_atomic FROM x402_payments WHERE nonce = ?", (quote.json()["nonce"],),
+        ).fetchone()
+        assert payment["amount_usd"] == 0.004
+        assert payment["amount_atomic"] == "4000"

@@ -122,6 +122,7 @@ def register(
         capability_id: str,
         header_nonce: str = "",
         header_secret: str = "",
+        max_price_usd: float | None = None,
     ) -> dict:
         """Verify the buyer paid this listing's seller on-chain.
 
@@ -129,19 +130,21 @@ def register(
         names the same payee and carries the settle transaction. A signature
         without a chain receipt is not a payment.
         """
-        terms = settle.terms_for(cap, operator_pay_to=x402.recipient())
-        if terms is None:
+        if not settle.seller_pay_to(cap, operator_pay_to=x402.recipient()):
             return {"error": "this listing has no seller payout_address"}
         ref = settle.extract_payment_ref(raw, payload)
         tx_hash = ref["tx_hash"]
         nonce = (header_nonce or ref["nonce"] or "").strip().lower()
         inner = (payload or {}).get("payload") if isinstance((payload or {}).get("payload"), dict) else {}
-        if (payload or {}).get("authorization") or inner.get("authorization"):
-            checked = x402.verify_payment(payload or {}, price_usd=price_usd, pay_to=terms.pay_to)
-            if not checked.get("ok"):
-                return {"error": checked.get("error") or "payment could not be verified"}
-            nonce = nonce or str(checked.get("nonce") or "")
+        has_authorization = bool((payload or {}).get("authorization") or inner.get("authorization"))
         if not tx_hash:
+            terms = settle.terms_for(cap, operator_pay_to=x402.recipient())
+            if terms is None:
+                return {"error": "this listing has no seller payout_address"}
+            if has_authorization:
+                checked = x402.verify_payment(payload or {}, price_usd=price_usd, pay_to=terms.pay_to)
+                if not checked.get("ok"):
+                    return {"error": checked.get("error") or "payment could not be verified"}
             return {"error": (
                 "pay USDC on-chain to the seller payout_address, then retry with "
                 "X-Payment: <tx hash> (and X-Payment-Nonce from the 402)"
@@ -177,27 +180,24 @@ def register(
         if (float(invoice.get("consumed_at") or 0) > 0
                 and str(invoice.get("tx_hash") or "").lower() != tx_hash.lower()):
             return {"error": "that payment nonce has already been spent"}
-        expired = time.time() > float(invoice["expires_at"])
+        terms = settle.terms_for(
+            cap, operator_pay_to=x402.recipient(), quoted_units=int(invoice["amount_units"]),
+        )
+        if terms is None:
+            return {"error": "this listing has no seller payout_address"}
         if str(invoice.get("pay_to") or "").lower() != terms.pay_to.lower():
             return {"error": "payment is addressed to somebody else"}
-        quoted_units = int(invoice["amount_units"])
-        if quoted_units != terms.amount_units:
-            # The 402 quoted this amount and the buyer paid exactly it: the invoice's terms
-            # hold while it is redeemable, in BOTH directions. Only a quote BELOW the current
-            # listing was honoured, so a seller that re-priced up inside the 300 s window
-            # received the buyer's exact payment while the hub refused the call as underpaid
-            # (audit 2026-11-11, invoke-local-2). Seller and fee legs are re-split from the
-            # quoted gross with the same arithmetic as the contract.
-            bps = settle.fee_bps() if terms.fee_units else 0
-            seller_units, fee_units = settle.fee_split(quoted_units, bps) if bps else (quoted_units, 0)
-            terms = settle.PaymentTerms(**{**terms.__dict__, "amount_units": quoted_units,
-                                           "seller_units": seller_units, "fee_units": fee_units})
+        if max_price_usd is not None and terms.amount_usd > max_price_usd + 1e-9:
+            return {"error": "the quoted price exceeds the approved maximum", "price_limit": terms.amount_usd}
+        expires_at = float(invoice["expires_at"])
         try:
             settled = settle.verify_transfer(
                 tx_hash=tx_hash,
                 terms=terms,
                 max_age_s=settle.max_age_s(),
-                paid_before=float(invoice["expires_at"]) if expired else None,
+                # The signed header must be checked as of settlement. Looking up
+                # the block also proves whether the buyer paid before quote expiry.
+                paid_before=expires_at if has_authorization or time.time() >= expires_at else None,
                 require_nonce=nonce,
             )
         except settle.PaymentError as exc:
@@ -206,12 +206,25 @@ def register(
             raise HTTPException(
                 status_code=503, detail="payment verifier unavailable",
             ) from None
+        if has_authorization:
+            checked = x402.verify_payment(
+                payload or {}, price_usd=terms.amount_usd, pay_to=terms.pay_to, now=settled.get("mined_at"),
+            )
+            if not checked.get("ok"):
+                return {"error": checked.get("error") or "payment could not be verified"}
+            payer = settled.get("authorizer")
+            if str(checked.get("nonce") or "").lower() != nonce or (
+                payer and str(checked.get("payer") or "").lower() != str(payer).lower()
+            ):
+                return {"error": "the signed authorization does not match the settled payment"}
+        paid_units = int(settled["paid_units"]) + int(settled.get("fee_units") or 0)
+        paid_usd = paid_units / 10**terms.decimals
         if not hub_settle.claim_invoice(
             tx_hash=settled["tx_hash"],
             pay_to=terms.pay_to,
             payer=settled.get("authorizer") or "",
-            amount_usd=price_usd,
-            amount_atomic=settled["paid_units"],
+            amount_usd=paid_usd,
+            amount_atomic=paid_units,
             asset=terms.token_contract,
             network=terms.chain,
             capability_id=capability_id,
@@ -220,13 +233,13 @@ def register(
             return {"error": "that payment has already been spent on another call"}
         logger.info(
             "settle: $%.6f USDC to seller %s for %s tx=%s",
-            price_usd, terms.pay_to, capability_id, settled["tx_hash"],
+            paid_usd, terms.pay_to, capability_id, settled["tx_hash"],
         )
         return {
             "ok": True,
             "tx_hash": settled["tx_hash"],
             "pay_to": terms.pay_to,
-            "amount_usd": price_usd,
+            "amount_usd": paid_usd,
             "payer": settled.get("authorizer") or "",
             "nonce": nonce,
             "rail": "seller_direct",

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import time
@@ -94,6 +95,46 @@ async def test_provider_unknown_requires_operator_and_never_redispatches(hubs, m
     assert out['recovery']['action']=='contact_operator'
     assert (await ops.execute(*args,ExecuteRequest(input={}), 'buyer'))['recovery']['action']=='contact_operator'
     assert delivered==[1]
+
+
+@pytest.mark.asyncio
+async def test_early_unknown_status_does_not_discard_a_late_result(hubs, monkeypatch):
+    _, seller, _, _, delivered, _ = hubs
+    ops = seller.state.seller_operations
+    monkeypatch.setenv('AIMARKET_PROVIDER_OPERATION_PRODUCTS', 'demo-product')
+    listing(ops.studio.db, price=0, invoke_url='https://provider.test/invoke',
+            provider_pubkey=ops.signer.public_key_b64)
+    quote = ops.quote(QuoteRequest(product_id='demo-product', capability_id='demo.read@v1', max_price_usd=0))
+    op, token = quote['offer']['operation_id'], quote['operation_token']
+    executing, finish = asyncio.Event(), asyncio.Event()
+
+    async def invoke(payload, headers, caller, *, operation_id):
+        delivered.append(operation_id)
+        executing.set()
+        await asyncio.wait_for(finish.wait(), timeout=5)
+        return 200, {'success': True, 'result': {'reading': 42}}
+
+    async def read(spec, operation_id):
+        return document(ops.signer, operation_id, {}, {}, status='reconciliation_required')
+
+    ops.invoke, ops.provider_status = invoke, read
+    body = ExecuteRequest(input={})
+    running = asyncio.create_task(ops.execute(op, token, body, 'buyer'))
+    try:
+        await asyncio.wait_for(executing.wait(), timeout=5)
+        ops.conn.execute(
+            'UPDATE seller_operations SET updated_at = ? WHERE operation_id = ?',
+            (time.time() - ops.STALE_BUSY_S - 1, op),
+        )
+        ops.conn.commit()
+        assert (await ops.recover(op, token))['recovery']['action'] == 'contact_operator'
+    finally:
+        finish.set()
+        result = await running
+    assert result['status'] == 'completed'
+    assert result['result'] == {'reading': 42}
+    assert await ops.execute(op, token, body, 'buyer') == result
+    assert delivered == [op]
 
 
 @pytest.mark.asyncio

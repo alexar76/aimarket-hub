@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import secrets
+import time
 from contextlib import contextmanager
 
 import pytest
@@ -56,6 +57,7 @@ def _hub(monkeypatch, tmp_path, **env):
     ))
     app = create_app(config=config, db=db, signer=Signer(root / "key"))
     with TestClient(app) as client:
+        client.hub_db = db  # type: ignore[attr-defined]
         yield client
 
 
@@ -176,6 +178,28 @@ def _stub_chain(monkeypatch, pay_to: str = PAY_TO):
 
 
 class TestWithARealSignature:
+    @crypto
+    def test_a_timely_signed_payment_redeems_after_the_authorization_and_quote_expire(self, monkeypatch, tmp_path):
+        from eth_account import Account
+        from tests.test_x402_payment_secret import auth_used, chain, transfer
+
+        acct = Account.create()
+        with _hub(monkeypatch, tmp_path) as client:
+            quote = _invoke(client).json()
+            now = int(time.time())
+            expires = now - 30
+            db = client.hub_db
+            db._conn.execute(
+                "UPDATE settle_invoices SET expires_at = ? WHERE nonce = ?", (expires, quote["nonce"]),
+            )
+            db._conn.commit()
+            auth = _authorization(acct.address, nonce=quote["nonce"], valid_before=expires)
+            chain(monkeypatch, [auth_used(acct.address, quote["nonce"]), transfer(acct.address, PAY_TO, 20_000)],
+                  mined_at=expires - 3)
+            r = _invoke(client, _with_tx(_envelope(auth, _sign(auth, acct.key))), secret=quote["payment_secret"])
+            assert r.status_code == 200, r.text
+            assert r.json()["receipt"]["price_usd"] == PRICE
+
     @crypto
     def test_a_valid_payment_buys_the_call_once_it_is_on_chain(self, monkeypatch, tmp_path):
         from eth_account import Account

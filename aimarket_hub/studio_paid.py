@@ -144,7 +144,7 @@ class PaidStudio:
         self.remote = None
         self.jobs = None
 
-    def describe(self, node: dict, *, remote=None, validate_input=True) -> dict:
+    def describe(self, node: dict, *, remote=None, validate_input=True, quoted_units=None) -> dict:
         if node["capability_id"] == "pipeline.run@v1":
             raise ValueError("a pipeline cannot recursively purchase pipeline.run@v1")
         cap = self.db.get_capability(node["product_id"], node["capability_id"], node["source_hub"])
@@ -158,7 +158,7 @@ class PaidStudio:
                 raise ValueError("independent seller adapter unavailable")
             return self.remote.validate(node, remote)
         terms = None
-        if price > 0:
+        if price > 0 or quoted_units is not None:
             if not (x402.enabled() and x402.accept_enabled() and settle.rpc_urls()):
                 raise ValueError("seller-direct payment verification is unavailable on this hub")
             source = node["source_hub"]
@@ -169,7 +169,7 @@ class PaidStudio:
                     raise ValueError("peer bills independently; no supported seller-direct settlement route")
                 if not sells and self.config.routing_fee_bps > 0:
                     raise ValueError("this peer requires a separate routing-fee rail")
-            payment = settle.terms_for(cap, operator_pay_to=x402.recipient())
+            payment = settle.terms_for(cap, operator_pay_to=x402.recipient(), quoted_units=quoted_units)
             if payment is None:
                 raise ValueError("listing has no supported seller payout or token")
             if (not settle.is_address(payment.token_contract) or payment.chain_id <= 0

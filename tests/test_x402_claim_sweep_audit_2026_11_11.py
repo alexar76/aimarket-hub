@@ -59,3 +59,27 @@ def test_a_delivered_claim_is_never_given_back(monkeypatch, tmp_path):
         assert store.release_stale_claims(older_than_s=900, now=time.time() + 10_000) == 0
         again = _pay(client, quote, tx)
         assert again.status_code == 402 and "already been used" in again.text
+
+
+def test_delivery_after_stale_scan_keeps_both_payment_and_invoice(monkeypatch, tmp_path):
+    tx = "0x" + "49" * 32
+    with _hub(monkeypatch, tmp_path, **ENV) as (client, db):
+        db.upsert_capability(_cap())
+        quote = client.post("/ai-market/v2/invoke", json=BODY).json()
+        nonce = quote["nonce"]
+        store = settle.PaymentStore(db._conn)
+        assert store.claim_invoice(
+            tx_hash=tx, pay_to="0x" + "cd" * 20, payer="0x" + "ab" * 20, amount_usd=0.004,
+            amount_atomic=4000, asset="0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            network="base", capability_id="demo.echo@v1", nonce=nonce,
+        )
+        release = store.release_invoice
+
+        def delivered_after_scan(tx_hash, nonce, **kwargs):
+            assert store.link_delivery_receipt(nonce=nonce, tx_hash=tx_hash, receipt_id="issued-receipt")
+            return release(tx_hash, nonce, **kwargs)
+
+        monkeypatch.setattr(store, "release_invoice", delivered_after_scan)
+        assert store.release_stale_claims(older_than_s=900, now=time.time() + 901) == 0
+        assert settle.InvoiceStore(db._conn).get(nonce)["consumed_at"] > 0
+        assert store.seen_nonce(nonce)
