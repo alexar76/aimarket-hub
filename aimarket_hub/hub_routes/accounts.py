@@ -5,6 +5,7 @@ collateral.
 from __future__ import annotations
 
 import contextlib
+import math
 import re
 import time
 from collections.abc import Callable
@@ -663,6 +664,7 @@ def register(
     @router.post("/accounts/{account_id}/collateral/return")
     async def return_account_collateral(
         account_id: str, body: dict, authorization: str = Header(default=""),
+        idempotency_key: str = Header(default=""),
     ):
         """Give a publisher their posted stake back — OPERATOR ONLY.
 
@@ -696,11 +698,15 @@ def register(
         account = ledger.account(account_id)
         if account is None:
             raise HTTPException(status_code=404, detail=f"unknown account {account_id}")
+        if not math.isfinite(amount):
+            raise HTTPException(status_code=400, detail="amount_usd must be finite")
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", idempotency_key):
+            raise HTTPException(status_code=400, detail="a valid Idempotency-Key header is required")
         result = ledger.return_collateral(
-            account_id, amount, note=str(body.get("note") or "operator return")[:200],
+            account_id, amount, note=str(body.get("note") or "operator return")[:200], request_id=idempotency_key,
         )
         if result.get("error"):
-            raise HTTPException(status_code=400, detail=result["error"])
+            raise HTTPException(status_code=409 if result.get("conflict") else 400, detail=result["error"])
         return {"success": True, **result, "protocol_version": "v2"}
 
     @router.post("/accounts/{account_id}/status")

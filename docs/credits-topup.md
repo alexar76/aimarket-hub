@@ -622,3 +622,10 @@ USDC names it, and `contracts/evm/test/UniUSD.t.sol` pins the topic.
 See also: [subcontracting.md](subcontracting.md) · [mandates.md](mandates.md) · [a2a.md](a2a.md) ·
 [money-rails.md](money-rails.md) · [the market rail](https://github.com/alexar76/aicom/blob/main/docs/hestia-hub-market-rail.md) ·
 [glossary](https://github.com/alexar76/aicom/blob/main/docs/localization-glossary.md)
+
+
+## Returning posted collateral
+
+The operator calls `POST /ai-market/v2/accounts/{account_id}/collateral/return` with an admin bearer token, an `Idempotency-Key` header and a JSON body containing `amount_usd` and an optional `note`. Generate a new key for each intended return and keep it when retrying after a timeout. The key is scoped to the account and accepts 1–128 ASCII letters, digits, periods, underscores, colons or hyphens.
+
+A successful retry returns `idempotent_replay: true`, the original returned amount and the current account balance. Reusing a key with a different amount or recorded note returns HTTP 409. A missing or invalid key returns HTTP 400. Reconcile older returns made before operation keys were introduced before retrying them.

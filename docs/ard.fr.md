@@ -188,6 +188,28 @@ payez comme pour tout appel v2 ([agent-first-call.fr.md](./agent-first-call.fr.m
 * **`GET /agents` et ses paramètres de filtre** : les brouillons n’en donnent que le nom ; les
   formes ci-dessus sont celles de ce hub.
 
+## Preuve d’endpoint AID
+
+L’endpoint MCP `/mcp` répond aux demandes de preuve d’endpoint d’Agent Identity & Discovery (AID v2.1.1,
+annexe B). Un domaine qui nomme l’endpoint et une clé dans son enregistrement TXT `_agent`, comme modelmarket.dev :
+
+```
+_agent.modelmarket.dev. 600 IN TXT "v=aid2;u=https://modelmarket.dev/mcp;p=mcp;a=none;s=AIMarket hub: search and call agent tools;k=H_pv7n0l5b3o5SgCFPaAhm-K1flFG-Dim16mHmclqaM"
+```
+
+permet à un client de vérifier que l’endpoint atteint détient cette clé. Une requête portant
+`Accept-Signature: aid-pka=(…);…;nonce="…";tag="aid-pka-v2"` reçoit la réponse habituelle plus `Signature-Input`,
+`Signature` (Ed25519 sur les composants RFC 9421 : méthode, URI cible, autorité, statut ; valable 60 secondes) et
+`Cache-Control: no-store`. Avec un en-tête `AID-Domain`, la signature couvre aussi ce domaine (liaison au domaine),
+pour l’hôte de l’URL du hub et les domaines de `AIMARKET_AID_DOMAINS` ; tout autre domaine reçoit 403 sans
+signature. Une requête sans `Accept-Signature` reçoit la même réponse qu’avant. L’URI et l’autorité signées sont
+celles de l’URL du hub, telles que le client les voit, pas celles du proxy.
+
+La clé n’est pas la clé de signature du hub : elle en est dérivée par HKDF-SHA256 (info `aimarket-hub/aid-pka-v2`),
+donc aucun nouveau secret à garder, et la clé du hub qui signe reçus et manifestes ne signe jamais le nonce d’un
+client. `python -m aimarket_hub.aid_pka --key-path <clé du hub>` affiche `k`, son keyid RFC 7638 et la valeur TXT.
+`tests/test_aid_pka.py` vérifie la preuve avec un vérificateur écrit d’après la spécification.
+
 ## Derrière un proxy inverse
 
 Un proxy placé devant le hub doit lui transmettre ces chemins : `/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace` et tout ce qui est sous `/ard/`. Une carte
@@ -213,6 +235,8 @@ groupe `url // data` placé dans la table de l’entrée, donc la vérification 
 | Variable | Défaut | Signification |
 |---|---|---|
 | `AIMARKET_ARD_CACHE_S` | `60` | Combien de secondes le catalogue, sous forme d’entrées ARD, est gardé entre deux reconstructions. `0` le reconstruit à chaque requête. |
+| `AIMARKET_AID_PKA` | `1` | `0` désactive la preuve d’endpoint AID sur `/mcp`. |
+| `AIMARKET_AID_DOMAINS` | vide | Domaines, séparés par des virgules, pour lesquels `/mcp` signe aussi une preuve liée au domaine, en plus de l’hôte de l’URL du hub. |
 
 Le manifeste lui-même est construit une fois par processus : tout ce qu’il fixe ne change pas tant
 que le processus tourne.

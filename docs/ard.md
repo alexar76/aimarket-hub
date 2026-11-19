@@ -185,6 +185,28 @@ pay as for any v2 call ([agent-first-call.md](./agent-first-call.md)).
 * **`GET /agents` and its filter parameters** are not specified by the drafts beyond their
   names; the shapes above are this hub's.
 
+## AID endpoint proof
+
+The MCP endpoint `/mcp` answers endpoint-proof requests of Agent Identity & Discovery (AID v2.1.1, Appendix B).
+A domain that names the endpoint and a key in its `_agent` TXT record, as modelmarket.dev does:
+
+```
+_agent.modelmarket.dev. 600 IN TXT "v=aid2;u=https://modelmarket.dev/mcp;p=mcp;a=none;s=AIMarket hub: search and call agent tools;k=H_pv7n0l5b3o5SgCFPaAhm-K1flFG-Dim16mHmclqaM"
+```
+
+lets a client check that the endpoint it reached holds that key. A request carrying
+`Accept-Signature: aid-pka=(…);…;nonce="…";tag="aid-pka-v2"` gets the usual answer plus `Signature-Input`,
+`Signature` (Ed25519 over RFC 9421 components: method, target URI, authority, status; valid for 60 seconds) and
+`Cache-Control: no-store`. With an `AID-Domain` header the signature also covers that domain (domain binding),
+for the host of the hub URL and the domains in `AIMARKET_AID_DOMAINS`; any other domain gets 403 and no
+signature. A request without `Accept-Signature` is answered as before. The target URI and authority signed are
+those of the hub URL, as clients see them, not the proxy's.
+
+The key is not the hub's signing key. It is derived from it with HKDF-SHA256 (info `aimarket-hub/aid-pka-v2`), so
+there is no new secret to keep, and the hub key that signs receipts and manifests never signs a client's nonce.
+`python -m aimarket_hub.aid_pka --key-path <hub signing key>` prints `k`, its RFC 7638 keyid and the TXT value.
+`tests/test_aid_pka.py` checks the proof with a verifier written from the specification.
+
 ## Behind a reverse proxy
 
 A proxy in front of the hub must pass these paths to it: `/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace` and everything under `/ard/`. A card the proxy
@@ -210,6 +232,8 @@ in the folder.
 | Variable | Default | Meaning |
 |---|---|---|
 | `AIMARKET_ARD_CACHE_S` | `60` | How long the catalogue, as ARD entries, is kept between rebuilds. `0` rebuilds on every request. |
+| `AIMARKET_AID_PKA` | `1` | `0` switches the AID endpoint proof on `/mcp` off. |
+| `AIMARKET_AID_DOMAINS` | empty | Domains, comma-separated, for which `/mcp` also signs a domain-bound proof, besides the host of the hub URL. |
 
 The manifest itself is built once per process: every document it pins is fixed while the
 process runs.

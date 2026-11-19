@@ -170,6 +170,25 @@ curl -s '<某个结果的 url>'      # 描述：其中的 "invoke" 成员就是 
   签名，`/.well-known/did.json` 返回 404。
 * **`GET /agents` 及其过滤参数** 草案只给出了名称；上面的格式是本 hub 的做法。
 
+## AID 端点证明
+
+MCP 端点 `/mcp` 响应 Agent Identity & Discovery（AID v2.1.1，附录 B）的端点证明请求。一个域在其 `_agent` TXT
+记录中写明端点和密钥，例如 modelmarket.dev：
+
+```
+_agent.modelmarket.dev. 600 IN TXT "v=aid2;u=https://modelmarket.dev/mcp;p=mcp;a=none;s=AIMarket hub: search and call agent tools;k=H_pv7n0l5b3o5SgCFPaAhm-K1flFG-Dim16mHmclqaM"
+```
+
+客户端就能检查它连到的端点确实持有该密钥。带有 `Accept-Signature: aid-pka=(…);…;nonce="…";tag="aid-pka-v2"`
+的请求会得到通常的响应，外加 `Signature-Input`、`Signature`（对 RFC 9421 组件——方法、目标 URI、authority、
+状态码——的 Ed25519 签名，有效 60 秒）和 `Cache-Control: no-store`。带 `AID-Domain` 头时，签名还覆盖该域
+（域绑定），适用于 hub URL 的主机和 `AIMARKET_AID_DOMAINS` 中的域；其他域得到 403 且没有签名。不带
+`Accept-Signature` 的请求照常响应。签名的目标 URI 和 authority 取自 hub URL（客户端看到的），而不是代理的。
+
+该密钥不是 hub 的签名密钥，而是用 HKDF-SHA256（info `aimarket-hub/aid-pka-v2`）从中派生：无需保管新的秘密，
+签收据和清单的 hub 密钥也从不签客户端的 nonce。`python -m aimarket_hub.aid_pka --key-path <hub 密钥>` 会打印
+`k`、其 RFC 7638 keyid 和 TXT 值。`tests/test_aid_pka.py` 用按规范编写的验证器检查该证明。
+
 ## 位于反向代理之后
 
 hub 前面的代理必须把这些路径转给 hub：`/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace`，以及 `/ard/` 下的全部路径。代理若把某张卡片转到别处，manifest 中
@@ -192,5 +211,7 @@ draft-bu-dawn-ard-discovery-00 §5 中 CDDL 的校验（[`ard-conformance/check.
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `AIMARKET_ARD_CACHE_S` | `60` | 以 ARD 条目形式保存的目录在两次重建之间保留多少秒。`0` 表示每次请求都重建。 |
+| `AIMARKET_AID_PKA` | `1` | `0` 关闭 `/mcp` 上的 AID 端点证明。 |
+| `AIMARKET_AID_DOMAINS` | 空 | 除 hub URL 的主机外，`/mcp` 还为其签署域绑定证明的域，逗号分隔。 |
 
 manifest 本身每个进程只构建一次：它所固定的内容在进程运行期间不会变化。

@@ -2,6 +2,9 @@
 collateral-return route capped returns by collateral_mc — so it handed the slashed money back."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import uuid
+
 from aimarket_hub import credits
 from tests._mandate_kit import ADMIN_TOKEN, funded_account, hub
 
@@ -14,9 +17,9 @@ def _staked(client, db, amount):
     return account, ledger
 
 
-def _return(client, account, amount):
+def _return(client, account, amount, key=None):
     return client.post(f"/ai-market/v2/accounts/{account}/collateral/return",
-                       headers={"Authorization": f"Bearer {ADMIN_TOKEN}"}, json={"amount_usd": amount})
+                       headers={"Authorization": f"Bearer {ADMIN_TOKEN}", "Idempotency-Key": uuid.uuid4().hex if key is None else key}, json={"amount_usd": amount})
 
 
 def test_a_slashed_stake_cannot_be_returned(monkeypatch, tmp_path):
@@ -36,3 +39,19 @@ def test_only_the_unslashed_part_comes_back(monkeypatch, tmp_path):
         assert ledger.account(account)["balance_usd"] == 15.0
         assert _return(client, account, 1.0).status_code == 400
         assert ledger.account(account)["balance_usd"] == 15.0
+
+def test_concurrent_return_and_conflicts(monkeypatch, tmp_path):
+    with hub(monkeypatch, tmp_path) as (client, db):
+        account, ledger = _staked(client, db, 25)
+        assert _return(client, account, 5, "").status_code == 400
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            responses = list(pool.map(lambda _: _return(client, account, 5, "op-1"), range(4)))
+        assert all(r.status_code == 200 for r in responses)
+        assert sum(not r.json()["idempotent_replay"] for r in responses) == 1
+        assert _return(client, account, 6, "op-1").status_code == 409
+        assert ledger.account(account)["balance_usd"] == 5
+        assert _return(client, account, 20, "op-2").status_code == 200
+        assert _return(client, account, 5, "op-1").json()["idempotent_replay"]
+        rows = db._conn.execute("SELECT receipt_id FROM credit_ledger WHERE account_id = ? "
+                                "AND kind = 'collateral_return' ORDER BY id", (account,)).fetchall()
+        assert [r["receipt_id"] for r in rows] == ["op-1", "op-2"]

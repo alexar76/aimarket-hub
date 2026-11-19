@@ -189,6 +189,28 @@ pague como en cualquier llamada v2 ([agent-first-call.es.md](./agent-first-call.
 * **`GET /agents` y sus parámetros de filtro** los borradores solo los nombran; las formas de
   arriba son las de este hub.
 
+## Prueba de endpoint de AID
+
+El endpoint MCP `/mcp` responde a las peticiones de prueba de endpoint de Agent Identity & Discovery (AID v2.1.1,
+apéndice B). Un dominio que nombra el endpoint y una clave en su registro TXT `_agent`, como hace modelmarket.dev:
+
+```
+_agent.modelmarket.dev. 600 IN TXT "v=aid2;u=https://modelmarket.dev/mcp;p=mcp;a=none;s=AIMarket hub: search and call agent tools;k=H_pv7n0l5b3o5SgCFPaAhm-K1flFG-Dim16mHmclqaM"
+```
+
+permite a un cliente comprobar que el endpoint al que llegó tiene esa clave. Una petición con
+`Accept-Signature: aid-pka=(…);…;nonce="…";tag="aid-pka-v2"` recibe la respuesta habitual más `Signature-Input`,
+`Signature` (Ed25519 sobre componentes RFC 9421: método, URI, autoridad, estado; válida 60 segundos) y
+`Cache-Control: no-store`. Con una cabecera `AID-Domain` la firma cubre también ese dominio (vinculación al dominio),
+para el host de la URL del hub y los dominios de `AIMARKET_AID_DOMAINS`; cualquier otro dominio recibe 403 sin
+firma. Una petición sin `Accept-Signature` se responde como antes. Se firman la URI y la autoridad de la URL del hub,
+tal como las ve el cliente, no las del proxy.
+
+La clave no es la clave de firma del hub: se deriva de ella con HKDF-SHA256 (info `aimarket-hub/aid-pka-v2`), así que
+no hay un secreto nuevo que guardar, y la clave del hub que firma recibos y manifiestos nunca firma el nonce de un
+cliente. `python -m aimarket_hub.aid_pka --key-path <clave del hub>` imprime `k`, su keyid RFC 7638 y el valor TXT.
+`tests/test_aid_pka.py` comprueba la prueba con un verificador escrito a partir de la especificación.
+
 ## Detrás de un proxy inverso
 
 Un proxy delante del hub debe pasarle estas rutas: `/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace` y todo lo que cuelga de `/ard/`. Una tarjeta que el
@@ -214,6 +236,8 @@ dos alternativas de mapa. Los dos archivos están en la carpeta.
 | Variable | Por defecto | Significado |
 |---|---|---|
 | `AIMARKET_ARD_CACHE_S` | `60` | Cuántos segundos se conserva el catálogo, como entradas ARD, entre reconstrucciones. `0` lo reconstruye en cada petición. |
+| `AIMARKET_AID_PKA` | `1` | `0` desactiva la prueba de endpoint de AID en `/mcp`. |
+| `AIMARKET_AID_DOMAINS` | vacío | Dominios, separados por comas, para los que `/mcp` también firma una prueba vinculada al dominio, además del host de la URL del hub. |
 
 El manifiesto se construye una vez por proceso: todo lo que fija no cambia mientras el proceso
 sigue en marcha.

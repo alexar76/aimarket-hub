@@ -546,7 +546,7 @@ class TestCollateralCanLeaveTheHub:
 
             r = client.post(f"/ai-market/v2/accounts/{acct}/collateral/return",
                             json={"amount_usd": 25.0, "note": "unstaked"},
-                            headers=ADMIN_HEADERS)
+                            headers={**ADMIN_HEADERS, "Idempotency-Key": "return-1"})
             assert r.status_code == 200, r.text
             after = client.get("/ai-market/v2/account", headers={"X-API-Key": key}).json()
             assert round(after["balance_usd"] - before["balance_usd"], 6) == 25.0, (
@@ -564,7 +564,7 @@ class TestCollateralCanLeaveTheHub:
                                        note="supply stake", as_collateral=True)
             before = client.get("/ai-market/v2/account", headers={"X-API-Key": key}).json()
             r = client.post(f"/ai-market/v2/accounts/{acct}/collateral/return",
-                            json={"amount_usd": 500.0}, headers=ADMIN_HEADERS)
+                            json={"amount_usd": 500.0}, headers={**ADMIN_HEADERS, "Idempotency-Key": "return-1"})
             assert r.status_code == 400
             after = client.get("/ai-market/v2/account", headers={"X-API-Key": key}).json()
             assert after["balance_usd"] == before["balance_usd"], "a typo minted money"

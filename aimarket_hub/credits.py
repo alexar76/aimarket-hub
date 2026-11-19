@@ -731,6 +731,7 @@ class CreditsLedger:
 
     def return_collateral(
         self, account_id: str, amount_usd: float, note: str = "", *, enforce_slash: bool = True,
+        request_id: str = "",
     ) -> dict[str, Any]:
         """Give posted collateral back — an unstake, or a stake the ledger then refused."""
         amount_mc = usd_to_mc(amount_usd)
@@ -742,6 +743,18 @@ class CreditsLedger:
                                         (account_id,))
             if not _changed(locked):
                 return {"error": f"unknown account {account_id}"}
+            # The account row lock serializes this check and the ledger entry across workers.
+            if request_id:
+                prior = self._conn.execute(
+                    "SELECT amount_mc, note FROM credit_ledger WHERE account_id = ? "
+                    "AND kind = 'collateral_return' AND receipt_id = ?",
+                    (account_id, request_id),
+                ).fetchone()
+                if prior is not None:
+                    if prior["amount_mc"] != amount_mc or prior["note"] != note:
+                        return {"error": "idempotency key already used with different return details", "conflict": True}
+                    return {"returned_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id),
+                            "request_id": request_id, "idempotent_replay": True}
             backed = self._conn.execute(
                 "SELECT collateral_mc, base_principal_collateral_mc, publisher_cash_collateral_mc "
                 "FROM credit_accounts WHERE account_id = ?", (account_id,),
@@ -769,8 +782,11 @@ class CreditsLedger:
             )
             if not _changed(cur):
                 return {"error": f"unknown account {account_id}"}
-            self._log(account_id, "collateral_return", amount_mc, note=note)
-            return {"returned_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
+            self._log(account_id, "collateral_return", amount_mc, receipt_id=request_id, note=note)
+            result = {"returned_usd": mc_to_usd(amount_mc), "balance_usd": self.balance(account_id)}
+            if request_id:
+                result.update(request_id=request_id, idempotent_replay=False)
+            return result
 
     def refund(self, account_id: str, amount_usd: float, note: str = "") -> dict[str, Any]:
         """Put money back (safety refusal, operator goodwill). Separate from `grant` so the

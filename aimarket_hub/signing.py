@@ -385,6 +385,20 @@ class Signer:
     def public_key_b64(self) -> str:
         return self._public_key_b64
 
+    def derived_ed25519_seed(self, info: bytes) -> bytes:
+        """A separate 32-byte Ed25519 seed for one purpose, derived from this hub's seed.
+
+        HKDF-SHA256 (RFC 5869) with ``info`` naming the purpose: the hub gets a key for a
+        protocol whose signing input it does not control (for example a client-chosen nonce
+        in an AID endpoint proof) without provisioning a new secret, and the hub key itself
+        never signs that input. The same seed and ``info`` always give the same key."""
+        if not info:
+            raise ValueError("a derived key needs a non-empty purpose label")
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+        return HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=info).derive(self._seed)
+
     def sign(self, payload: bytes) -> bytes:
         try:
             from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey

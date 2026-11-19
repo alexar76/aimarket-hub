@@ -18,7 +18,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from aimarket_hub import ard
+from aimarket_hub import aid_pka, ard
 from aimarket_hub.access_policy import capability_access_mode
 from aimarket_hub.catalog import catalogue_display_name
 from aimarket_hub.config import HubConfig
@@ -98,6 +98,9 @@ def register(
     did = ard.did_web(base)
     manifest_url = base + ard.WELL_KNOWN_PATH
     app.add_middleware(ArdLinkHeader, link=f'<{manifest_url}>; rel="ard"')
+    # AID endpoint proof on /mcp, the endpoint the manifest's MCP entry leads to: a client that found
+    # it through the domain's `_agent` record can check that this is the endpoint the domain named.
+    aid_pka.install(app, signer=signer, hub_url=base)
 
     def _now() -> str:
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
