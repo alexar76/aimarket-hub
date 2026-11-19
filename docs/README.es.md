@@ -506,7 +506,7 @@ sequenceDiagram
 
   User->>Hub: channel/close
   Hub->>Hub: record settlement + refund_owed_usd
-  Note over User,Hub: refund_executed_usd = 0; payout is separate
+  Note over User,Hub: refund_executed_usd = 0 — payout is separate
 ```
 
 | Campo | Default | Notas |

@@ -650,7 +650,7 @@ sequenceDiagram
 
   User->>Hub: channel/close
   Hub->>Hub: record settlement + refund_owed_usd
-  Note over User,Hub: refund_executed_usd = 0; payout is separate
+  Note over User,Hub: refund_executed_usd = 0 — payout is separate
 ```
 
 В любом случае таблицы, которые владелец копии не использует, просто никогда не читаются. У store
