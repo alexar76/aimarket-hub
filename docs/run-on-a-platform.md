@@ -8,6 +8,10 @@ building `Dockerfile.standalone`. The image sets itself up on its first start (`
 the settings file, an admin token, the free `hub.ping@v1` and a priced sample), so there is
 nothing to run before the first deploy.
 
+The standalone image enables `AIMARKET_STRICT_SUPPLY=1`. Publishers can use their own
+credit accounts for collateral. Bearer-based provisioning requires a subject-specific
+credential or the admin token, and on-chain stake requires payment verification.
+
 Three rules hold on every platform:
 
 1. **A persistent volume at `/app/data`.** The signing keys, the database and the settings

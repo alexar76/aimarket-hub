@@ -12,6 +12,7 @@ from typing import Any
 
 from aimarket_hub import credits, deposit_watch, realm, settle, x402
 from aimarket_hub.db_backend import atomic, returning_one
+from aimarket_hub.mandates import account_requires_mandate
 from aimarket_hub.publisher_withdrawal_chain import (
     CHAIN_ID, USDC_ADDRESS, ZERO_ADDRESS, PayoutChainError, PublisherWithdrawalChain, SignedPayout,
 )
@@ -131,6 +132,8 @@ class PublisherWithdrawals:
             previous = self.by_request(account, request_id)
             if previous:
                 return self.replay(previous, amount_mc, recipient)
+            if account_requires_mandate(self.conn, account):
+                raise WithdrawalError(403, "Withdrawals require owner authorization for mandate-protected accounts")
             if locked["publisher_payout_wallet"] not in ("", recipient):
                 raise WithdrawalError(409, "recipient differs from this account's verified payout wallet")
             if min(locked["balance_mc"], locked["publisher_cash_mc"]) < amount_mc:

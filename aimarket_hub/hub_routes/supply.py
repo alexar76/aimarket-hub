@@ -10,7 +10,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from aimarket_hub import credits
-from aimarket_hub.channels import _is_production_mode
+from aimarket_hub.channels import strict_supply_mode as _is_production_mode
 from aimarket_hub.config import HubConfig
 from aimarket_hub.credits import CreditsLedger
 from aimarket_hub.database import HubDatabase
@@ -188,7 +188,7 @@ def register(
                 if ledger is not None:
                     try:
                         ledger.return_collateral(
-                            credit_account, amount, note="stake refused",
+                            credit_account, amount, note="stake refused", enforce_slash=False,
                         )
                     except Exception as give_back:  # noqa: BLE001
                         # Never mask the real failure with the failure to undo it — but

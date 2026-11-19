@@ -556,6 +556,14 @@ def verify_did_signature(did: str, message: bytes, signature: bytes) -> bool:
 
 # ── storage ───────────────────────────────────────────────────────────────
 
+def account_requires_mandate(conn: Any, account_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM mandate_owners WHERE account_id = ? AND require_mandate = 1 LIMIT 1",
+        (account_id,),
+    ).fetchone()
+    return row is not None
+
+
 class MandateStore:
     """Mandates, owner links, the replay guard and the spend counters.
 
@@ -705,11 +713,7 @@ class MandateStore:
         return str(row["account_id"]), bool(row["require_mandate"])
 
     def account_requires_mandate(self, account_id: str) -> bool:
-        row = self._conn.execute(
-            "SELECT 1 FROM mandate_owners WHERE account_id = ? AND require_mandate = 1 LIMIT 1",
-            (account_id,),
-        ).fetchone()
-        return row is not None
+        return account_requires_mandate(self._conn, account_id)
 
     def owners_of(self, account_id: str) -> list[dict[str, Any]]:
         rows = self._conn.execute(

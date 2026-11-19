@@ -9,6 +9,7 @@ from fastapi import APIRouter, Header, HTTPException
 
 from aimarket_hub import credits, deposit_watch
 from aimarket_hub import publisher_withdrawals as payouts
+from aimarket_hub.mandates import account_requires_mandate
 from aimarket_hub.paging import page_limit
 
 
@@ -39,12 +40,14 @@ def register(*, router: APIRouter, ledger: credits.CreditsLedger | None, hub_url
     async def list_withdrawals(limit: int = 50, x_api_key: str | None = Header(None, alias="X-API-Key")):
         account = account_for(x_api_key)
         return {"success": True, **store.summary(account, page_limit(limit, maximum=100)),
-                "enabled": bool(payouts.configured_sender()), "protocol_version": "v2"}
+                "enabled": bool(payouts.configured_sender()) and not account_requires_mandate(store.conn, account), "protocol_version": "v2"}
 
     @router.post("/account/withdrawals/quote")
     async def quote_withdrawal(body: dict, x_api_key: str | None = Header(None, alias="X-API-Key")):
         account = account_for(x_api_key)
         sender, request_id, amount_mc, recipient = parse(body)
+        if account_requires_mandate(store.conn, account):
+            raise HTTPException(status_code=403, detail="Withdrawals require owner authorization for mandate-protected accounts")
         issued_at = int(time.time())
         message = payouts.wallet_message(hub_url=hub_url, account=account, sender=sender, request_id=request_id,
                                          amount_mc=amount_mc, recipient=recipient, issued_at=issued_at)

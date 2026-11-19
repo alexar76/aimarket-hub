@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 from aimarket_hub import credits, ecosystem
-from aimarket_hub.channels import _is_production_mode
+from aimarket_hub.channels import strict_supply_mode as _is_production_mode
 from aimarket_hub.config import HubConfig
 from aimarket_hub.credits import CreditsLedger
 

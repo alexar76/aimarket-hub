@@ -1233,13 +1233,17 @@ class TestALocalListingCannotBeHijacked:
         pub_id, _ = sec.validate_publish(MANIFEST)
         assert pub_id == "pub-wallet-1"
 
-    def test_a_row_with_no_recorded_owner_can_still_be_claimed(self, tmp_path):
-        """Rows predating publisher_id (seeder / factory imports) must stay publishable."""
+    def test_legacy_operator_row_remains_operator_owned(self, tmp_path):
         db = HubDatabase(tmp_path / "legacy.db")
         self._own(db, "")
         sec = self._sec(db, tmp_path)
-        pub_id, _ = sec.validate_publish(MANIFEST)
-        assert pub_id == "pub-wallet-1"
+        with pytest.raises(ValueError, match="owner"):
+            sec.validate_publish(MANIFEST)
+        cap = db.get_capability(MANIFEST["product_id"], MANIFEST["capability_id"], "local")
+        cap.publisher_id = "publisher"
+        with pytest.raises(ValueError, match="owner"):
+            db.upsert_capability(cap, publisher_write=True)
+        assert db.get_capability(cap.product_id, cap.capability_id, "local").publisher_id == ""
 
     def test_a_peer_row_with_the_same_ids_is_not_treated_as_the_owner(self, tmp_path):
         """Only the LOCAL row is the thing being replaced; a peer's listing is not."""

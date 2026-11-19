@@ -191,6 +191,11 @@ def _validate_recipient() -> None:
 _validate_recipient()
 
 
+def strict_supply_mode() -> bool:
+    """Public standalone hubs need authenticated supply even with a local SQLite ledger."""
+    return _is_production_mode() or os.getenv("AIMARKET_STRICT_SUPPLY") == "1"
+
+
 def _is_production_mode() -> bool:
     """Mirror security.prod_startup_guard.is_production_mode with an env fallback.
 

@@ -696,25 +696,6 @@ def register(
         account = ledger.account(account_id)
         if account is None:
             raise HTTPException(status_code=404, detail=f"unknown account {account_id}")
-        posted = float(account.get("collateral_usd") or 0.0)
-        # A slash reduces the publisher's stake but never touched collateral_mc, so slashed
-        # money stayed "returnable" here: an operator unstaking a publisher credited back the
-        # very amount the slash had taken (audit 2026-11-11, credits-2). What can come back is
-        # at most what the stake still holds.
-        with contextlib.suppress(Exception):
-            row = db._conn.execute(
-                "SELECT amount_usd, slashed_usd FROM supply_stakes WHERE publisher_id = ?", (account_id,),
-            ).fetchone()
-            if row is not None:   # no stake row: collateral posted some other way, nothing slashed
-                left = max(0.0, float(row["amount_usd"] or 0) - float(row["slashed_usd"] or 0))
-                posted = min(posted, left)
-        if amount > posted + 1e-9:
-            # `return_collateral` floors collateral at zero and would credit the whole
-            # amount to spendable balance anyway, inventing money out of a typo.
-            raise HTTPException(
-                status_code=400,
-                detail=f"account holds ${posted:.6f} of collateral, cannot return ${amount:.6f}",
-            )
         result = ledger.return_collateral(
             account_id, amount, note=str(body.get("note") or "operator return")[:200],
         )

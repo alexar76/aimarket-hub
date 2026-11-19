@@ -130,6 +130,24 @@ def test_withdrawal_api_checks_wallet_and_account_and_reserves_once(monkeypatch,
         assert ledger.stats()["outstanding_credit_usd"] == 0.28
 
 
+def test_mandate_required_after_quote_blocks_first_payout(monkeypatch, tmp_path):
+    with hub(monkeypatch, tmp_path, AIMARKET_PUBLISHER_PAYOUT_FROM=SENDER) as (client, db):
+        ledger = credits.CreditsLedger(db._conn)
+        seller = backed_sale(ledger)
+        headers = {"X-API-Key": seller["api_key"]}
+        request = signed_request(client, headers, Account.create())
+        db._conn.execute("INSERT INTO mandate_owners (did, account_id, require_mandate) VALUES (?, ?, 1)",
+                         ("owner", seller["account_id"]))
+        db._conn.commit()
+        assert client.post(PATH + "/quote", headers=headers, json=request).status_code == 403
+        assert client.post(PATH, headers=headers, json=request).status_code == 403
+        summary = client.get(PATH, headers=headers).json()
+        assert summary["withdrawable_usdc"] == 0.28
+        assert summary["enabled"] is False
+        assert summary["payout_wallet"] is None
+        assert not summary["withdrawals"]
+
+
 def test_verified_base_topup_and_paid_invoke_make_publisher_proceeds_withdrawable(monkeypatch, tmp_path):
     chain = Chain()
     monkeypatch.setattr(settle, "verify_transfer", chain.verify)

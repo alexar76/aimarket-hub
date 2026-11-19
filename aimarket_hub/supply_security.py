@@ -19,7 +19,7 @@ from typing import Any
 # incompatible payer-proof scheme in the codebase (three were just merged into one).
 from aimarket_hub.channels import (
     _is_evm_address,
-    _is_production_mode,
+    strict_supply_mode as _is_production_mode,
     _normalize_tx_hash,
     _recover_payer_address,
     _verify_tx_onchain,
@@ -381,9 +381,7 @@ class SupplySecurity:
         # share. The invoke_url dedup does not cover it: that only fires when the product_id
         # differs, and a takeover reuses the same one.
         #
-        # An absent row is a first publish; an EMPTY publisher_id is a row from the seeder or
-        # a factory import and stays claimable, or legacy listings would become unpublishable.
-        # Only the LOCAL row matters — a peer's listing under the same ids is a different row.
+        # Existing local rows without a publisher belong to the operator.
         capability_id = str(manifest.get("capability_id", "")).strip()
         if product_id and capability_id:
             try:
@@ -391,7 +389,7 @@ class SupplySecurity:
             except TypeError:  # older signature without source_hub
                 owned = self.db.get_capability(product_id, capability_id)
             owner = str(getattr(owned, "publisher_id", "") or "").strip() if owned else ""
-            if owner and owner != publisher_id:
+            if owned is not None and owner != publisher_id:
                 raise ValueError(
                     f"{capability_id} under {product_id} is already published by another "
                     "publisher — a republish may only be made by its owner"
@@ -452,7 +450,7 @@ class SupplySecurity:
             cap.trust_score = trust
         else:
             cap.trust_score = _TRUST_UNSCORED
-        self.db.upsert_capability(cap)
+        self.db.upsert_capability(cap, publisher_write=True)
         return trust
 
     # ── Invoke guards ─────────────────────────────────────────

@@ -729,7 +729,9 @@ class CreditsLedger:
             )
             return {"debited_usd": mc_to_usd(amount_mc), "remaining_balance": self.balance(account_id)}
 
-    def return_collateral(self, account_id: str, amount_usd: float, note: str = "") -> dict[str, Any]:
+    def return_collateral(
+        self, account_id: str, amount_usd: float, note: str = "", *, enforce_slash: bool = True,
+    ) -> dict[str, Any]:
         """Give posted collateral back — an unstake, or a stake the ledger then refused."""
         amount_mc = usd_to_mc(amount_usd)
         if amount_mc <= 0:
@@ -741,9 +743,19 @@ class CreditsLedger:
             if not _changed(locked):
                 return {"error": f"unknown account {account_id}"}
             backed = self._conn.execute(
-                "SELECT base_principal_collateral_mc, publisher_cash_collateral_mc "
+                "SELECT collateral_mc, base_principal_collateral_mc, publisher_cash_collateral_mc "
                 "FROM credit_accounts WHERE account_id = ?", (account_id,),
             ).fetchone()
+            available = int(backed["collateral_mc"])
+            if enforce_slash:
+                stake = self._conn.execute(
+                    "SELECT amount_usd, slashed_usd FROM supply_stakes WHERE publisher_id = ?",
+                    (account_id,),
+                ).fetchone()
+                if stake is not None:
+                    available = min(available, usd_to_mc(stake["amount_usd"])) - usd_to_mc(stake["slashed_usd"])
+            if amount_mc > available:
+                return {"error": "insufficient refundable collateral"}
             principal = min(amount_mc, int(backed["base_principal_collateral_mc"]))
             cash = min(amount_mc - principal, int(backed["publisher_cash_collateral_mc"]))
             cur = self._conn.execute(

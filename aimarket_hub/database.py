@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from aimarket_hub.db_backend import DBBackend, create_backend
+from aimarket_hub.db_backend import DBBackend, create_backend, returning_one
 from aimarket_hub.ecosystem import valid_caller_class
 from aimarket_hub.invoke_outcome import normalize_outcome, scored_success_rate
 from aimarket_hub.migrations import Migrations
@@ -199,7 +199,7 @@ class HubDatabase:
 
     # ── Capabilities ──────────────────────────────────────────
 
-    def upsert_capability(self, cap: Capability) -> None:
+    def upsert_capability(self, cap: Capability, *, publisher_write: bool = False) -> None:
         from aimarket_hub.peer_rejections import capability_is_rejected, invoke_is_rejected, peer_is_rejected
         if (capability_is_rejected(cap.product_id, cap.capability_id,
                                    source_hub=cap.source_hub, db_path=self.db_path)
@@ -207,8 +207,9 @@ class HubDatabase:
                 or invoke_is_rejected(cap.invoke_url or "", db_path=self.db_path)
                 or invoke_is_rejected(cap.peer_endpoint or "", db_path=self.db_path)):
             return
-        self._conn.execute("""
-            INSERT OR REPLACE INTO capabilities
+        guard = "WHERE capabilities.publisher_id = excluded.publisher_id AND excluded.publisher_id <> ''" if publisher_write else ""
+        result = returning_one(self._conn, f"""
+            INSERT INTO capabilities
                 (capability_id, product_id, name, version, description,
                  input_schema, output_schema, price_per_call_usd, p50_latency_ms,
                  success_rate_30d, source_hub, source_hub_name,
@@ -216,6 +217,18 @@ class HubDatabase:
                  invoke_url, publisher_id, payout_address, provider_pubkey, stake_usd, is_demo,
                  peer_endpoint, catalogue_evidence, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(capability_id, product_id, source_hub) DO UPDATE SET
+                name=excluded.name, version=excluded.version, description=excluded.description,
+                input_schema=excluded.input_schema, output_schema=excluded.output_schema,
+                price_per_call_usd=excluded.price_per_call_usd, p50_latency_ms=excluded.p50_latency_ms,
+                success_rate_30d=excluded.success_rate_30d, source_hub_name=excluded.source_hub_name,
+                routed_price_usd=excluded.routed_price_usd, routing_fee_bps=excluded.routing_fee_bps,
+                trust_score=excluded.trust_score, agent=excluded.agent, prompt_template=excluded.prompt_template,
+                invoke_url=excluded.invoke_url, publisher_id=excluded.publisher_id, payout_address=excluded.payout_address,
+                provider_pubkey=excluded.provider_pubkey, stake_usd=excluded.stake_usd, is_demo=excluded.is_demo,
+                peer_endpoint=excluded.peer_endpoint, catalogue_evidence=excluded.catalogue_evidence,
+                updated_at=excluded.updated_at {guard}
+            RETURNING capability_id
         """, (
             cap.capability_id, cap.product_id, cap.name, cap.version, cap.description,
             json.dumps(cap.input_schema), json.dumps(cap.output_schema),
@@ -228,8 +241,10 @@ class HubDatabase:
             1 if cap.is_demo else 0,
             cap.peer_endpoint or "",
             json.dumps(cap.catalogue_evidence),
-        ))
-        self._conn.commit()
+        ), commit=True)
+
+        if publisher_write and result is None:
+            raise ValueError("only the owner may update an existing capability")
 
     def get_capability(self, product_id: str, capability_id: str, source_hub: str = "local") -> Capability | None:
         row = self._conn.execute(

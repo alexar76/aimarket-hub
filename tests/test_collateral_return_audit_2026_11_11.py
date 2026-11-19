@@ -34,3 +34,5 @@ def test_only_the_unslashed_part_comes_back(monkeypatch, tmp_path):
         assert _return(client, account, 20.0).status_code == 400
         assert _return(client, account, 15.0).status_code == 200
         assert ledger.account(account)["balance_usd"] == 15.0
+        assert _return(client, account, 1.0).status_code == 400
+        assert ledger.account(account)["balance_usd"] == 15.0

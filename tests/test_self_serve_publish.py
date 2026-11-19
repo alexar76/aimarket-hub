@@ -342,3 +342,12 @@ class TestSellersGetPaid:
                 "/ai-market/v2/account", headers={"X-API-Key": seller_key},
             ).json()
             assert seller["balance_usd"] == pytest.approx(0.0)
+
+
+def test_standalone_requires_a_subject_credential_and_verified_stake(monkeypatch, tmp_path):
+    with _hub(monkeypatch, tmp_path, AIMARKET_STRICT_SUPPLY="1", AIFACTORY_PROD="0") as client:
+        body = {"publisher_id": "community", "amount_usd": 5.0}
+        assert client.post("/ai-market/v2/supply/stake", json=body).status_code in {401, 403, 503}
+        response = client.post("/ai-market/v2/supply/stake", json=body, headers=ADMIN_HEADERS)
+        assert response.status_code in {400, 422}
+        assert "tx_hash" in response.text
