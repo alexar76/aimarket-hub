@@ -151,7 +151,7 @@ def test_judge_reads_openrouter_minimax_from_fleet_env(monkeypatch):
     config = HubConfig()
     assert config.federation_judge_key == "sk-or-test-not-real"
     assert config.federation_judge_url.endswith("/chat/completions")
-    assert config.federation_judge_model == "minimax/minimax-m3"
+    assert config.federation_judge_model == "qwen/qwen4-max"
     hard = [{"id": hid, "ok": True} for hid in (
         "url_public", "well_known_schema", "advertised_key",
         "manifest_schema", "manifest_signed", "manifest_fresh", "invoke_same_origin",

@@ -43,8 +43,10 @@ Tous ces chemins sont publics et en lecture seule.
 |---|---|---|---|
 | le registre | `application/ai-registry+json` | `<hub>/ard/v1` | — |
 | le hub comme agent A2A | `application/a2a-agent-card+json` | `<hub>/.well-known/agent-card.json` | oui |
-| le hub comme serveur MCP | `application/mcp-server-card+json` | `<hub>/.well-known/mcp/server-card.json` | oui |
+| le hub comme serveur MCP | `application/mcp-server-card+json` | `<hub>/mcp/server-card` (repli: `<hub>/.well-known/mcp/server-card.json`) | oui |
 | le document de discovery AIMarket | `application/json` | `<hub>/.well-known/agent-marketplace` | non |
+
+L’entrée MCP nomme la carte de serveur de l’extension MCP (SEP-2127, voir [ai-catalog.fr.md](ai-catalog.fr.md)) : elle donne le point d’accès dans un champ, `remotes[].url`, qu’un client peut comparer à l’URI de l’enregistrement AID du domaine. L’ancienne carte à `/.well-known/mcp/server-card.json`, qui liste des outils pour les scanners et ne donne le point d’accès que dans sa description, reste servie, et l’entrée ne la nomme que sur un hub qui ne sert pas `/mcp/server-card`.
 
 Un `digest` est le SHA-256 des octets que le hub sert à `url`, obtenus en passant par le hub
 lui-même quand le manifeste est construit. Le document de discovery n’a pas de digest parce
@@ -212,7 +214,7 @@ client. `python -m aimarket_hub.aid_pka --key-path <clé du hub>` affiche `k`, s
 
 ## Derrière un proxy inverse
 
-Un proxy placé devant le hub doit lui transmettre ces chemins : `/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace` et tout ce qui est sous `/ard/`. Une carte
+Un proxy placé devant le hub doit lui transmettre ces chemins : `/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/mcp/server-card`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace` et tout ce qui est sous `/ard/`. Une carte
 que le proxy envoie ailleurs rend faux son digest dans le manifeste, et sans `/ard/` le registre est invisible.
 
 Un hub sous un chemin (`https://example.org/hub`) a son manifeste à `/hub/.well-known/ard.json`. Répondez au

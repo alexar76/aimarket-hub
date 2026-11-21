@@ -127,6 +127,34 @@ def test_card_digests_pin_the_bytes_the_hub_serves(hub):
     assert client.get(_path(discovery["url"])).status_code == 200
 
 
+def test_mcp_entry_names_the_server_card_with_a_structured_endpoint(hub):
+    client, _signer, _db = hub
+    _response, manifest = _manifest(client)
+    mcp = next(e for e in manifest["entries"] if e["type"] == ard.MCP_CARD_TYPE)
+    # The SEP-2127 card: the endpoint is a field (remotes[].url) a client can compare with an
+    # AID record's URI, not text in a description.
+    assert mcp["url"] == HUB + ard.MCP_SERVER_CARD_PATH
+    assert mcp["identifier"] == "urn:air:hub.example.com:mcp:gateway"
+    card = client.get(ard.MCP_SERVER_CARD_PATH).json()
+    assert [(r["type"], r["url"]) for r in card["remotes"]] == [("streamable-http", HUB + "/mcp")]
+    # The older card is still served for scanners, just no longer the one the entry pins.
+    assert client.get(ard.LEGACY_MCP_CARD_PATH).status_code == 200
+
+
+def test_mcp_entry_falls_back_to_the_older_card():
+    documents = {ard.LEGACY_MCP_CARD_PATH: b'{"serverInfo": {}}'}
+    entries = ard.own_entries(HUB, "hub", documents)
+    mcp = next(e for e in entries if e["type"] == ard.MCP_CARD_TYPE)
+    assert mcp["url"] == HUB + ard.LEGACY_MCP_CARD_PATH
+    assert mcp["digest"] == ard.digest(documents[ard.LEGACY_MCP_CARD_PATH])
+    assert not any(e["type"] == ard.MCP_CARD_TYPE for e in ard.own_entries(HUB, "hub", {}))
+
+
+def test_ard_and_ai_catalog_name_the_same_server_card_path():
+    from aimarket_hub import ai_catalog
+    assert ai_catalog.SERVER_CARD_PATH == ard.MCP_SERVER_CARD_PATH
+
+
 # ── trustManifest and did:web ─────────────────────────────────
 
 

@@ -38,7 +38,7 @@ _WELL_KNOWN_DEV_ADDRESSES: frozenset[str] = frozenset(
 
 
 OPENROUTER_CHAT_COMPLETIONS = "https://openrouter.ai/api/v1/chat/completions"
-FEDERATION_JUDGE_MODEL_DEFAULT = "minimax/minimax-m3"
+FEDERATION_JUDGE_MODEL_DEFAULT = "qwen/qwen4-max"
 
 
 def federation_judge_key_from_env() -> str:

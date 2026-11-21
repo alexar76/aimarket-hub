@@ -26,10 +26,11 @@ from aimarket_hub.database import HubDatabase
 from aimarket_hub.public_cache import PublicDocumentCache
 from aimarket_hub.signing import Signer
 
-#: Cards this hub serves at its origin whose bytes the manifest pins by digest. Both are
-#: built once per process, so a digest taken at startup stays true. (The discovery
-#: document is listed without one: ard.own_entries says why.)
-_PINNED_DOCUMENTS = ("/.well-known/agent-card.json", "/.well-known/mcp/server-card.json")
+#: Cards this hub serves at its origin whose bytes the manifest pins by digest. All are
+#: built once per process, so a digest taken at startup stays true. The MCP entry uses the
+#: Server Card at /mcp/server-card when the hub serves it, the older card otherwise
+#: (ard.own_entries). (The discovery document is listed without a digest: own_entries says why.)
+_PINNED_DOCUMENTS = ("/.well-known/agent-card.json", ard.MCP_SERVER_CARD_PATH, ard.LEGACY_MCP_CARD_PATH)
 
 _MANIFEST_MAX_AGE_S = 3600
 _DESCRIPTOR_MAX_AGE_S = 300

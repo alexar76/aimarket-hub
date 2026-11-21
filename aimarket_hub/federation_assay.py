@@ -445,7 +445,7 @@ def judge_url(config: HubConfig) -> str:
 
 
 def judge_model(config: HubConfig) -> str:
-    return str(getattr(config, "federation_judge_model", "") or "").strip() or "minimax/minimax-m3"
+    return str(getattr(config, "federation_judge_model", "") or "").strip() or "qwen/qwen4-max"
 
 
 def parse_judge_text(text: Any) -> dict[str, Any] | None:

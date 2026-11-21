@@ -50,6 +50,11 @@ MANIFEST_MEDIA_TYPE = "application/ard+json"
 REGISTRY_TYPE = "application/ai-registry+json"
 A2A_CARD_TYPE = "application/a2a-agent-card+json"
 MCP_CARD_TYPE = "application/mcp-server-card+json"
+#: The MCP Server Card of the MCP extension (SEP-2127), at ``<streamable-http-url>/server-card``;
+#: the same path as ai_catalog.SERVER_CARD_PATH (that module imports this one).
+MCP_SERVER_CARD_PATH = "/mcp/server-card"
+#: The older card: tools listed for scanners, the endpoint only in its description.
+LEGACY_MCP_CARD_PATH = "/.well-known/mcp/server-card.json"
 # The discovery document of draft-artamokhov-dawn-marketplace-discovery is plain JSON.
 DISCOVERY_DOCUMENT_TYPE = "application/json"
 # Not registered with IANA. Registration follows if anyone outside this protocol reads it.
@@ -401,11 +406,19 @@ def own_entries(hub_url: str, hub_name: str, documents: dict[str, bytes]) -> lis
         ),
         "tags": ["aimarket", "registry"],
     }]
+    # The MCP entry names the Server Card of the MCP extension (SEP-2127) when the hub serves it:
+    # its remotes[].url states the endpoint as a field, which a client can compare with the URI of
+    # the domain's AID record. The older card (tools listed for scanners, the endpoint only in its
+    # description) is the fallback for a hub that does not serve the newer one.
+    mcp_card = MCP_SERVER_CARD_PATH if MCP_SERVER_CARD_PATH in documents else LEGACY_MCP_CARD_PATH
     specs = (
         ("/.well-known/agent-card.json", A2A_CARD_TYPE, urn(host, "agent", "a2a"),
          f"{hub_name} (A2A)", "This hub as an A2A agent: catalogue search and paid calls as Tasks."),
-        ("/.well-known/mcp/server-card.json", MCP_CARD_TYPE, urn(host, "mcp", "gateway"),
-         f"{hub_name} (MCP)", "This hub as an MCP server: catalogue search and every listed capability as a tool."),
+        (mcp_card, MCP_CARD_TYPE, urn(host, "mcp", "gateway"), f"{hub_name} (MCP)",
+         "This hub as an MCP server: its Server Card gives the endpoint in remotes[].url; "
+         "tools/list there gives catalogue search and every listed capability as a tool."
+         if mcp_card == MCP_SERVER_CARD_PATH else
+         "This hub as an MCP server: catalogue search and every listed capability as a tool."),
     )
     for path, media_type, identifier, name, description in specs:
         data = documents.get(path)

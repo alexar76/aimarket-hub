@@ -41,8 +41,10 @@ Agent Resource Discovery（ARD）是 Google、Ericsson 等机构的作者于 202
 |---|---|---|---|
 | 注册表 | `application/ai-registry+json` | `<hub>/ard/v1` | — |
 | 作为 A2A agent 的 hub | `application/a2a-agent-card+json` | `<hub>/.well-known/agent-card.json` | 是 |
-| 作为 MCP server 的 hub | `application/mcp-server-card+json` | `<hub>/.well-known/mcp/server-card.json` | 是 |
+| 作为 MCP server 的 hub | `application/mcp-server-card+json` | `<hub>/mcp/server-card` (备用: `<hub>/.well-known/mcp/server-card.json`) | 是 |
 | AIMarket discovery 文档 | `application/json` | `<hub>/.well-known/agent-marketplace` | 否 |
+
+MCP 条目指向 MCP 扩展（SEP-2127，见 [ai-catalog.zh.md](ai-catalog.zh.md)）的服务器卡片：端点写在字段 `remotes[].url` 中，客户端可以把它与域名 AID 记录中的 URI 对比。`/.well-known/mcp/server-card.json` 处的旧卡片仍然提供，它为扫描器列出工具，端点只出现在描述文字里；只有不提供 `/mcp/server-card` 的 hub，条目才指向旧卡片。
 
 `digest` 是 hub 在 `url` 处实际返回的字节的 SHA-256，构建 manifest 时通过 hub 自身取得。
 discovery 文档没有 digest，因为它每分钟重新签名一次（其 `generated_at` 在它自己的 Ed25519 签名
@@ -191,7 +193,7 @@ _agent.modelmarket.dev. 600 IN TXT "v=aid2;u=https://modelmarket.dev/mcp;p=mcp;a
 
 ## 位于反向代理之后
 
-hub 前面的代理必须把这些路径转给 hub：`/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace`，以及 `/ard/` 下的全部路径。代理若把某张卡片转到别处，manifest 中
+hub 前面的代理必须把这些路径转给 hub：`/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/mcp/server-card`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace`，以及 `/ard/` 下的全部路径。代理若把某张卡片转到别处，manifest 中
 它的 digest 就会对不上；缺少 `/ard/` 则注册表不可见。
 
 挂在路径下的 hub（`https://example.org/hub`）的 manifest 位于 `/hub/.well-known/ard.json`。请让 origin 的

@@ -42,8 +42,10 @@ Todas son públicas y de solo lectura.
 |---|---|---|---|
 | el registro | `application/ai-registry+json` | `<hub>/ard/v1` | — |
 | el hub como agente A2A | `application/a2a-agent-card+json` | `<hub>/.well-known/agent-card.json` | sí |
-| el hub como servidor MCP | `application/mcp-server-card+json` | `<hub>/.well-known/mcp/server-card.json` | sí |
+| el hub como servidor MCP | `application/mcp-server-card+json` | `<hub>/mcp/server-card` (alternativa: `<hub>/.well-known/mcp/server-card.json`) | sí |
 | el documento de discovery de AIMarket | `application/json` | `<hub>/.well-known/agent-marketplace` | no |
+
+La entrada MCP nombra la tarjeta de servidor de la extensión MCP (SEP-2127, véase [ai-catalog.es.md](ai-catalog.es.md)): da el punto de conexión como campo, `remotes[].url`, que un cliente puede comparar con el URI del registro AID del dominio. La tarjeta anterior en `/.well-known/mcp/server-card.json`, que lista herramientas para los escáneres y da el punto de conexión solo en su descripción, se sigue sirviendo, y la entrada la nombra solo en un hub que no sirve `/mcp/server-card`.
 
 Un `digest` es el SHA-256 de los bytes que el hub sirve en `url`, obtenidos a través del propio
 hub al construir el manifiesto. El documento de discovery no lleva digest porque se vuelve a
@@ -213,7 +215,7 @@ cliente. `python -m aimarket_hub.aid_pka --key-path <clave del hub>` imprime `k`
 
 ## Detrás de un proxy inverso
 
-Un proxy delante del hub debe pasarle estas rutas: `/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace` y todo lo que cuelga de `/ard/`. Una tarjeta que el
+Un proxy delante del hub debe pasarle estas rutas: `/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/mcp/server-card`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace` y todo lo que cuelga de `/ard/`. Una tarjeta que el
 proxy envíe a otro sitio deja mal su digest en el manifiesto, y sin `/ard/` el registro no se ve.
 
 Un hub bajo una ruta (`https://example.org/hub`) tiene su manifiesto en `/hub/.well-known/ard.json`. Responda al

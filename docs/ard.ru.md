@@ -42,8 +42,10 @@ IETF DAWN авторами из Google, Ericsson и других организ�
 |---|---|---|---|
 | реестр | `application/ai-registry+json` | `<hub>/ard/v1` | — |
 | хаб как агент A2A | `application/a2a-agent-card+json` | `<hub>/.well-known/agent-card.json` | да |
-| хаб как сервер MCP | `application/mcp-server-card+json` | `<hub>/.well-known/mcp/server-card.json` | да |
+| хаб как сервер MCP | `application/mcp-server-card+json` | `<hub>/mcp/server-card` (запасной вариант: `<hub>/.well-known/mcp/server-card.json`) | да |
 | discovery-документ AIMarket | `application/json` | `<hub>/.well-known/agent-marketplace` | нет |
+
+Запись MCP ведёт на карточку сервера из расширения MCP (SEP-2127, см. [ai-catalog.ru.md](ai-catalog.ru.md)): адрес входа в ней записан отдельным полем `remotes[].url`, и клиент может сравнить его с URI из AID-записи домена. Прежняя карточка `/.well-known/mcp/server-card.json`, где для сканеров перечислены инструменты, а адрес есть только в описании, по-прежнему отдаётся; запись ведёт на неё только у хаба, который не отдаёт `/mcp/server-card`.
 
 `digest` — SHA-256 тех байтов, которые хаб отдаёт по `url`; хаб получает их через самого себя,
 когда собирает манифест. У discovery-документа хеша нет: он переподписывается каждую минуту
@@ -206,7 +208,7 @@ _agent.modelmarket.dev. 600 IN TXT "v=aid2;u=https://modelmarket.dev/mcp;p=mcp;a
 
 ## За обратным прокси
 
-Прокси перед хабом должен передавать ему эти пути: `/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace` и всё под `/ard/`. Если прокси отправит карточку
+Прокси перед хабом должен передавать ему эти пути: `/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/mcp/server-card`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace` и всё под `/ard/`. Если прокси отправит карточку
 куда-то ещё, её хеш в манифесте не совпадёт, а без `/ard/` реестр не виден.
 
 У хаба под путём (`https://example.org/hub`) манифест лежит по адресу `/hub/.well-known/ard.json`. На

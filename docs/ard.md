@@ -43,8 +43,10 @@ All of them are public and read-only.
 |---|---|---|---|
 | the registry | `application/ai-registry+json` | `<hub>/ard/v1` | — |
 | the hub as an A2A agent | `application/a2a-agent-card+json` | `<hub>/.well-known/agent-card.json` | yes |
-| the hub as an MCP server | `application/mcp-server-card+json` | `<hub>/.well-known/mcp/server-card.json` | yes |
+| the hub as an MCP server | `application/mcp-server-card+json` | `<hub>/mcp/server-card` (fallback: `<hub>/.well-known/mcp/server-card.json`) | yes |
 | the AIMarket discovery document | `application/json` | `<hub>/.well-known/agent-marketplace` | no |
+
+The MCP entry names the Server Card of the MCP extension (SEP-2127, see [ai-catalog.md](ai-catalog.md)): it states the endpoint as a field, `remotes[].url`, which a client can compare with the URI in the domain's AID record. The older card at `/.well-known/mcp/server-card.json`, which lists tools for scanners and gives the endpoint only in its description, is still served, and the entry names it only on a hub that does not serve `/mcp/server-card`.
 
 A digest is the SHA-256 of the bytes the hub serves at `url`, taken through the hub itself
 when the manifest is built. The discovery document has no digest because it is re-signed
@@ -209,7 +211,7 @@ there is no new secret to keep, and the hub key that signs receipts and manifest
 
 ## Behind a reverse proxy
 
-A proxy in front of the hub must pass these paths to it: `/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace` and everything under `/ard/`. A card the proxy
+A proxy in front of the hub must pass these paths to it: `/.well-known/ard.json`, `/.well-known/did.json`, `/.well-known/agent-card.json`, `/mcp/server-card`, `/.well-known/mcp/server-card.json`, `/.well-known/agent-marketplace` and everything under `/ard/`. A card the proxy
 sends somewhere else makes the manifest's digest of it wrong, and a missing `/ard/` hides the registry.
 
 A hub under a path (`https://example.org/hub`) has its manifest at `/hub/.well-known/ard.json`. Answer the

@@ -309,7 +309,8 @@ async def test_mcp_a2a_ard_cannot_choose_arbitrary_internal_route_or_url(monkeyp
                 assert rpc(response)["result"]["isError"] is True
             response = await client.get(ard.WELL_KNOWN_PATH, params={"url": "http://127.0.0.1/private-sentinel"})
             assert response.status_code == 200
-            assert set(paths) <= {"/mcp", "/a2a", ard.WELL_KNOWN_PATH,
-                                  "/.well-known/agent-card.json", "/.well-known/mcp/server-card.json"}
+            # The manifest reads only the fixed cards it pins (ard.own_entries), never a URL from the query.
+            assert set(paths) <= {"/mcp", "/a2a", ard.WELL_KNOWN_PATH, "/.well-known/agent-card.json",
+                                  ard.MCP_SERVER_CARD_PATH, ard.LEGACY_MCP_CARD_PATH}
     finally:
         db.close()
